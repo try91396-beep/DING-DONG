@@ -666,7 +666,7 @@ def print_order(oid):
 
     return f"<html><head><style>body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;}} .ticket{{width:58mm;background:white;margin:10px auto;padding:10px;}} .head{{text-align:center;}} .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} .opt{{font-size:12px;color:#555;margin-left:20px;}} .break{{page-break-after:always;}} small{{color:#666;font-size:0.8em;}} @media print{{.ticket{{width:100%;box-shadow:none;}} body{{background:white;}}}}</style></head><body onload='setTimeout(function(){{window.print();}}, 500);'>{body}</body></html>"
 
-# --- 9. 後台管理 (完整修正版：支援全欄位編輯與多國語言) ---
+# --- 9. 後台管理 (完整修正版：支援全語系新增與編輯) ---
 
 # [API] 接收前端拖拉後的 ID 順序
 @app.route('/admin/reorder_products', methods=['POST'])
@@ -687,7 +687,7 @@ def reorder_products():
 def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
     
-    # --- [POST] 手動新增產品 ---
+    # --- [POST] 手動新增產品 (修正：加入日韓文欄位) ---
     if request.method == 'POST':
         try:
             cur.execute("""
@@ -750,6 +750,7 @@ def admin_panel():
             .draggable-item {{ background: white; transition: background 0.3s; }}
             .sortable-ghost {{ background: #e3f2fd; opacity: 0.5; }}
             .handle {{ touch-action: none; }} 
+            h5 {{ margin-bottom: 5px; color: #9b4dca; border-left: 4px solid #9b4dca; padding-left: 10px; }}
         </style>
     </head>
     <body style="padding:20px;">
@@ -765,10 +766,11 @@ def admin_panel():
         </div>
 
         <form method="POST">
+            <h5>1. 基本資料</h5>
             <div class="row">
-                <div class="column"><label>名稱 (Zh)</label><input type="text" name="name" required></div>
+                <div class="column"><label>名稱 (中文)</label><input type="text" name="name" required></div>
                 <div class="column"><label>價格</label><input type="number" name="price" required></div>
-                <div class="column"><label>分類 (Category)</label><input type="text" name="category" required></div>
+                <div class="column"><label>分類</label><input type="text" name="category" required></div>
                 <div class="column">
                     <label>出單區域</label>
                     <select name="print_category">
@@ -777,12 +779,26 @@ def admin_panel():
                     </select>
                 </div>
             </div>
-            <label>圖片 URL</label><input type="text" name="image_url">
+            
+            <h5>2. 多國語言名稱</h5>
             <div class="row">
-                <div class="column"><label>選項 (Zh)</label><input type="text" name="custom_options" placeholder="例: 大辣:+0, 小辣:+0"></div>
-                <div class="column"><label>Options (EN)</label><input type="text" name="custom_options_en"></div>
+                <div class="column"><label>English</label><input type="text" name="name_en"></div>
+                <div class="column"><label>日本語</label><input type="text" name="name_jp"></div>
+                <div class="column"><label>한국어</label><input type="text" name="name_kr"></div>
             </div>
-            <button type="submit" style="width:100%;">新增產品</button>
+
+            <h5>3. 客製選項 (例: 加麵:+20,不要蔥:+0)</h5>
+            <div class="row">
+                <div class="column"><label>中文選項</label><input type="text" name="custom_options"></div>
+                <div class="column"><label>English</label><input type="text" name="custom_options_en"></div>
+            </div>
+            <div class="row">
+                <div class="column"><label>日本語</label><input type="text" name="custom_options_jp"></div>
+                <div class="column"><label>한국어</label><input type="text" name="custom_options_kr"></div>
+            </div>
+
+            <label>圖片 URL</label><input type="text" name="image_url">
+            <button type="submit" style="width:100%;">🚀 新增產品</button>
         </form>
     </div>
 
@@ -821,11 +837,10 @@ def admin_panel():
     </body></html>
     """
 
-# --- 編輯產品頁面 (完整修正版) ---
+# --- 編輯產品頁面 (保持不變，已支援全語系) ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
-    
     if request.method == 'POST':
         try:
             cur.execute("""
@@ -853,8 +868,7 @@ def edit_product(pid):
     cur.execute("SELECT * FROM products WHERE id=%s", (pid,))
     p = cur.fetchone()
     conn.close()
-    
-    def v(val): return val if val else "" # 處理 None 值顯示
+    def v(val): return val if val else "" 
 
     return f"""
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css"></head>
@@ -876,7 +890,6 @@ def edit_product(pid):
                 </div>
             </div>
             <label>圖片 URL</label><input type="text" name="image_url" value="{v(p[4])}">
-            
             <hr>
             <h5>🌐 多國語言名稱</h5>
             <div class="row">
@@ -884,39 +897,18 @@ def edit_product(pid):
                 <div class="column"><label>日本語</label><input type="text" name="name_jp" value="{v(p[9])}"></div>
                 <div class="column"><label>한국어</label><input type="text" name="name_kr" value="{v(p[10])}"></div>
             </div>
-
             <hr>
-            <h5>🛠️ 客製化選項 (格式: 選項:+加價,...)</h5>
+            <h5>🛠️ 客製化選項</h5>
             <label>中文選項</label><input type="text" name="custom_options" value="{v(p[6])}">
             <label>English Options</label><input type="text" name="custom_options_en" value="{v(p[11])}">
             <label>日本語オプション</label><input type="text" name="custom_options_jp" value="{v(p[12])}">
             <label>한국어 옵션</label><input type="text" name="custom_options_kr" value="{v(p[13])}">
-
             <div style="margin-top:20px;">
                 <button type="submit">💾 儲存</button>
                 <a href="/admin" class="button button-outline">取消</a>
             </div>
         </form>
     </body></html>"""
-
-# --- Excel 其他路由 (保持不變) ---
-@app.route('/admin/toggle_product/<int:pid>')
-def toggle_product(pid):
-    c=get_db_connection(); cur=c.cursor()
-    cur.execute("UPDATE products SET is_available = NOT is_available WHERE id=%s", (pid,))
-    c.commit(); c.close(); return redirect('/admin')
-
-@app.route('/admin/delete_product/<int:pid>')
-def delete_product(pid):
-    c=get_db_connection(); cur=c.cursor()
-    cur.execute("DELETE FROM products WHERE id=%s", (pid,))
-    c.commit(); c.close(); return redirect('/admin')
-
-@app.route('/admin/reset_orders')
-def reset_orders():
-    c=get_db_connection(); cur=c.cursor()
-    cur.execute("TRUNCATE TABLE orders RESTART IDENTITY")
-    c.commit(); c.close(); return redirect('/admin')
 
     
 # --- 防休眠 ---
