@@ -492,55 +492,81 @@ def kitchen_panel():
     <html lang="zh-TW">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>廚房出單看板</title>
+        <title>👨‍🍳 廚房出單看板</title>
         <style>
-            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 20px; margin: 0; }
+            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 0; margin: 0; }
             .header-container { 
                 display: flex; justify-content: space-between; align-items: center; 
-                padding: 10px 20px; background: #222; border-bottom: 2px solid #333; margin-bottom: 20px;
+                padding: 15px 25px; background: #222; border-bottom: 3px solid #ff9800; 
             }
-            h1 { color: #ff9800; margin: 0; font-size: 24px; }
+            h1 { color: #ff9800; margin: 0; font-size: 28px; }
             .grid { 
                 display: grid; 
                 grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
-                gap: 20px; padding: 10px;
+                gap: 20px; padding: 25px; 
             }
             .card { 
                 background: #2d2d2d; border-radius: 12px; padding: 20px; 
-                box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-top: 8px solid #ff9800;
-                position: relative;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; 
+                position: relative; transition: transform 0.2s;
             }
-            .card.completed { border-top-color: #28a745; opacity: 0.7; }
+            .card.completed { border-top-color: #28a745; opacity: 0.6; }
             .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
             
-            .tag { position: absolute; top: 10px; right: 10px; font-weight: bold; font-size: 0.9em; }
+            .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; font-size: 1.1em; }
             .items { 
-                background: #383838; padding: 15px; border-radius: 8px; 
-                margin: 15px 0; font-size: 1.25em; min-height: 80px; line-height: 1.5;
+                background: #383838; padding: 18px; border-radius: 8px; 
+                margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444;
             }
             .btn { 
-                display: inline-block; padding: 10px 15px; border-radius: 6px; 
-                text-decoration: none; color: white; margin-right: 5px;
-                font-size: 0.9em; border: none; cursor: pointer; transition: 0.2s;
+                display: inline-block; padding: 12px 18px; border-radius: 8px; 
+                text-decoration: none; color: white; margin-right: 8px;
+                font-size: 1em; border: none; cursor: pointer; font-weight: bold;
             }
-            .btn:hover { opacity: 0.8; }
-            .btn-report { background: #6f42c1; font-weight: bold; }
-            .btn-complete { background: #28a745; font-weight: bold; }
-            .btn-edit { background: #555; }
+            .btn-report { background: #6f42c1; }
+            .btn-complete { background: #28a745; }
             .btn-print { background: #17a2b8; }
             .btn-void { background: #822; }
+            
+            /* 權限提示條 */
+            #audio-banner { 
+                background: #d32f2f; color: white; text-align: center; 
+                padding: 10px; font-weight: bold; cursor: pointer;
+            }
         </style>
     </head>
     <body>
+        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提示功能」</div>
+        
         <div class="header-container">
             <h1>👨‍🍳 廚房出單看板</h1>
-            <a href="/kitchen/report" class="btn btn-report">📊 日結報表 / 列印結帳單</a>
+            <div>
+                <a href="/kitchen/report" class="btn btn-report">📊 當日營收報表</a>
+            </div>
         </div>
-        <div id="order-grid" class="grid">正在連線資料庫...</div>
+
+        <div id="order-grid" class="grid">正在同步訂單數據...</div>
+
+        <audio id="notice-sound" preload="auto">
+            <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+        </audio>
 
         <script>
             let lastMaxSeq = 0;
+            let isFirstLoad = true;
+            let audioUnlocked = false;
+
+            function enableAudio() {
+                audioUnlocked = true;
+                document.getElementById('audio-banner').style.display = 'none';
+                // 播放一次靜音音效解鎖瀏覽器限制
+                const audio = document.getElementById('notice-sound');
+                audio.play().then(() => {
+                    audio.pause();
+                    audio.currentTime = 0;
+                });
+            }
+
             function refreshOrders() {
                 fetch('/check_new_orders?current_seq=' + lastMaxSeq)
                 .then(res => res.json())
@@ -548,11 +574,23 @@ def kitchen_panel():
                     if (data.html) {
                         document.getElementById('order-grid').innerHTML = data.html;
                     }
+                    
+                    // 判斷是否有新訂單（排除第一次載入）
+                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                        if (audioUnlocked) {
+                            const audio = document.getElementById('notice-sound');
+                            audio.currentTime = 0;
+                            audio.play().catch(e => console.log("播放失敗"));
+                        }
+                    }
+                    
                     lastMaxSeq = data.max_seq;
+                    isFirstLoad = false;
                 })
-                .catch(err => console.error("看板更新失敗:", err));
+                .catch(err => console.error("連線錯誤:", err));
             }
-            // 每 5 秒自動檢查新訂單
+
+            // 每 5 秒自動刷新的 API
             setInterval(refreshOrders, 5000);
             refreshOrders();
         </script>
@@ -560,15 +598,14 @@ def kitchen_panel():
     </html>
     """
 
-# --- 5. 廚房看板 - [API] 數據供應來源 ---
+# --- 5. 廚房看板 - [API] 數據供應來源 (已含台灣時區修正) ---
 @app.route('/check_new_orders')
 def check_new_orders():
-    from datetime import timedelta  # 確保有匯入此模組
+    from datetime import timedelta
     current_max = request.args.get('current_seq', 0, type=int)
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     
-    # 抓取近 18 小時訂單 (資料庫判斷仍用系統時間)
+    # 抓取近 18 小時訂單
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -584,22 +621,20 @@ def check_new_orders():
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
-
     conn.close()
 
     html_content = ""
     if not orders:
-        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無新訂單</div>"
+        html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>目前無新訂單</div>"
 
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
         cls = status.lower()
         seq = f"{seq_num:03d}"
         
-        # --- [關鍵修改：轉換為台灣時間] ---
+        # 轉換為台灣時間 (UTC+8)
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
-        # -------------------------------
         
         items_html = ""
         try:
@@ -609,44 +644,32 @@ def check_new_orders():
                     n = item.get('name_zh', item.get('name', '商品'))
                     ops = item.get('options_zh', item.get('options', []))
                     ops_str = f"<br><small style='color:#aaa'>└ {', '.join(ops)}</small>" if ops else ""
-                    items_html += f"<div style='margin-bottom:10px;'>● {n} <span style='color:#ff9800'>x{item['qty']}</span> {ops_str}</div>"
+                    items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span> {ops_str}</div>"
             else:
                 items_html = raw_items.replace("+", "<br>● ")
         except:
-            items_html = f"資料解析錯誤: {raw_items}"
+            items_html = f"解析錯誤: {raw_items}"
 
-        tag = ""
-        if status == 'Cancelled': tag = "<span style='color:#dc3545;'>已作廢</span>"
-        elif status == 'Completed': tag = "<span style='color:#28a745;'>已完成</span>"
-        else: tag = "<span style='color:#ff9800;'>● 待處理</span>"
-
+        tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
         btns = ""
         if status == 'Pending':
             btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
-        
         if status != 'Cancelled':
-            btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
-            btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定要作廢此訂單嗎？\")'>🗑️ 作廢</a>"
-        
+            btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定作廢？\")'>🗑️ 作廢</a>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
         <div class="card {cls}">
-            <div class="tag">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">台灣時間: {time_str}</div>
+            <div class="tag" style="color:{'#28a745' if status=='Completed' else '#ff9800'}">{tag}</div>
+            <div style="font-size:0.9em; color:#888;">{time_str} (TPE)</div>
             <div style="margin: 10px 0;">
                 <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
                 <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
             </div>
-            <div class="items">
-                {items_html}
-            </div>
-            <div style="border-top: 1px solid #444; padding-top: 15px;">
-                {btns}
-            </div>
+            <div class="items">{items_html}</div>
+            <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
         </div>
         """
-    
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 
     
