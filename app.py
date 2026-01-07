@@ -4,7 +4,9 @@ import json
 import threading
 import urllib.request
 import time
-from flask import Flask, request, redirect, url_for, jsonify
+import io  # [新增] 處理檔案串流
+import pandas as pd  # [新增] 處理 Excel 資料
+from flask import Flask, request, redirect, url_for, jsonify, send_file # [新增] send_file 用於下載
 from datetime import datetime, date
 
 app = Flask(__name__)
@@ -758,10 +760,12 @@ def print_order(oid):
 
     return f"<html><head><style>body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;}} .ticket{{width:58mm;background:white;margin:10px auto;padding:10px;}} .head{{text-align:center;}} .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} .opt{{font-size:12px;color:#555;margin-left:20px;}} .break{{page-break-after:always;}} small{{color:#666;font-size:0.8em;}} @media print{{.ticket{{width:100%;box-shadow:none;}} body{{background:white;}}}}</style></head><body onload='setTimeout(function(){{window.print();}}, 500);'>{body}</body></html>"
 
-# --- 9. 後台管理 ---
+# --- 9. 後台管理 (含 Excel 匯入匯出) ---
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
+    
+    # --- 處理手動新增產品 ---
     if request.method == 'POST':
         try:
             cur.execute("""
@@ -783,6 +787,7 @@ def admin_panel():
         finally:
             cur.close(); conn.close()
     
+    # --- 讀取現有產品列表 ---
     cur.execute("SELECT id, name, price, category, image_url, is_available, custom_options, sort_order, name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category FROM products ORDER BY id DESC")
     prods = cur.fetchall()
     conn.close()
@@ -810,30 +815,142 @@ def admin_panel():
     return f"""
     <!DOCTYPE html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css"></head>
     <body style="padding:20px;">
-    <div style="display:flex;justify-content:space-between;">
+    
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:20px;">
         <h1>🔧 後台管理</h1>
-        <a href="/admin/reset_orders" onclick="return confirm('⚠️ 清空所有訂單？')" class="button" style="background:red;border-color:red;">⚠️ 清空訂單</a>
+        <div>
+            <a href="/admin/export_excel" class="button button-outline" style="margin-right:10px;">📥 匯出 Excel</a>
+            <a href="/admin/reset_orders" onclick="return confirm('⚠️ 危險操作：確定要清空所有訂單嗎？')" class="button" style="background:red;border-color:red;">⚠️ 清空訂單</a>
+        </div>
     </div>
-    <div style="background:#f4f4f4;padding:20px;">
-        <form method="POST">
-            <div class="row"><div class="column"><label>名稱 (Zh)</label><input type="text" name="name" required><label>EN</label><input type="text" name="name_en"><label>JP</label><input type="text" name="name_jp"><label>KR</label><input type="text" name="name_kr"></div>
-            <div class="column"><label>價格</label><input type="number" name="price" required><label>分類</label><input type="text" name="category" required>
-            <label>出單區域</label>
-            <select name="print_category">
-                <option value="Noodle">麵區 (Noodle)</option>
-                <option value="Soup">湯區 (Soup)</option>
-            </select>
-            </div></div>
-            <label>圖片URL</label><input type="text" name="image_url">
-            <label>選項-中文 (例: 大辣:+0)</label><input type="text" name="custom_options">
-            <label>選項-EN (例: Spicy:+0)</label><input type="text" name="custom_options_en">
-            <label>選項-JP (例: 辛口:+0)</label><input type="text" name="custom_options_jp">
-            <label>選項-KR (例: 매운맛:+0)</label><input type="text" name="custom_options_kr">
-            <button type="submit">新增</button>
+
+    <div style="background:#e3f2fd; padding:20px; margin-bottom:30px; border-radius:8px; border:1px solid #bbdefb;">
+        <h4 style="margin-top:0;">批次匯入菜單</h4>
+        <form action="/admin/import_excel" method="post" enctype="multipart/form-data" style="margin:0;">
+            <div style="display:flex; align-items:center; flex-wrap:wrap;">
+                <input type="file" name="file" accept=".xlsx" required style="margin-right:10px; margin-bottom:10px;">
+                <button type="submit" onclick="return confirm('⚠️ 匯入將直接新增產品到資料庫，確定嗎？')">上傳並新增</button>
+            </div>
+            <small style="color:#666;">說明：請先「匯出 Excel」作為範本。系統會保留舊資料，並將 Excel 中的內容新增為新產品 (不會覆蓋舊 ID)。</small>
         </form>
-    </div><hr><table><thead><tr><th>ID</th><th>品名</th><th>價</th><th>類/區</th><th>狀態</th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></body>
+    </div>
+
+    <div style="background:#f9f9f9;padding:20px;border-radius:8px;border:1px solid #ddd;">
+        <h4 style="margin-top:0;">手動新增單項</h4>
+        <form method="POST">
+            <div class="row">
+                <div class="column">
+                    <label>名稱 (Zh)</label><input type="text" name="name" required>
+                    <label>EN</label><input type="text" name="name_en">
+                    <label>JP</label><input type="text" name="name_jp">
+                    <label>KR</label><input type="text" name="name_kr">
+                </div>
+                <div class="column">
+                    <label>價格</label><input type="number" name="price" required>
+                    <label>分類 (Category)</label><input type="text" name="category" required>
+                    <label>出單區域 (Print Category)</label>
+                    <select name="print_category">
+                        <option value="Noodle">麵區 (Noodle)</option>
+                        <option value="Soup">湯區 (Soup)</option>
+                    </select>
+                </div>
+            </div>
+            <label>圖片 URL</label><input type="text" name="image_url">
+            <div class="row">
+                <div class="column"><label>選項 (Zh)</label><input type="text" name="custom_options" placeholder="例: 大辣:+0, 小辣:+0"></div>
+                <div class="column"><label>Options (EN)</label><input type="text" name="custom_options_en"></div>
+            </div>
+            <div class="row">
+                <div class="column"><label>選項 (JP)</label><input type="text" name="custom_options_jp"></div>
+                <div class="column"><label>選項 (KR)</label><input type="text" name="custom_options_kr"></div>
+            </div>
+            <button type="submit">新增產品</button>
+        </form>
+    </div>
+    
+    <hr>
+    <table>
+        <thead><tr><th>ID</th><th>品名</th><th>價</th><th>類/區</th><th>狀態</th><th>操作</th></tr></thead>
+        <tbody>{rows}</tbody>
+    </table>
+    </body>
     """
 
+# --- Excel 匯出路由 ---
+@app.route('/admin/export_excel')
+def export_excel():
+    try:
+        conn = get_db_connection()
+        # 選取所有需要的欄位
+        sql = """
+            SELECT name, price, category, image_url, custom_options, 
+                   name_en, name_jp, name_kr, 
+                   custom_options_en, custom_options_jp, custom_options_kr, 
+                   print_category, is_available, sort_order
+            FROM products ORDER BY id ASC
+        """
+        df = pd.read_sql(sql, conn)
+        conn.close()
+
+        # 建立 Excel 檔案
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Menu')
+        
+        output.seek(0)
+        filename = f"menu_export_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        return send_file(output, download_name=filename, as_attachment=True)
+    except Exception as e:
+        return f"Export Error: {e}"
+
+# --- Excel 匯入路由 ---
+@app.route('/admin/import_excel', methods=['POST'])
+def import_excel():
+    if 'file' not in request.files: return "No file"
+    file = request.files['file']
+    if file.filename == '': return "No selected file"
+
+    try:
+        # 讀取 Excel
+        df = pd.read_excel(file)
+        df = df.fillna('') # 將空值轉為空字串，避免資料庫錯誤
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        for index, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO products (
+                    name, price, category, image_url, custom_options,
+                    name_en, name_jp, name_kr,
+                    custom_options_en, custom_options_jp, custom_options_kr,
+                    print_category, is_available, sort_order
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                row.get('name'), 
+                int(row.get('price', 0)), 
+                row.get('category'), 
+                row.get('image_url'), 
+                row.get('custom_options'),
+                row.get('name_en'), 
+                row.get('name_jp'), 
+                row.get('name_kr'),
+                row.get('custom_options_en'), 
+                row.get('custom_options_jp'), 
+                row.get('custom_options_kr'),
+                row.get('print_category', 'Noodle'),
+                True if str(row.get('is_available')).lower() in ['true', '1', 't', 'yes'] else False,
+                int(row.get('sort_order', 0)) if row.get('sort_order') != '' else 0
+            ))
+            
+        conn.commit()
+        cur.close(); conn.close()
+        return redirect('/admin')
+        
+    except Exception as e:
+        return f"Import Failed: {e}"
+
+# --- 其他後台操作 (切換狀態、刪除、清空訂單、編輯) ---
 @app.route('/admin/toggle_product/<int:pid>')
 def toggle_product(pid):
     c=get_db_connection(); c.cursor().execute("UPDATE products SET is_available = NOT is_available WHERE id=%s", (pid,)); c.commit(); c.close()
@@ -846,7 +963,7 @@ def delete_product(pid):
 
 @app.route('/admin/reset_orders')
 def reset_orders():
-    c=get_db_connection(); c.cursor().execute("DELETE FROM orders"); c.commit(); c.close()
+    c=get_db_connection(); c.cursor().execute("TRUNCATE TABLE orders RESTART IDENTITY"); c.commit(); c.close()
     return redirect('/admin')
 
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
@@ -854,7 +971,6 @@ def edit_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
     if request.method=='POST':
         try:
-            # 嚴格使用 get 以避免 Key Error，並轉型 Price
             cur.execute("""
                 UPDATE products SET name=%s, price=%s, category=%s, image_url=%s, custom_options=%s,
                 name_en=%s, name_jp=%s, name_kr=%s,
@@ -874,7 +990,6 @@ def edit_product(pid):
         finally:
             conn.close()
     
-    # 明確指定欄位順序以避免索引錯誤
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order, 
                name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
@@ -884,7 +999,6 @@ def edit_product(pid):
     conn.close()
     
     def v(val): return val if val else ""
-    # p[14] is print_category
     sel_n = 'selected' if (p[14] == 'Noodle') else ''
     sel_s = 'selected' if (p[14] == 'Soup') else ''
 
@@ -901,13 +1015,18 @@ def edit_product(pid):
             <option value="Soup" {sel_s}>湯區</option>
         </select>
         <label>圖片URL</label><input type="text" name="image_url" value="{v(p[4])}">
-        <label>選項 (Zh)</label><input type="text" name="custom_options" value="{v(p[6])}">
-        <label>Name(EN)</label><input type="text" name="name_en" value="{v(p[8])}">
-        <label>Options(EN)</label><input type="text" name="custom_options_en" value="{v(p[11])}">
-        <label>名前(JP)</label><input type="text" name="name_jp" value="{v(p[9])}">
-        <label>Options(JP)</label><input type="text" name="custom_options_jp" value="{v(p[12])}">
-        <label>이름(KR)</label><input type="text" name="name_kr" value="{v(p[10])}">
-        <label>Options(KR)</label><input type="text" name="custom_options_kr" value="{v(p[13])}">
+        <div class="row">
+            <div class="column"><label>選項 (Zh)</label><input type="text" name="custom_options" value="{v(p[6])}"></div>
+            <div class="column"><label>Options (EN)</label><input type="text" name="custom_options_en" value="{v(p[11])}"></div>
+        </div>
+        <div class="row">
+            <div class="column"><label>名前 (JP)</label><input type="text" name="name_jp" value="{v(p[9])}"></div>
+            <div class="column"><label>Opt (JP)</label><input type="text" name="custom_options_jp" value="{v(p[12])}"></div>
+        </div>
+        <div class="row">
+            <div class="column"><label>이름 (KR)</label><input type="text" name="name_kr" value="{v(p[10])}"></div>
+            <div class="column"><label>Opt (KR)</label><input type="text" name="custom_options_kr" value="{v(p[13])}"></div>
+        </div>
         <button type="submit">儲存</button> <a href="/admin" class="button button-outline">取消</a>
     </form></body>
     """
