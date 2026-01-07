@@ -3,7 +3,7 @@ import psycopg2
 import json
 import threading
 import urllib.request
-import time
+import time  
 import io  # [新增] 處理檔案串流
 import pandas as pd  # [新增] 處理 Excel 資料
 from flask import Flask, request, redirect, url_for, jsonify, send_file # [新增] send_file 用於下載
