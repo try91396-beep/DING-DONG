@@ -439,7 +439,7 @@ def order_success():
     </div>
     """
 
-# --- 5. 廚房看板 ---
+# --- 5. 廚房看板 - 修正語音、自動列印與語言顯示 ---
 @app.route('/kitchen')
 def kitchen_panel():
     return """
@@ -449,137 +449,141 @@ def kitchen_panel():
         <meta charset="UTF-8">
         <title>👨‍🍳 廚房出單看板</title>
         <style>
-            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 0; margin: 0; }
+            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; margin: 0; }
             .header-container { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; background: #222; border-bottom: 3px solid #ff9800; }
-            h1 { color: #ff9800; margin: 0; font-size: 28px; }
+            h1 { color: #ff9800; margin: 0; }
             .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; padding: 25px; }
-            .card { background: #2d2d2d; border-radius: 12px; padding: 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; position: relative; }
-            .card.completed { border-top-color: #28a745; opacity: 0.6; }
-            .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
-            .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; font-size: 1.1em; }
-            .items { background: #383838; padding: 18px; border-radius: 8px; margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444; }
-            .btn { display: inline-block; padding: 10px 15px; border-radius: 8px; text-decoration: none; color: white; margin-right: 5px; font-weight: bold; cursor: pointer; border:none; }
-            .btn-complete { background: #28a745; } .btn-print { background: #17a2b8; } .btn-void { background: #822; } .btn-edit { background: #ff9800; }
-            #audio-banner { background: #d32f2f; color: white; text-align: center; padding: 10px; font-weight: bold; cursor: pointer; }
+            .card { background: #2d2d2d; border-radius: 12px; padding: 20px; border-top: 10px solid #ff9800; position: relative; }
+            .items { background: #383838; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 1.2em; line-height: 1.5; }
+            .btn { padding: 10px 15px; border-radius: 6px; text-decoration: none; color: white; font-weight: bold; cursor: pointer; border: none; }
+            .btn-complete { background: #28a745; } .btn-print { background: #17a2b8; } .btn-edit { background: #ff9800; }
+            #audio-banner { background: #d32f2f; color: white; text-align: center; padding: 12px; font-weight: bold; cursor: pointer; }
         </style>
     </head>
     <body>
-        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提示功能」</div>
+        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處：啟動新訂單「自動列印」與「語音提醒」功能</div>
         <div class="header-container">
             <h1>👨‍🍳 廚房出單看板</h1>
-            <a href="/kitchen/report" style="color:white; text-decoration:none; background:#6f42c1; padding:10px; border-radius:5px;">📊 當日營收報表</a>
+            <a href="/kitchen/report" class="btn" style="background:#6f42c1;">📊 營收報表</a>
         </div>
-        <div id="order-grid" class="grid">正在同步訂單數據...</div>
+        <div id="order-grid" class="grid">正在連線中...</div>
+
         <audio id="notice-sound" preload="auto">
             <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
         </audio>
+
         <script>
-            let lastMaxSeq = 0; let isFirstLoad = true; let audioUnlocked = false;
-            function enableAudio() { audioUnlocked = true; document.getElementById('audio-banner').style.display = 'none'; document.getElementById('notice-sound').play().then(()=>document.getElementById('notice-sound').pause()); }
+            let lastMaxSeq = 0;
+            let isFirstLoad = true;
+            let systemReady = false;
+
+            function enableAudio() {
+                systemReady = true;
+                document.getElementById('audio-banner').style.display = 'none';
+                const audio = document.getElementById('notice-sound');
+                audio.play(); audio.pause(); // 激活瀏覽器權限
+                console.log("系統已就緒，等待新訂單...");
+            }
+
             function refreshOrders() {
                 fetch('/check_new_orders?current_seq=' + lastMaxSeq)
                 .then(res => res.json())
                 .then(data => {
                     if (data.html) document.getElementById('order-grid').innerHTML = data.html;
-                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0 && audioUnlocked) {
-                        const s = document.getElementById('notice-sound'); s.currentTime = 0; s.play();
+
+                    // 偵測到新訂單
+                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                        if (systemReady) {
+                            // 1. 播放音效 (只播一次)
+                            const audio = document.getElementById('notice-sound');
+                            audio.currentTime = 0;
+                            audio.play().catch(e => console.log("音效受阻"));
+
+                            // 2. 自動列印新單 (彈出所有新單視窗)
+                            data.new_ids.forEach(oid => {
+                                window.open('/print_order/' + oid, '_blank', 'width=300,height=600');
+                            });
+                        }
                     }
-                    lastMaxSeq = data.max_seq; isFirstLoad = false;
-                });
+                    lastMaxSeq = data.max_seq;
+                    isFirstLoad = false;
+                })
+                .catch(err => console.error("同步失敗:", err));
             }
-            setInterval(refreshOrders, 5000); refreshOrders();
+
+            setInterval(refreshOrders, 5000); 
+            refreshOrders();
         </script>
     </body>
     </html>
     """
 
-@app.route('/check_new_orders')
-def check_new_orders():
-    current_max = request.args.get('current_seq', 0, type=int)
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("""
-        SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
-        FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours') 
-        ORDER BY CASE WHEN status = 'Pending' THEN 0 ELSE 1 END, daily_seq DESC
-    """)
-    orders = cur.fetchall()
-    cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
-    max_seq_val = cur.fetchone()[0] or 0
-    new_order_ids = []
-    if current_max > 0:
-        cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
-        new_order_ids = [r[0] for r in cur.fetchall()]
-    conn.close()
-
-    html_content = ""
-    for o in orders:
-        oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
-        tw_time = created + timedelta(hours=8)
-        time_str = tw_time.strftime('%H:%M:%S')
-        items_html = ""
-        if c_json:
-            cart = json.loads(c_json)
-            for item in cart:
-                n = item.get('name_zh', item.get('name', '商品'))
-                items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span></div>"
-        
-        tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
-        btns = ""
-        if status == 'Pending': btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
-        btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
-        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
-
-        html_content += f"""
-        <div class="card {status.lower()}">
-            <div class="tag">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">{time_str} ({lang})</div>
-            <div style="margin: 10px 0;"><span style="font-size:2.5em; color:#ff9800; font-weight:bold;">#{seq_num:03d}</span> 桌: {table}</div>
-            <div class="items">{items_html}</div>
-            <div style="border-top:1px solid #444; padding-top:10px;">{btns}</div>
-        </div>
-        """
-    return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
-
-# --- 6. 多語系列印收據 (含中文備註) ---
+# --- 6. 多語系列印路由 - 確保語言抓取正確 ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
+    # 這裡必須抓取當初存入的 lang
     cur.execute("SELECT table_number, content_json, total_price, created_at, daily_seq, lang FROM orders WHERE id=%s", (oid,))
     row = cur.fetchone()
     conn.close()
-    if not row: return "Order Not Found"
+    
+    if not row: return "訂單不存在"
     table, c_json, total, created, seq, order_lang = row
     
-    t = load_translations().get(order_lang, load_translations()['zh'])
+    # 讀取翻譯檔案
+    translations = load_translations()
+    t = translations.get(order_lang, translations['zh'])
+    
+    # 台灣時間
     tw_time = created + timedelta(hours=8)
-    time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
+    time_str = tw_time.strftime('%H:%M:%S')
 
     items = json.loads(c_json) if c_json else []
     items_html = ""
     for i in items:
-        # 抓取下單時的語系名稱，若非中文則附註中文
-        name_in_lang = i.get(f'name_{order_lang}', i.get('name'))
-        zh_note = f"<br><small>(中: {i.get('name_zh')})</small>" if order_lang != 'zh' else ""
+        # 重點：根據 order_lang 抓取正確的翻譯欄位
+        # 如果是 en -> name, 如果是 jp -> name_jp, 如果是 kr -> name_kr
+        name_key = 'name' if order_lang == 'en' else f'name_{order_lang}'
+        if order_lang == 'zh': name_key = 'name_zh'
+        
+        display_name = i.get(name_key, i.get('name_zh', i.get('name')))
+        
+        # 顯示中文備註
+        zh_ref = f"<br><small>(中: {i.get('name_zh')})</small>" if order_lang != 'zh' else ""
+        
+        # 選項處理
+        opt_key = 'options' if order_lang == 'en' else f'options_{order_lang}'
+        if order_lang == 'zh': opt_key = 'options_zh'
+        ops = i.get(opt_key, i.get('options_zh', []))
+        opt_str = f"<br><small>└ {', '.join(ops)}</small>" if ops else ""
         
         items_html += f"""
-        <tr style="border-bottom:1px dashed #ccc;">
-            <td style="padding:5px 0;">{name_in_lang}{zh_note}</td>
+        <tr style="border-bottom: 1px dashed #ccc;">
+            <td style="padding:8px 0;">
+                <strong style="font-size:1.1em;">{display_name}</strong>
+                {zh_ref}{opt_str}
+            </td>
             <td style="text-align:right;">x{i['qty']}</td>
             <td style="text-align:right;">${i['unit_price']*i['qty']}</td>
         </tr>"""
 
     return f"""
-    <html><body onload="window.print()" style="width:58mm; font-family:sans-serif; font-size:13px;">
-        <div style="text-align:center;">
-            <h2>#{seq:03d}</h2>
-            <p>{t['table']}: {table}</p>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body onload="window.print(); setTimeout(window.close, 1000);" style="width:58mm; font-family:sans-serif; margin:0; padding:5px;">
+        <div style="text-align:center; border-bottom:2px solid #000; padding-bottom:5px;">
+            <h1 style="margin:5px 0; font-size:2em;">#{seq:03d}</h1>
+            <div style="font-size:1.2em;">{t['table']}: {table}</div>
         </div>
-        <p style="font-size:11px;">{time_str}</p>
-        <hr>
-        <table style="width:100%; border-collapse:collapse;">{items_html}</table>
-        <hr>
-        <div style="text-align:right; font-weight:bold; font-size:15px;">{t['total']}: ${total}</div>
-    </body></html>
+        <div style="font-size:11px; margin:5px 0;">Time: {time_str}</div>
+        <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            {items_html}
+        </table>
+        <div style="text-align:right; font-weight:bold; font-size:1.2em; border-top:2px solid #000; margin-top:10px; padding-top:5px;">
+            {t['total']}: ${total}
+        </div>
+    </body>
+    </html>
     """
 
     
