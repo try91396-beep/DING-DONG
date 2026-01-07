@@ -598,19 +598,17 @@ def kitchen_panel():
     """
 
 # --- 5. 廚房看板 - [API] 數據供應來源 ---
+# --- 修正後的 API 函數 ---
 @app.route('/check_new_orders')
 def check_new_orders():
+    # 確保這一層所有的程式碼前面都是 4 個空格
     current_max = request.args.get('current_seq', 0, type=int)
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # 這裡的 SQL 必須整齊對齊
-    cur.execute("""
-        SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
-        FROM orders 
-        WHERE created_at > (NOW() - INTERVAL '18 hours') 
-        ORDER BY CASE WHEN status = 'Pending' THEN 0 ELSE 1 END, daily_seq DESC
-    """)
+    # 這裡使用單行 SQL，最不容易出錯
+    sql = "SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours') ORDER BY CASE WHEN status = 'Pending' THEN 0 ELSE 1 END, daily_seq DESC"
+    cur.execute(sql)
     orders = cur.fetchall()
 
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
@@ -627,19 +625,21 @@ def check_new_orders():
     html_content = ""
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
+        from datetime import timedelta
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
 
         items_display = ""
         if c_json:
+            import json
             cart = json.loads(c_json)
             for item in cart:
-                name = item.get('name_zh', item.get('name', '未知商品'))
+                name = item.get('name_zh', item.get('name', '商品'))
                 items_display += f"<div>● {name} <span style='color:#ff9800'>x{item['qty']}</span></div>"
 
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
         
-        # 按鈕：包含手動列印與完成
+        # 這裡包含平板自動列印所需的按鈕
         btns = f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
