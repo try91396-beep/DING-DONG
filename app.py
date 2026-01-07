@@ -760,7 +760,29 @@ def print_order(oid):
 
     return f"<html><head><style>body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;}} .ticket{{width:58mm;background:white;margin:10px auto;padding:10px;}} .head{{text-align:center;}} .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} .opt{{font-size:12px;color:#555;margin-left:20px;}} .break{{page-break-after:always;}} small{{color:#666;font-size:0.8em;}} @media print{{.ticket{{width:100%;box-shadow:none;}} body{{background:white;}}}}</style></head><body onload='setTimeout(function(){{window.print();}}, 500);'>{body}</body></html>"
 
-# --- 9. 後台管理 (含 Excel 匯入匯出 + 排序功能) ---
+# --- 9. 後台管理 (含 Excel 匯入匯出 + 拖拉排序) ---
+
+# [API] 接收前端拖拉後的 ID 順序
+@app.route('/admin/reorder_products', methods=['POST'])
+def reorder_products():
+    try:
+        data = request.get_json()
+        new_order = data.get('order', []) # 例如 [5, 2, 1, 10...]
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # 依序更新資料庫中的 sort_order
+        for index, prod_id in enumerate(new_order):
+            cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (index + 1, prod_id))
+            
+        conn.commit()
+        cur.close(); conn.close()
+        return jsonify({'status': 'success', 'message': '排序已更新'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# [頁面] 後台主控台
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
@@ -768,10 +790,7 @@ def admin_panel():
     # --- [POST] 手動新增產品 ---
     if request.method == 'POST':
         try:
-            # 處理排序欄位 (預設為 0)
-            sort_val = request.form.get('sort_order')
-            sort_order = int(sort_val) if sort_val and sort_val.strip() else 0
-
+            # 新增產品預設排在最後 (9999)，讓使用者後續自己拖拉調整
             cur.execute("""
                 INSERT INTO products (name, price, category, image_url, custom_options, 
                 name_en, name_jp, name_kr,
@@ -783,7 +802,7 @@ def admin_panel():
                 request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
                 request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
                 request.form.get('print_category', 'Noodle'),
-                sort_order
+                9999 
             ))
             conn.commit()
             return redirect('/admin')
@@ -792,33 +811,31 @@ def admin_panel():
         finally:
             cur.close(); conn.close()
     
-    # --- [GET] 讀取產品列表 (依分類 -> 排序 -> ID 排序) ---
-    # 注意：這裡 SQL 加入了 sort_order ASC
+    # --- [GET] 讀取產品列表 (依照 sort_order 排序) ---
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order, 
                name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category 
         FROM products 
-        ORDER BY category DESC, sort_order ASC, id DESC
+        ORDER BY sort_order ASC, id DESC
     """)
     prods = cur.fetchall()
     conn.close()
     
     rows = ""
     for p in prods:
-        # p[0]=id, p[1]=name, p[2]=price, p[3]=cat, p[5]=avail, p[7]=sort_order, p[14]=print_cat
+        # p[0]=id, p[1]=name, p[5]=avail, p[14]=print_cat
         status_text = "<span style='color:green'>上架</span>" if p[5] else "<span style='color:red'>下架</span>"
         toggle = f"<a href='/admin/toggle_product/{p[0]}'>切換</a>"
         p_cat = p[14] if len(p)>14 and p[14] else 'Noodle'
         
+        # 注意：這裡在 tr 加入了 data-id，並增加了拖拉把手欄位
         rows += f"""
-        <tr>
+        <tr data-id="{p[0]}" class="draggable-item">
+            <td style="cursor:move;font-size:1.5em;color:#888;width:50px;text-align:center;" class="handle">☰</td>
             <td>{p[0]}</td>
-            <td>
-                <span style="background:#eee;color:#555;padding:2px 5px;border-radius:3px;font-size:0.8em;">序: {p[7]}</span><br>
-                <b>{p[1]}</b>
-            </td>
+            <td><b>{p[1]}</b><br><small style="color:#888">{p[3]}</small></td>
             <td>{p[2]}</td>
-            <td>{p[3]} / {p_cat}</td>
+            <td>{p_cat}</td>
             <td>{status_text} {toggle}</td>
             <td>
                 <a href='/admin/edit_product/{p[0]}'>編輯</a> | 
@@ -827,79 +844,133 @@ def admin_panel():
         </tr>"""
 
     return f"""
-    <!DOCTYPE html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css"></head>
+    <!DOCTYPE html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.14.0/Sortable.min.js"></script>
+        <style>
+            .draggable-item {{ background: white; transition: background 0.3s; }}
+            .sortable-ghost {{ background: #e3f2fd; opacity: 0.5; }}
+            /* 讓把手在手機上更容易按到 */
+            .handle {{ touch-action: none; }} 
+        </style>
+    </head>
     <body style="padding:20px;">
     
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:20px;">
-        <h1>🔧 後台管理</h1>
-        <div>
-            <a href="/admin/export_excel" class="button button-outline" style="margin-right:10px;">📥 匯出 Excel</a>
-            <a href="/admin/reset_orders" onclick="return confirm('⚠️ 危險操作：確定要清空所有訂單嗎？')" class="button" style="background:red;border-color:red;">⚠️ 清空訂單</a>
-        </div>
-    </div>
-
-    <div style="background:#e3f2fd; padding:20px; margin-bottom:30px; border-radius:8px; border:1px solid #bbdefb;">
-        <h4 style="margin-top:0;">批次匯入菜單</h4>
-        <form action="/admin/import_excel" method="post" enctype="multipart/form-data" style="margin:0;">
-            <div style="display:flex; align-items:center; flex-wrap:wrap;">
-                <input type="file" name="file" accept=".xlsx" required style="margin-right:10px; margin-bottom:10px;">
-                <button type="submit" onclick="return confirm('⚠️ 匯入將直接新增產品到資料庫，確定嗎？')">上傳並新增</button>
+    <div style="position:sticky; top:0; background:white; z-index:100; padding:10px 0; border-bottom:1px solid #eee;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <h3>🔧 後台管理</h3>
+            <div>
+                 <button id="save-btn" onclick="saveOrder()" class="button" style="background:#9c27b0;border-color:#9c27b0;display:none;">💾 儲存排序</button>
+                 <a href="/admin/export_excel" class="button button-outline">📥 匯出 Excel</a>
             </div>
-            <small style="color:#666;">說明：請先「匯出 Excel」作為範本。系統會保留舊資料，並將 Excel 中的內容新增為新產品。Excel 中可包含 'sort_order' 欄位來設定排序。</small>
-        </form>
+        </div>
+        <small>💡 提示：按住左側 <b>☰</b> 符號即可上下拖拉排序，拖拉後請記得按「儲存」。</small>
     </div>
 
-    <div style="background:#f9f9f9;padding:20px;border-radius:8px;border:1px solid #ddd;">
-        <h4 style="margin-top:0;">手動新增單項</h4>
-        <form method="POST">
-            <div class="row">
-                <div class="column">
-                    <label>名稱 (Zh)</label><input type="text" name="name" required>
-                    <label>EN</label><input type="text" name="name_en">
-                    <label>JP</label><input type="text" name="name_jp">
-                    <label>KR</label><input type="text" name="name_kr">
-                </div>
-                <div class="column">
-                    <label>價格</label><input type="number" name="price" required>
-                    <label>分類 (Category)</label><input type="text" name="category" required>
-                    
-                    <div class="row">
-                        <div class="column">
-                             <label>出單區域</label>
-                             <select name="print_category">
-                                <option value="Noodle">麵區 (Noodle)</option>
-                                <option value="Soup">湯區 (Soup)</option>
-                             </select>
-                        </div>
-                        <div class="column">
-                            <label>排序 (數字小在前面)</label>
-                            <input type="number" name="sort_order" value="0">
-                        </div>
+    <table>
+        <thead><tr><th>序</th><th>ID</th><th>品名/分類</th><th>價</th><th>出單區</th><th>狀態</th><th>操作</th></tr></thead>
+        <tbody id="menu-list">{rows}</tbody>
+    </table>
+
+    <hr>
+    
+    <details>
+        <summary style="cursor:pointer;padding:10px;background:#f4f4f4;border-radius:5px;font-weight:bold;">➕ 新增產品 (點擊展開)</summary>
+        <div style="padding:20px;border:1px solid #eee;margin-top:10px;background:#fafafa;">
+            <div style="margin-bottom:20px;padding-bottom:15px;border-bottom:1px dashed #ccc;">
+                <h5 style="margin:0 0 10px 0;">批次匯入</h5>
+                <form action="/admin/import_excel" method="post" enctype="multipart/form-data" style="margin:0;display:flex;align-items:center;">
+                    <input type="file" name="file" accept=".xlsx" required style="margin-right:10px;">
+                    <button type="submit" class="button button-small button-outline" onclick="return confirm('⚠️ 匯入將直接新增產品到資料庫，確定嗎？')">上傳匯入</button>
+                </form>
+            </div>
+
+            <h5 style="margin:0 0 10px 0;">手動新增</h5>
+            <form method="POST">
+                <div class="row">
+                    <div class="column">
+                        <label>名稱 (Zh)</label><input type="text" name="name" required>
+                        <label>價格</label><input type="number" name="price" required>
+                    </div>
+                    <div class="column">
+                        <label>分類 (Category)</label><input type="text" name="category" required>
+                        <label>出單區域</label>
+                        <select name="print_category">
+                            <option value="Noodle">麵區 (Noodle)</option>
+                            <option value="Soup">湯區 (Soup)</option>
+                        </select>
                     </div>
                 </div>
-            </div>
-            <label>圖片 URL</label><input type="text" name="image_url">
-            <div class="row">
-                <div class="column"><label>選項 (Zh)</label><input type="text" name="custom_options" placeholder="例: 大辣:+0, 小辣:+0"></div>
-                <div class="column"><label>Options (EN)</label><input type="text" name="custom_options_en"></div>
-            </div>
-            <div class="row">
-                <div class="column"><label>選項 (JP)</label><input type="text" name="custom_options_jp"></div>
-                <div class="column"><label>選項 (KR)</label><input type="text" name="custom_options_kr"></div>
-            </div>
-            <button type="submit">新增產品</button>
-        </form>
-    </div>
+                <label>圖片 URL</label><input type="text" name="image_url">
+                <div class="row">
+                    <div class="column"><label>選項 (Zh)</label><input type="text" name="custom_options" placeholder="例: 大辣:+0, 小辣:+0"></div>
+                    <div class="column"><label>Options (EN)</label><input type="text" name="custom_options_en"></div>
+                </div>
+                <div class="row">
+                    <div class="column"><label>選項 (JP)</label><input type="text" name="custom_options_jp"></div>
+                    <div class="column"><label>選項 (KR)</label><input type="text" name="custom_options_kr"></div>
+                </div>
+                <button type="submit">新增產品</button>
+            </form>
+        </div>
+    </details>
     
-    <hr>
-    <table>
-        <thead><tr><th>ID</th><th>品名 / 排序</th><th>價</th><th>類/區</th><th>狀態</th><th>操作</th></tr></thead>
-        <tbody>{rows}</tbody>
-    </table>
+    <div style="margin-top:30px;text-align:right;">
+        <a href="/admin/reset_orders" onclick="return confirm('⚠️ 危險操作：確定要清空所有訂單嗎？')" style="color:red;font-size:0.8em;">⚠️ 清空所有訂單紀錄</a>
+    </div>
+
+    <script>
+        // 初始化拖拉功能
+        var el = document.getElementById('menu-list');
+        var sortable = Sortable.create(el, {{
+            handle: '.handle', // 限制只能抓取把手
+            animation: 150,
+            onEnd: function (evt) {{
+                // 當拖拉結束，顯示儲存按鈕
+                var btn = document.getElementById('save-btn');
+                btn.style.display = 'inline-block';
+                btn.innerText = '💾 排序已變更 (點擊儲存)';
+            }}
+        }});
+
+        // 儲存排序函數
+        function saveOrder() {{
+            var rows = document.querySelectorAll('#menu-list tr');
+            var order = [];
+            rows.forEach(function(row) {{
+                order.push(row.getAttribute('data-id'));
+            }});
+
+            var btn = document.getElementById('save-btn');
+            btn.innerText = '儲存中...';
+
+            fetch('/admin/reorder_products', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ order: order }})
+            }})
+            .then(response => response.json())
+            .then(data => {{
+                if(data.status === 'success') {{
+                    alert('✅ 排序儲存成功！');
+                    btn.style.display = 'none';
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 錯誤：' + data.message);
+                    btn.innerText = '重試';
+                }}
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                alert('網路錯誤，請稍後再試');
+            }});
+        }}
+    </script>
     </body>
     """
 
-# --- Excel 匯出路由 (含 sort_order) ---
+# --- Excel 匯出路由 ---
 @app.route('/admin/export_excel')
 def export_excel():
     try:
@@ -910,7 +981,7 @@ def export_excel():
                    name_en, name_jp, name_kr, 
                    custom_options_en, custom_options_jp, custom_options_kr, 
                    print_category, is_available, sort_order
-            FROM products ORDER BY category DESC, sort_order ASC, id ASC
+            FROM products ORDER BY sort_order ASC, id ASC
         """
         df = pd.read_sql(sql, conn)
         conn.close()
@@ -925,7 +996,7 @@ def export_excel():
     except Exception as e:
         return f"Export Error: {e}"
 
-# --- Excel 匯入路由 (含 sort_order) ---
+# --- Excel 匯入路由 ---
 @app.route('/admin/import_excel', methods=['POST'])
 def import_excel():
     if 'file' not in request.files: return "No file"
@@ -961,7 +1032,6 @@ def import_excel():
                 row.get('custom_options_kr'),
                 row.get('print_category', 'Noodle'),
                 True if str(row.get('is_available')).lower() in ['true', '1', 't', 'yes'] else False,
-                # 讀取 Excel 中的 sort_order，若無則預設 0
                 int(row.get('sort_order', 0)) if row.get('sort_order') != '' else 0
             ))
             
@@ -1069,7 +1139,6 @@ def edit_product(pid):
         <button type="submit">儲存</button> <a href="/admin" class="button button-outline">取消</a>
     </form></body>
     """
-
 # --- 防休眠 ---
 def keep_alive():
     while True:
