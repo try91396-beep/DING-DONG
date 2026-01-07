@@ -8,6 +8,7 @@ import io  # [新增] 處理檔案串流
 import pandas as pd  # [新增] 處理 Excel 資料
 from flask import Flask, request, redirect, url_for, jsonify, send_file # [新增] send_file 用於下載
 from datetime import datetime, date
+from datetime import timedelta # 時間戳記
 
 app = Flask(__name__)
 
@@ -406,45 +407,80 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </script></body></html>
     """
 
-# --- 4. 下單成功 ---
+# --- 4. 下單成功 (標準台灣時間修正版) ---
 @app.route('/order_success')
 def order_success():
     oid = request.args.get('order_id')
     lang = request.args.get('lang', 'zh')
-    t = load_translations().get(lang, load_translations()['zh'])
     
-    conn = get_db_connection(); cur = conn.cursor()
+    # 載入翻譯
+    translations = load_translations()
+    t = translations.get(lang, translations['zh'])
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT daily_seq, content_json, total_price, created_at FROM orders WHERE id=%s", (oid,))
     row = cur.fetchone()
     conn.close()
 
-    if not row: return "Order Not Found"
+    if not row:
+        return "Order Not Found"
+        
     seq, json_str, total, created_at = row
+    
+    # --- 時區修正：將伺服器 UTC 時間轉為台灣時間 (UTC+8) ---
+    # 如果資料庫存的是 UTC 時間，則加 8 小時
+    tw_time = created_at + timedelta(hours=8)
+    time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
+    
     items = json.loads(json_str) if json_str else []
     
-    # 格式化時間
-    time_str = created_at.strftime('%Y-%m-%d %H:%M:%S')
-
     items_html = ""
     for i in items:
-        opt = f" <small>({','.join(i['options'])})</small>" if i['options'] else ""
-        items_html += f"<div style='display:flex;justify-content:space-between;border-bottom:1px dashed #ddd;padding:5px;'><span>{i['name']} x{i['qty']}{opt}</span><span>${i['unit_price']*i['qty']}</span></div>"
+        # 根據語言決定顯示名稱 (優先找 name_zh)
+        d_name = i.get('name_zh', i['name']) if lang == 'zh' else i['name']
+        
+        # 處理選項顯示
+        ops = i.get('options_zh', i.get('options', []))
+        opt_str = f" <br><small style='color:#888;'>└ {','.join(ops)}</small>" if ops else ""
+        
+        items_html += f"""
+        <div style='display:flex; justify-content:space-between; border-bottom:1px dashed #ddd; padding:10px 0;'>
+            <span>
+                <b style="font-size:1.1em;">{d_name}</b> x{i['qty']}
+                {opt_str}
+            </span>
+            <span style="font-weight:bold;">${i['unit_price'] * i['qty']}</span>
+        </div>
+        """
 
     return f"""
-    <div style="max-width:400px;margin:20px auto;text-align:center;font-family:sans-serif;padding:20px;border:1px solid #ddd;border-radius:10px;">
-        <h1 style="color:#28a745;">✅ {t['order_success']}</h1>
-        <div style="font-size:3em;font-weight:bold;color:#e91e63;margin:10px;">#{seq:03d}</div>
-        <p style="color:#666;">{time_str}</p>
-        <p>{t['kitchen_prep']}</p>
-        <h2 style="background:#eee;padding:10px;">{t['pay_at_counter']}</h2>
+    <div style="max-width:450px; margin:30px auto; text-align:center; font-family:'Microsoft JhengHei', sans-serif; padding:25px; border:1px solid #eee; border-radius:15px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+        <div style="font-size:50px; margin-bottom:10px;">✅</div>
+        <h1 style="color:#28a745; margin:0;">{t['order_success']}</h1>
         
-        <div style="text-align:left;margin-top:20px;">
-            <h3>🧾 {t['order_details']}</h3>
-            {items_html}
-            <div style="text-align:right;font-weight:bold;font-size:1.2em;margin-top:10px;">{t['total']}: ${total}</div>
+        <div style="margin:20px 0; padding:15px; background:#fff5f8; border-radius:10px;">
+            <div style="font-size:0.9em; color:#e91e63; font-weight:bold; margin-bottom:5px;">取餐單號 / Order Number</div>
+            <div style="font-size:4em; font-weight:bold; color:#e91e63; line-height:1;">#{seq:03d}</div>
         </div>
+        
+        <p style="color:#666; font-size:0.9em;">時間: {time_str}</p>
+        
+        <div style="background:#fdf6e3; padding:15px; border-left:5px solid #ff9800; border-radius:5px; margin-bottom:20px; text-align:left;">
+            <p style="margin:0; font-weight:bold; color:#856404; font-size:1.2em;">⚠️ {t['pay_at_counter']}</p>
+            <p style="margin:5px 0 0 0; color:#856404;">{t['kitchen_prep']}</p>
+        </div>
+        
+        <div style="text-align:left; margin-top:20px;">
+            <h3 style="border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:10px;">🧾 {t['order_details']}</h3>
+            {items_html}
+            <div style="text-align:right; font-weight:bold; font-size:1.4em; margin-top:15px; color:#d32f2f;">
+                {t['total']}: ${total}
+            </div>
+        </div>
+        
         <br>
-        <a href="/" style="display:block;padding:10px;background:#007bff;color:white;text-decoration:none;border-radius:5px;">Back to Home</a>
+        <a href="/" style="display:block; padding:15px; background:#007bff; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:1.1em;">回首頁 / Back to Menu</a>
     </div>
     """
 
