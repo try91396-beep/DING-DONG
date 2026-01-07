@@ -851,6 +851,9 @@ def admin_panel():
                  <button id="save-btn" onclick="saveOrder()" class="button" style="background:#9c27b0;border-color:#9c27b0;display:none;">💾 儲存排序</button>
                  <a href="/admin/export_excel" class="button button-outline">📥 匯出 Excel</a>
             </div>
+            <div style="margin-top:30px;text-align:right;">
+                <a href="/admin/reset_orders" onclick="return confirm('⚠️ 危險操作：確定要清空所有訂單嗎？')" style="color:red;font-size:0.8em;">⚠️ 清空所有訂單紀錄</a>
+            </div>
         </div>
         <small>💡 提示：按住左側 <b>☰</b> 符號即可上下拖拉排序，下架商品在點餐端會顯示「完售」。</small>
     </div>
@@ -860,9 +863,7 @@ def admin_panel():
         <tbody id="menu-list">{rows}</tbody>
     </table>
     
-    <div style="margin-top:30px;text-align:right;">
-        <a href="/admin/reset_orders" onclick="return confirm('⚠️ 危險操作：確定要清空所有訂單嗎？')" style="color:red;font-size:0.8em;">⚠️ 清空所有訂單紀錄</a>
-    </div>
+    
 
     <script>
         var el = document.getElementById('menu-list');
