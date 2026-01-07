@@ -4,11 +4,10 @@ import json
 import threading
 import urllib.request
 import time  
-import io  # [新增] 處理檔案串流
-import pandas as pd  # [新增] 處理 Excel 資料
-from flask import Flask, request, redirect, url_for, jsonify, send_file # [新增] send_file 用於下載
-from datetime import datetime, date
-from datetime import timedelta # 時間戳記
+import io  # 處理檔案串流
+import pandas as pd  # 處理 Excel 資料
+from flask import Flask, request, redirect, url_for, jsonify, send_file
+from datetime import datetime, date, timedelta
 
 app = Flask(__name__)
 
@@ -28,7 +27,7 @@ def load_translations():
             "modal_unit_price": "單價", "modal_add_cart": "加入購物車", "modal_cancel": "取消", 
             "custom_options": "客製化選項", "order_success": "下單成功！", "kitchen_prep": "廚房備餐中", 
             "pay_at_counter": "請至櫃檯結帳", "order_details": "訂單明細", 
-            "print_receipt_opt": "列印收據", "daily_seq_prefix": "單號", "ai_note": "翻譯由 AI 提供"
+            "print_receipt_opt": "列印收據", "daily_seq_prefix": "單號", "ai_note": "翻譯由 AI 提供", "table": "桌號"
         },
         "en": {
             "title": "Order", "welcome": "Welcome", "table_placeholder": "Table No.",
@@ -38,7 +37,7 @@ def load_translations():
             "modal_unit_price": "Price", "modal_add_cart": "Add to Cart", "modal_cancel": "Cancel",
             "custom_options": "Options", "order_success": "Success!", "kitchen_prep": "Preparing...",
             "pay_at_counter": "Please pay at counter", "order_details": "Order Details",
-            "print_receipt_opt": "Print Receipt", "daily_seq_prefix": "No.", "ai_note": "Translated by AI"
+            "print_receipt_opt": "Print Receipt", "daily_seq_prefix": "No.", "ai_note": "Translated by AI", "table": "Table"
         },
         "jp": {
             "title": "注文", "welcome": "ようこそ", "table_placeholder": "卓番",
@@ -48,7 +47,7 @@ def load_translations():
             "modal_unit_price": "単価", "modal_add_cart": "カートへ", "modal_cancel": "キャンセル",
             "custom_options": "オプション", "order_success": "送信完了", "kitchen_prep": "調理中...",
             "pay_at_counter": "レジでお会計ください", "order_details": "注文詳細",
-            "print_receipt_opt": "レシート印刷", "daily_seq_prefix": "番号", "ai_note": "AIによる翻訳"
+            "print_receipt_opt": "レシート印刷", "daily_seq_prefix": "番号", "ai_note": "AIによる翻訳", "table": "卓番"
         },
         "kr": {
             "title": "주문", "welcome": "환영합니다", "table_placeholder": "테이블 번호",
@@ -58,7 +57,7 @@ def load_translations():
             "modal_unit_price": "단가", "modal_add_cart": "장바구니 담기", "modal_cancel": "취소",
             "custom_options": "옵션", "order_success": "주문 성공!", "kitchen_prep": "준비 중...",
             "pay_at_counter": "카운터에서 결제해주세요", "order_details": "주문 내역",
-            "print_receipt_opt": "영수증 출력", "daily_seq_prefix": "번호", "ai_note": "AI 번역"
+            "print_receipt_opt": "영수증 출력", "daily_seq_prefix": "번호", "ai_note": "AI 번역", "table": "테이블"
         }
     }
 
@@ -98,31 +97,20 @@ def init_db():
                 lang VARCHAR(10) DEFAULT 'zh'
             );
         ''')
-        # 補欄位 (確保所有欄位存在)
+        # 補欄位檢查
         alters = [
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE;",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS name_en VARCHAR(100);",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS name_jp VARCHAR(100);",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS name_kr VARCHAR(100);",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_options_en TEXT;",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_options_jp TEXT;",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_options_kr TEXT;",
-            "ALTER TABLE products ADD COLUMN IF NOT EXISTS print_category VARCHAR(20) DEFAULT 'Noodle';",
-            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS daily_seq INTEGER DEFAULT 0;",
-            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS content_json TEXT;",
-            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS need_receipt BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS lang VARCHAR(10) DEFAULT 'zh';"
         ]
         for cmd in alters:
             try: cur.execute(cmd)
             except: pass
-            
-        return "資料庫結構檢查完成。<a href='/'>回首頁</a> | <a href='/admin'>回後台</a>"
+        return "資料庫結構檢查完成。<a href='/'>回首頁</a>"
     except Exception as e:
         return f"DB Error: {e}"
     finally:
         cur.close(); conn.close()
+
 
 # --- 2. 首頁與語言選擇 ---
 @app.route('/')
@@ -407,84 +395,51 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </script></body></html>
     """
 
-# --- 4. 下單成功 (標準台灣時間修正版) ---
+# --- 4. 下單成功 (台灣時間版) ---
 @app.route('/order_success')
 def order_success():
     oid = request.args.get('order_id')
     lang = request.args.get('lang', 'zh')
+    t = load_translations().get(lang, load_translations()['zh'])
     
-    # 載入翻譯
-    translations = load_translations()
-    t = translations.get(lang, translations['zh'])
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT daily_seq, content_json, total_price, created_at FROM orders WHERE id=%s", (oid,))
     row = cur.fetchone()
     conn.close()
 
-    if not row:
-        return "Order Not Found"
-        
+    if not row: return "Order Not Found"
     seq, json_str, total, created_at = row
     
-    # --- 時區修正：將伺服器 UTC 時間轉為台灣時間 (UTC+8) ---
-    # 如果資料庫存的是 UTC 時間，則加 8 小時
+    # 轉換台灣時間 (UTC+8)
     tw_time = created_at + timedelta(hours=8)
     time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
-    
+
     items = json.loads(json_str) if json_str else []
-    
     items_html = ""
     for i in items:
-        # 根據語言決定顯示名稱 (優先找 name_zh)
-        d_name = i.get('name_zh', i['name']) if lang == 'zh' else i['name']
-        
-        # 處理選項顯示
-        ops = i.get('options_zh', i.get('options', []))
-        opt_str = f" <br><small style='color:#888;'>└ {','.join(ops)}</small>" if ops else ""
-        
-        items_html += f"""
-        <div style='display:flex; justify-content:space-between; border-bottom:1px dashed #ddd; padding:10px 0;'>
-            <span>
-                <b style="font-size:1.1em;">{d_name}</b> x{i['qty']}
-                {opt_str}
-            </span>
-            <span style="font-weight:bold;">${i['unit_price'] * i['qty']}</span>
-        </div>
-        """
+        # 顯示對應語言名稱
+        display_name = i.get(f'name_{lang}', i.get('name'))
+        opt = f" <small>({','.join(i['options'])})</small>" if i['options'] else ""
+        items_html += f"<div style='display:flex;justify-content:space-between;border-bottom:1px dashed #ddd;padding:5px;'><span>{display_name} x{i['qty']}{opt}</span><span>${i['unit_price']*i['qty']}</span></div>"
 
     return f"""
-    <div style="max-width:450px; margin:30px auto; text-align:center; font-family:'Microsoft JhengHei', sans-serif; padding:25px; border:1px solid #eee; border-radius:15px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
-        <div style="font-size:50px; margin-bottom:10px;">✅</div>
-        <h1 style="color:#28a745; margin:0;">{t['order_success']}</h1>
-        
-        <div style="margin:20px 0; padding:15px; background:#fff5f8; border-radius:10px;">
-            <div style="font-size:0.9em; color:#e91e63; font-weight:bold; margin-bottom:5px;">取餐單號 / Order Number</div>
-            <div style="font-size:4em; font-weight:bold; color:#e91e63; line-height:1;">#{seq:03d}</div>
-        </div>
-        
-        <p style="color:#666; font-size:0.9em;">時間: {time_str}</p>
-        
-        <div style="background:#fdf6e3; padding:15px; border-left:5px solid #ff9800; border-radius:5px; margin-bottom:20px; text-align:left;">
-            <p style="margin:0; font-weight:bold; color:#856404; font-size:1.2em;">⚠️ {t['pay_at_counter']}</p>
-            <p style="margin:5px 0 0 0; color:#856404;">{t['kitchen_prep']}</p>
-        </div>
-        
-        <div style="text-align:left; margin-top:20px;">
-            <h3 style="border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:10px;">🧾 {t['order_details']}</h3>
+    <div style="max-width:400px;margin:20px auto;text-align:center;font-family:sans-serif;padding:20px;border:1px solid #ddd;border-radius:10px;">
+        <h1 style="color:#28a745;">✅ {t['order_success']}</h1>
+        <div style="font-size:3em;font-weight:bold;color:#e91e63;margin:10px;">#{seq:03d}</div>
+        <p style="color:#666;">{time_str}</p>
+        <p>{t['kitchen_prep']}</p>
+        <h2 style="background:#eee;padding:10px;">{t['pay_at_counter']}</h2>
+        <div style="text-align:left;margin-top:20px;">
+            <h3>🧾 {t['order_details']}</h3>
             {items_html}
-            <div style="text-align:right; font-weight:bold; font-size:1.4em; margin-top:15px; color:#d32f2f;">
-                {t['total']}: ${total}
-            </div>
+            <div style="text-align:right;font-weight:bold;font-size:1.2em;margin-top:10px;">{t['total']}: ${total}</div>
         </div>
-        
         <br>
-        <a href="/" style="display:block; padding:15px; background:#007bff; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:1.1em;">回首頁 / Back to Menu</a>
+        <a href="/" style="display:block;padding:10px;background:#007bff;color:white;text-decoration:none;border-radius:5px;">Back to Home</a>
     </div>
     """
 
-# --- 5. 廚房看板 - [頁面] 渲染主介面 ---
+# --- 5. 廚房看板 ---
 @app.route('/kitchen')
 def kitchen_panel():
     return """
@@ -495,128 +450,61 @@ def kitchen_panel():
         <title>👨‍🍳 廚房出單看板</title>
         <style>
             body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 0; margin: 0; }
-            .header-container { 
-                display: flex; justify-content: space-between; align-items: center; 
-                padding: 15px 25px; background: #222; border-bottom: 3px solid #ff9800; 
-            }
+            .header-container { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; background: #222; border-bottom: 3px solid #ff9800; }
             h1 { color: #ff9800; margin: 0; font-size: 28px; }
-            .grid { 
-                display: grid; 
-                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
-                gap: 20px; padding: 25px; 
-            }
-            .card { 
-                background: #2d2d2d; border-radius: 12px; padding: 20px; 
-                box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; 
-                position: relative; transition: transform 0.2s;
-            }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; padding: 25px; }
+            .card { background: #2d2d2d; border-radius: 12px; padding: 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; position: relative; }
             .card.completed { border-top-color: #28a745; opacity: 0.6; }
             .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
-            
             .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; font-size: 1.1em; }
-            .items { 
-                background: #383838; padding: 18px; border-radius: 8px; 
-                margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444;
-            }
-            .btn { 
-                display: inline-block; padding: 12px 18px; border-radius: 8px; 
-                text-decoration: none; color: white; margin-right: 8px;
-                font-size: 1em; border: none; cursor: pointer; font-weight: bold;
-            }
-            .btn-report { background: #6f42c1; }
-            .btn-complete { background: #28a745; }
-            .btn-print { background: #17a2b8; }
-            .btn-void { background: #822; }
-            
-            /* 權限提示條 */
-            #audio-banner { 
-                background: #d32f2f; color: white; text-align: center; 
-                padding: 10px; font-weight: bold; cursor: pointer;
-            }
+            .items { background: #383838; padding: 18px; border-radius: 8px; margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444; }
+            .btn { display: inline-block; padding: 10px 15px; border-radius: 8px; text-decoration: none; color: white; margin-right: 5px; font-weight: bold; cursor: pointer; border:none; }
+            .btn-complete { background: #28a745; } .btn-print { background: #17a2b8; } .btn-void { background: #822; } .btn-edit { background: #ff9800; }
+            #audio-banner { background: #d32f2f; color: white; text-align: center; padding: 10px; font-weight: bold; cursor: pointer; }
         </style>
     </head>
     <body>
         <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提示功能」</div>
-        
         <div class="header-container">
             <h1>👨‍🍳 廚房出單看板</h1>
-            <div>
-                <a href="/kitchen/report" class="btn btn-report">📊 當日營收報表</a>
-            </div>
+            <a href="/kitchen/report" style="color:white; text-decoration:none; background:#6f42c1; padding:10px; border-radius:5px;">📊 當日營收報表</a>
         </div>
-
         <div id="order-grid" class="grid">正在同步訂單數據...</div>
-
         <audio id="notice-sound" preload="auto">
             <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
         </audio>
-
         <script>
-            let lastMaxSeq = 0;
-            let isFirstLoad = true;
-            let audioUnlocked = false;
-
-            function enableAudio() {
-                audioUnlocked = true;
-                document.getElementById('audio-banner').style.display = 'none';
-                // 播放一次靜音音效解鎖瀏覽器限制
-                const audio = document.getElementById('notice-sound');
-                audio.play().then(() => {
-                    audio.pause();
-                    audio.currentTime = 0;
-                });
-            }
-
+            let lastMaxSeq = 0; let isFirstLoad = true; let audioUnlocked = false;
+            function enableAudio() { audioUnlocked = true; document.getElementById('audio-banner').style.display = 'none'; document.getElementById('notice-sound').play().then(()=>document.getElementById('notice-sound').pause()); }
             function refreshOrders() {
                 fetch('/check_new_orders?current_seq=' + lastMaxSeq)
                 .then(res => res.json())
                 .then(data => {
-                    if (data.html) {
-                        document.getElementById('order-grid').innerHTML = data.html;
+                    if (data.html) document.getElementById('order-grid').innerHTML = data.html;
+                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0 && audioUnlocked) {
+                        const s = document.getElementById('notice-sound'); s.currentTime = 0; s.play();
                     }
-                    
-                    // 判斷是否有新訂單（排除第一次載入）
-                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
-                        if (audioUnlocked) {
-                            const audio = document.getElementById('notice-sound');
-                            audio.currentTime = 0;
-                            audio.play().catch(e => console.log("播放失敗"));
-                        }
-                    }
-                    
-                    lastMaxSeq = data.max_seq;
-                    isFirstLoad = false;
-                })
-                .catch(err => console.error("連線錯誤:", err));
+                    lastMaxSeq = data.max_seq; isFirstLoad = false;
+                });
             }
-
-            // 每 5 秒自動刷新的 API
-            setInterval(refreshOrders, 5000);
-            refreshOrders();
+            setInterval(refreshOrders, 5000); refreshOrders();
         </script>
     </body>
     </html>
     """
 
-# --- 5. 廚房看板 - [API] 數據供應來源 (已含台灣時區修正) ---
 @app.route('/check_new_orders')
 def check_new_orders():
-    from datetime import timedelta
     current_max = request.args.get('current_seq', 0, type=int)
     conn = get_db_connection(); cur = conn.cursor()
-    
-    # 抓取近 18 小時訂單
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
-        FROM orders 
-        WHERE created_at > (NOW() - INTERVAL '18 hours') 
+        FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours') 
         ORDER BY CASE WHEN status = 'Pending' THEN 0 ELSE 1 END, daily_seq DESC
     """)
     orders = cur.fetchall()
-    
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
     max_seq_val = cur.fetchone()[0] or 0
-    
     new_order_ids = []
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
@@ -624,153 +512,74 @@ def check_new_orders():
     conn.close()
 
     html_content = ""
-    if not orders:
-        html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>目前無新訂單</div>"
-
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
-        cls = status.lower()
-        seq = f"{seq_num:03d}"
-        
-        # 轉換為台灣時間 (UTC+8)
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
-        
         items_html = ""
-        try:
-            if c_json:
-                cart = json.loads(c_json)
-                for item in cart:
-                    n = item.get('name_zh', item.get('name', '商品'))
-                    ops = item.get('options_zh', item.get('options', []))
-                    ops_str = f"<br><small style='color:#aaa'>└ {', '.join(ops)}</small>" if ops else ""
-                    items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span> {ops_str}</div>"
-            else:
-                items_html = raw_items.replace("+", "<br>● ")
-        except:
-            items_html = f"解析錯誤: {raw_items}"
-
+        if c_json:
+            cart = json.loads(c_json)
+            for item in cart:
+                n = item.get('name_zh', item.get('name', '商品'))
+                items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span></div>"
+        
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
         btns = ""
-        if status == 'Pending':
-            btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
-        if status != 'Cancelled':
-            btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
-            btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定作廢？\")'>🗑️ 作廢</a>"
+        if status == 'Pending': btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
+        btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
-        <div class="card {cls}">
-            <div class="tag" style="color:{'#28a745' if status=='Completed' else '#ff9800'}">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">{time_str} (TPE)</div>
-            <div style="margin: 10px 0;">
-                <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
-                <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
-            </div>
+        <div class="card {status.lower()}">
+            <div class="tag">{tag}</div>
+            <div style="font-size:0.9em; color:#888;">{time_str} ({lang})</div>
+            <div style="margin: 10px 0;"><span style="font-size:2.5em; color:#ff9800; font-weight:bold;">#{seq_num:03d}</span> 桌: {table}</div>
             <div class="items">{items_html}</div>
-            <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
+            <div style="border-top:1px solid #444; padding-top:10px;">{btns}</div>
         </div>
         """
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 
-    
-# --- 6. 日結報表 ---
-@app.route('/kitchen/report')
-def daily_report():
-    from datetime import date
+# --- 6. 多語系列印收據 (含中文備註) ---
+@app.route('/print_order/<int:oid>')
+def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
-    
-    # 1. 統計金額與單量 (僅限當天)
-    cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= CURRENT_DATE AND status != 'Cancelled'")
-    valid_count, valid_total = cur.fetchone()
-    cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= CURRENT_DATE AND status = 'Cancelled'")
-    void_count, void_total = cur.fetchone()
-    
-    # 2. 統計品項數量
-    cur.execute("SELECT content_json FROM orders WHERE created_at >= CURRENT_DATE AND status != 'Cancelled'")
-    valid_rows = cur.fetchall()
-    cur.execute("SELECT content_json FROM orders WHERE created_at >= CURRENT_DATE AND status = 'Cancelled'")
-    void_rows = cur.fetchall()
+    cur.execute("SELECT table_number, content_json, total_price, created_at, daily_seq, lang FROM orders WHERE id=%s", (oid,))
+    row = cur.fetchone()
     conn.close()
+    if not row: return "Order Not Found"
+    table, c_json, total, created, seq, order_lang = row
+    
+    t = load_translations().get(order_lang, load_translations()['zh'])
+    tw_time = created + timedelta(hours=8)
+    time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
 
-    def agg_items(rows):
-        stats = {}
-        for r in rows:
-            if not r[0]: continue
-            try:
-                items = json.loads(r[0])
-                for i in items:
-                    name = i.get('name_zh', i.get('name', '未知'))
-                    qty = int(i.get('qty', 0))
-                    stats[name] = stats.get(name, 0) + qty
-            except: pass
-        return stats
-
-    valid_stats = agg_items(valid_rows)
-    void_stats = agg_items(void_rows)
-
-    def render_table(stats_dict):
-        if not stats_dict: return "<p style='text-align:center; color:#888;'>無資料</p>"
-        h = "<table style='width:100%; border-collapse:collapse; font-size:14px; margin-top:5px;'>"
-        h += "<tr style='border-bottom:1px solid #000;'><th style='text-align:left;'>品項</th><th style='text-align:right;'>數量</th></tr>"
-        for name, qty in sorted(stats_dict.items(), key=lambda x: x[1], reverse=True):
-            h += f"<tr><td style='padding:4px 0;'>{name}</td><td style='text-align:right;'>{qty}</td></tr>"
-        h += "</table>"
-        return h
-
-    today_str = date.today().strftime('%Y-%m-%d')
+    items = json.loads(c_json) if c_json else []
+    items_html = ""
+    for i in items:
+        # 抓取下單時的語系名稱，若非中文則附註中文
+        name_in_lang = i.get(f'name_{order_lang}', i.get('name'))
+        zh_note = f"<br><small>(中: {i.get('name_zh')})</small>" if order_lang != 'zh' else ""
+        
+        items_html += f"""
+        <tr style="border-bottom:1px dashed #ccc;">
+            <td style="padding:5px 0;">{name_in_lang}{zh_note}</td>
+            <td style="text-align:right;">x{i['qty']}</td>
+            <td style="text-align:right;">${i['unit_price']*i['qty']}</td>
+        </tr>"""
 
     return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>本日結帳單_{today_str}</title>
-        <style>
-            body {{ font-family: sans-serif; background: #eee; padding: 20px; display: flex; flex-direction: column; align-items: center; }}
-            .ticket {{ background: white; width: 58mm; padding: 15px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
-            h2, h3 {{ text-align: center; margin: 10px 0; }}
-            hr {{ border: 0; border-top: 1px dashed #000; margin: 10px 0; }}
-            .summary-box {{ margin-bottom: 15px; font-size: 15px; }}
-            .summary-box b {{ font-size: 18px; color: green; }}
-            .no-print {{ margin-top: 20px; display: flex; gap: 10px; }}
-            .btn {{ padding: 10px 20px; border-radius: 5px; text-decoration: none; color: white; cursor: pointer; border: none; }}
-            @media print {{ 
-                .no-print {{ display: none; }} 
-                body {{ background: white; padding: 0; }} 
-                .ticket {{ box-shadow: none; border: none; width: 100%; }} 
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="ticket">
-            <h2>日結報表</h2>
-            <p style="text-align:center; font-size:12px;">日期: {today_str}</p>
-            <hr>
-            <div class="summary-box">
-                <b>✅ 有效營收</b><br>
-                單量: {valid_count or 0} 筆<br>
-                總額: <b>${valid_total or 0}</b>
-            </div>
-            {render_table(valid_stats)}
-            
-            <hr>
-            <div class="summary-box" style="color:#822;">
-                <b>❌ 作廢統計</b><br>
-                單量: {void_count or 0} 筆<br>
-                總額: ${void_total or 0}
-            </div>
-            {render_table(void_stats)}
-            <hr>
-            <p style="text-align:center; font-size:10px; color:#888;">列印時間: {today_str}</p>
+    <html><body onload="window.print()" style="width:58mm; font-family:sans-serif; font-size:13px;">
+        <div style="text-align:center;">
+            <h2>#{seq:03d}</h2>
+            <p>{t['table']}: {table}</p>
         </div>
-
-        <div class="no-print">
-            <button onclick="window.print()" class="btn" style="background:#28a745;">🖨️ 列印報表</button>
-            <a href="/kitchen" class="btn" style="background:#007bff;">🔙 回廚房看板</a>
-        </div>
-    </body>
-    </html>
+        <p style="font-size:11px;">{time_str}</p>
+        <hr>
+        <table style="width:100%; border-collapse:collapse;">{items_html}</table>
+        <hr>
+        <div style="text-align:right; font-weight:bold; font-size:15px;">{t['total']}: ${total}</div>
+    </body></html>
     """
 
     
