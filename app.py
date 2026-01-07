@@ -563,10 +563,12 @@ def kitchen_panel():
 # --- 5. 廚房看板 - [API] 數據供應來源 ---
 @app.route('/check_new_orders')
 def check_new_orders():
+    from datetime import timedelta  # 確保有匯入此模組
     current_max = request.args.get('current_seq', 0, type=int)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     
-    # 抓取近 18 小時訂單，確保跨午夜時段可見
+    # 抓取近 18 小時訂單 (資料庫判斷仍用系統時間)
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -582,17 +584,22 @@ def check_new_orders():
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
+
     conn.close()
 
     html_content = ""
     if not orders:
-        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無訂單</div>"
+        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無新訂單</div>"
 
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
         cls = status.lower()
         seq = f"{seq_num:03d}"
-        time_str = created.strftime('%H:%M:%S')
+        
+        # --- [關鍵修改：轉換為台灣時間] ---
+        tw_time = created + timedelta(hours=8)
+        time_str = tw_time.strftime('%H:%M:%S')
+        # -------------------------------
         
         items_html = ""
         try:
@@ -608,28 +615,38 @@ def check_new_orders():
         except:
             items_html = f"資料解析錯誤: {raw_items}"
 
-        tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 待處理"
-        
+        tag = ""
+        if status == 'Cancelled': tag = "<span style='color:#dc3545;'>已作廢</span>"
+        elif status == 'Completed': tag = "<span style='color:#28a745;'>已完成</span>"
+        else: tag = "<span style='color:#ff9800;'>● 待處理</span>"
+
         btns = ""
         if status == 'Pending':
             btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
+        
         if status != 'Cancelled':
             btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
             btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定要作廢此訂單嗎？\")'>🗑️ 作廢</a>"
+        
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
         <div class="card {cls}">
             <div class="tag">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">{time_str}</div>
+            <div style="font-size:0.9em; color:#888;">台灣時間: {time_str}</div>
             <div style="margin: 10px 0;">
                 <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
                 <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
             </div>
-            <div class="items">{items_html}</div>
-            <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
+            <div class="items">
+                {items_html}
+            </div>
+            <div style="border-top: 1px solid #444; padding-top: 15px;">
+                {btns}
+            </div>
         </div>
         """
+    
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 
     
