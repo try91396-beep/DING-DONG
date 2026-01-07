@@ -448,13 +448,118 @@ def order_success():
     </div>
     """
 
-# --- 5. 廚房看板 (修正版：強化 JSON 穩定度) ---
+# --- 5. 廚房看板 - [頁面] 渲染主介面 ---
+@app.route('/kitchen')
+def kitchen_panel():
+    return """
+    <!DOCTYPE html>
+    <html lang="zh-TW">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>廚房出單看板</title>
+        <style>
+            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 20px; margin: 0; }
+            h1 { text-align: center; color: #ff9800; }
+            .grid { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
+                gap: 20px; 
+                padding: 20px;
+            }
+            .card { 
+                background: #2d2d2d; 
+                border-radius: 12px; 
+                padding: 20px; 
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                border-top: 8px solid #ff9800;
+                position: relative;
+            }
+            .card.completed { border-top-color: #28a745; opacity: 0.7; }
+            .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
+            
+            .tag { position: absolute; top: 10px; right: 10px; font-weight: bold; }
+            .items { 
+                background: #383838; 
+                padding: 15px; 
+                border-radius: 8px; 
+                margin: 15px 0; 
+                font-size: 1.2em; 
+                min-height: 100px;
+            }
+            .btn { 
+                display: inline-block; 
+                padding: 10px 15px; 
+                border-radius: 6px; 
+                text-decoration: none; 
+                color: white; 
+                margin-right: 5px;
+                font-size: 0.9em;
+                border: none;
+                cursor: pointer;
+            }
+            .btn-complete { background: #28a745; font-weight: bold; }
+            .btn-edit { background: #555; }
+            .btn-print { background: #17a2b8; }
+            .btn-void { background: #822; }
+            
+            /* 新訂單閃爍效果 */
+            .pending { animation: pulse 2s infinite; }
+            @keyframes pulse {
+                0% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.4); }
+                70% { box-shadow: 0 0 0 15px rgba(255, 152, 0, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
+            }
+        </style>
+    </head>
+    <body>
+        <h1>👨‍🍳 廚房出單看板</h1>
+        <div id="order-grid" class="grid">正在連線資料庫...</div>
+
+        <script>
+            let lastMaxSeq = 0;
+            let isFirstLoad = true;
+
+            function refreshOrders() {
+                fetch('/check_new_orders?current_seq=' + lastMaxSeq)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.html) {
+                        document.getElementById('order-grid').innerHTML = data.html;
+                    }
+                    
+                    // 如果有新訂單且不是第一次載入，播放提示音
+                    if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                        playNotification();
+                    }
+                    
+                    lastMaxSeq = data.max_seq;
+                    isFirstLoad = false;
+                })
+                .catch(err => console.error("看板更新失敗:", err));
+            }
+
+            function playNotification() {
+                const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+                audio.play().catch(e => console.log("等待用戶交互以播放聲音"));
+            }
+
+            // 每 5 秒檢查一次新訂單
+            setInterval(refreshOrders, 5000);
+            refreshOrders();
+        </script>
+    </body>
+    </html>
+    """
+
+# --- 5. 廚房看板 - [API] 數據供應來源 ---
 @app.route('/check_new_orders')
 def check_new_orders():
     current_max = request.args.get('current_seq', 0, type=int)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     
-    # 使用明確欄位名稱，避免索引混亂
+    # 抓取近 18 小時訂單
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -464,7 +569,7 @@ def check_new_orders():
     orders = cur.fetchall()
     
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
-    max_seq = cur.fetchone()[0] or 0
+    max_seq_val = cur.fetchone()[0] or 0
     
     new_order_ids = []
     if current_max > 0:
@@ -475,7 +580,7 @@ def check_new_orders():
 
     html_content = ""
     if not orders:
-        html_content = "<div style='text-align:center;padding:50px;color:#888;'>目前暫無近 18 小時內的訂單</div>"
+        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無新訂單</div>"
 
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
@@ -488,49 +593,48 @@ def check_new_orders():
             if c_json:
                 cart = json.loads(c_json)
                 for item in cart:
-                    n = item.get('name_zh', item.get('name', '未知商品'))
+                    n = item.get('name_zh', item.get('name', '商品'))
                     ops = item.get('options_zh', item.get('options', []))
-                    ops_str = f"<br><small style='color:#bbb'>└ {','.join(ops)}</small>" if ops else ""
-                    items_html += f"<div style='margin-bottom:8px;'>● {n} x{item['qty']} {ops_str}</div>"
+                    ops_str = f"<br><small style='color:#aaa'>└ {', '.join(ops)}</small>" if ops else ""
+                    items_html += f"<div style='margin-bottom:10px;'>● {n} <span style='color:#ff9800'>x{item['qty']}</span> {ops_str}</div>"
             else:
                 items_html = raw_items.replace("+", "<br>● ")
-        except Exception:
-            items_html = f"解析錯誤: {raw_items}"
+        except:
+            items_html = f"資料解析錯誤: {raw_items}"
 
         tag = ""
-        if status == 'Cancelled': tag = "<span style='background:#dc3545;color:white;padding:2px 5px;border-radius:3px;'>已作廢</span>"
-        elif status == 'Completed': tag = "<span style='background:#28a745;color:white;padding:2px 5px;border-radius:3px;'>已完成</span>"
-        else: tag = "<span style='background:#ff9800;color:black;padding:2px 5px;border-radius:3px;'>新訂單</span>"
+        if status == 'Cancelled': tag = "<span style='color:#dc3545;'>已作廢</span>"
+        elif status == 'Completed': tag = "<span style='color:#28a745;'>已完成</span>"
+        else: tag = "<span style='color:#ff9800;'>● 待處理</span>"
 
         btns = ""
         if status == 'Pending':
-            btns += f"<a href='/kitchen/complete/{oid}' class='btn' style='background:#28a745;font-weight:bold;padding:10px 20px;'>✔️ 完成</a>"
+            btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
         
         if status != 'Cancelled':
-            btns += f"""
-            <a href='/menu?edit_oid={oid}' target='_blank' class='btn' style='background:#555;color:white;'>✏️ 修改</a>
-            <a href='/order/cancel/{oid}' class='btn' style='background:#882222' onclick=\"return confirm('確定作廢？')\">🗑️ 作廢</a>
-            """
-        # [關鍵] 確保列印按鈕指向正確的 ID
-        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn' style='background:#17a2b8'>🖨️ 列印</a>"
+            btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
+            btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定要作廢此訂單嗎？\")'>🗑️ 作廢</a>"
+        
+        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
         <div class="card {cls}">
             <div class="tag">{tag}</div>
-            <div style="font-size:0.8em;color:#aaa;margin-bottom:5px;">時間: {time_str}</div>
-            <div style="margin-bottom:10px;">
-                <span style="font-size:2em;color:#ff9800;font-weight:bold;margin-right:15px;">#{seq}</span> 
-                <span style="font-size:1.5em;background:#eee;color:black;padding:2px 10px;border-radius:5px;">桌號: {table}</span>
+            <div style="font-size:0.9em; color:#888;">{time_str}</div>
+            <div style="margin: 10px 0;">
+                <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
+                <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
             </div>
-            <div class="items" style="margin:15px 0;font-size:1.3em;line-height:1.4;background:#444;padding:10px;border-radius:5px;">
+            <div class="items">
                 {items_html}
             </div>
-            <div style="border-top:1px solid #555;padding-top:10px;">{btns}</div>
+            <div style="border-top: 1px solid #444; padding-top: 15px;">
+                {btns}
+            </div>
         </div>
         """
     
-    return jsonify({'html': html_content, 'max_seq': max_seq, 'new_ids': new_order_ids})
-
+    return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 # --- 6. 日結報表 ---
 @app.route('/kitchen/report')
 def daily_report():
