@@ -655,6 +655,7 @@ def check_new_orders():
         if status == 'Pending':
             btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
         if status != 'Cancelled':
+            btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
             btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定作廢？\")'>🗑️ 作廢</a>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
