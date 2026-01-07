@@ -448,14 +448,13 @@ def order_success():
     </div>
     """
 
-# --- 5. 廚房看板 (增強修正版：解決時區與顯示問題) ---
+# --- 5. 廚房看板 (修正版：強化 JSON 穩定度) ---
 @app.route('/check_new_orders')
 def check_new_orders():
     current_max = request.args.get('current_seq', 0, type=int)
     conn = get_db_connection(); cur = conn.cursor()
     
-    # [修正點 1] 使用時區偏移來抓取 24 小時內的訂單，避免 CURRENT_DATE 造成的時區落差
-    # 這裡改成抓取過去 18 小時到現在的所有訂單，確保跨午夜也能看到
+    # 使用明確欄位名稱，避免索引混亂
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -465,43 +464,38 @@ def check_new_orders():
     orders = cur.fetchall()
     
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
-    max_seq = cur.fetchone()[0]
-    max_seq = max_seq if max_seq else 0
+    max_seq = cur.fetchone()[0] or 0
     
     new_order_ids = []
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
-        new_rows = cur.fetchall()
-        new_order_ids = [r[0] for r in new_rows]
+        new_order_ids = [r[0] for r in cur.fetchall()]
 
     conn.close()
 
     html_content = ""
-    # 如果沒訂單，顯示提示，方便 debug
     if not orders:
         html_content = "<div style='text-align:center;padding:50px;color:#888;'>目前暫無近 18 小時內的訂單</div>"
 
     for o in orders:
-        status = o[4]
+        oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
         cls = status.lower()
-        seq = f"{o[7]:03d}"
-        # 格式化顯示時間
-        time_str = o[5].strftime('%H:%M:%S')
+        seq = f"{seq_num:03d}"
+        time_str = created.strftime('%H:%M:%S')
         
-        # [修正點 2] 強化 JSON 解析邏輯
         items_html = ""
         try:
-            if o[8]: # content_json
-                cart = json.loads(o[8])
+            if c_json:
+                cart = json.loads(c_json)
                 for item in cart:
                     n = item.get('name_zh', item.get('name', '未知商品'))
                     ops = item.get('options_zh', item.get('options', []))
                     ops_str = f"<br><small style='color:#bbb'>└ {','.join(ops)}</small>" if ops else ""
                     items_html += f"<div style='margin-bottom:8px;'>● {n} x{item['qty']} {ops_str}</div>"
             else:
-                items_html = o[2].replace("+", "<br>● ") # 備援顯示
-        except Exception as e:
-            items_html = f"解析錯誤: {o[2]}"
+                items_html = raw_items.replace("+", "<br>● ")
+        except Exception:
+            items_html = f"解析錯誤: {raw_items}"
 
         tag = ""
         if status == 'Cancelled': tag = "<span style='background:#dc3545;color:white;padding:2px 5px;border-radius:3px;'>已作廢</span>"
@@ -510,14 +504,15 @@ def check_new_orders():
 
         btns = ""
         if status == 'Pending':
-            btns += f"<a href='/kitchen/complete/{o[0]}' class='btn' style='background:#28a745;font-weight:bold;padding:10px 20px;'>✔️ 完成</a>"
+            btns += f"<a href='/kitchen/complete/{oid}' class='btn' style='background:#28a745;font-weight:bold;padding:10px 20px;'>✔️ 完成</a>"
         
         if status != 'Cancelled':
             btns += f"""
-            <a href='/menu?edit_oid={o[0]}' target='_blank' class='btn' style='background:#555;color:white;'>✏️ 修改</a>
-            <a href='/order/cancel/{o[0]}' class='btn' style='background:#882222' onclick=\"return confirm('確定作廢？')\">🗑️ 作廢</a>
+            <a href='/menu?edit_oid={oid}' target='_blank' class='btn' style='background:#555;color:white;'>✏️ 修改</a>
+            <a href='/order/cancel/{oid}' class='btn' style='background:#882222' onclick=\"return confirm('確定作廢？')\">🗑️ 作廢</a>
             """
-        btns += f"<a href='/print_order/{o[0]}' target='_blank' class='btn' style='background:#17a2b8'>🖨️ 列印</a>"
+        # [關鍵] 確保列印按鈕指向正確的 ID
+        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn' style='background:#17a2b8'>🖨️ 列印</a>"
 
         html_content += f"""
         <div class="card {cls}">
@@ -525,7 +520,7 @@ def check_new_orders():
             <div style="font-size:0.8em;color:#aaa;margin-bottom:5px;">時間: {time_str}</div>
             <div style="margin-bottom:10px;">
                 <span style="font-size:2em;color:#ff9800;font-weight:bold;margin-right:15px;">#{seq}</span> 
-                <span style="font-size:1.5em;background:#eee;color:black;padding:2px 10px;border-radius:5px;">桌號: {o[1]}</span>
+                <span style="font-size:1.5em;background:#eee;color:black;padding:2px 10px;border-radius:5px;">桌號: {table}</span>
             </div>
             <div class="items" style="margin:15px 0;font-size:1.3em;line-height:1.4;background:#444;padding:10px;border-radius:5px;">
                 {items_html}
@@ -608,48 +603,69 @@ def cancel_order(oid):
     c=get_db_connection(); c.cursor().execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,)); c.commit(); c.close()
     return redirect('/kitchen')
 
-# --- 8. 列印 (增加時間戳記) ---
+# --- 8. 列印 (修正版：支援自動關閉與容錯) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE id=%s", (oid,))
+    # 明確指定欄位順序，避免 SELECT * 索引對不上的問題
+    cur.execute("""
+        SELECT id, table_number, items, total_price, status, created_at, daily_seq, content_json, lang 
+        FROM orders WHERE id=%s
+    """, (oid,))
     o = cur.fetchone()
     conn.close()
+    
     if not o: return "No Data"
     
-    seq = f"{o[7]:03d}"
-    items = json.loads(o[8]) if o[8] else []
-    status = o[4]
-    lang = o[9]
-    is_void = (status == 'Cancelled')
-    time_str = o[5].strftime('%Y-%m-%d %H:%M:%S')
+    # 變數映射
+    oid_db, table_num, raw_items, total_val, status, created_at, daily_seq, c_json, lang = o
+    seq = f"{daily_seq:03d}"
     
+    # [修正點] 強大容錯解析 JSON
+    items = []
+    try:
+        if c_json:
+            items = json.loads(c_json)
+        else:
+            # 備援：如果沒有 JSON，將字串轉為簡易格式
+            items = [{"name": n, "qty": 1, "unit_price": 0, "options": []} for n in raw_items.split("+")]
+    except Exception:
+        return f"列印解析失敗，請通知工程師。內容: {raw_items}"
+
+    is_void = (status == 'Cancelled')
+    time_str = created_at.strftime('%Y-%m-%d %H:%M:%S')
     title = "❌ 作廢單 (VOID)" if is_void else "結帳單 (Receipt)"
     style = "text-decoration: line-through; color:red;" if is_void else ""
     
     def get_display_name(item):
-        n_zh = item.get('name_zh', item['name'])
-        n_foreign = item['name']
+        n_zh = item.get('name_zh', item.get('name', 'Unknown'))
+        n_foreign = item.get('name', n_zh)
         if lang == 'zh': return n_zh
         return f"{n_foreign}<br><small>({n_zh})</small>"
 
     def mk_ticket(t_name, item_list, show_total=False, is_kitchen=False):
         if not item_list and not show_total: return ""
-        h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {o[1]}</p><small>{time_str}</small></div><hr>"
+        h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {table_num}</p><small>{time_str}</small></div><hr>"
         t_price = 0
         for i in item_list:
-            t_price += i['unit_price']*i['qty']
+            qty = i.get('qty', 1)
+            u_p = i.get('unit_price', 0)
+            t_price += u_p * qty
+            
             if is_kitchen:
-                d_name = i.get('name_zh', i['name'])
+                d_name = i.get('name_zh', i.get('name', '商品'))
                 ops = i.get('options_zh', i.get('options', []))
             else:
                 d_name = get_display_name(i)
                 ops = i.get('options', [])
 
-            h += f"<div class='row'><span>{i['qty']} x {d_name}</span><span>${i['unit_price']*i['qty']}</span></div>"
-            if ops: h+=f"<div class='opt'>({','.join(ops)})</div>"
+            h += f"<div class='row'><span>{qty} x {d_name}</span><span>${u_p * qty}</span></div>"
+            if ops: 
+                # 確保 ops 是 list
+                if isinstance(ops, str): ops = [ops]
+                h += f"<div class='opt'>({','.join(ops)})</div>"
             
-        if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;'>Total: ${t_price}</div>"
+        if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;'>Total: ${total_val}</div>"
         h += "</div><div class='break'></div>"
         return h
 
@@ -658,13 +674,29 @@ def print_order(oid):
     body += mk_ticket(title, items, show_total=True, is_kitchen=False)
     
     if not is_void:
+        # 廚房工單分區
         noodles = [i for i in items if i.get('print_category', 'Noodle') == 'Noodle']
         soups = [i for i in items if i.get('print_category') == 'Soup']
-        # 廚房工單
         body += mk_ticket("🍜 麵區工單", noodles, is_kitchen=True)
         body += mk_ticket("🍲 湯區工單", soups, is_kitchen=True)
 
-    return f"<html><head><style>body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;}} .ticket{{width:58mm;background:white;margin:10px auto;padding:10px;}} .head{{text-align:center;}} .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} .opt{{font-size:12px;color:#555;margin-left:20px;}} .break{{page-break-after:always;}} small{{color:#666;font-size:0.8em;}} @media print{{.ticket{{width:100%;box-shadow:none;}} body{{background:white;}}}}</style></head><body onload='setTimeout(function(){{window.print();}}, 500);'>{body}</body></html>"
+    # 渲染 HTML，並加入列印後自動關閉視窗的腳本
+    return f"""
+    <html><head>
+    <style>
+        body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;padding:20px;}} 
+        .ticket{{width:58mm;background:white;margin:0 auto 10px auto;padding:10px;box-shadow:0 0 5px rgba(0,0,0,0.1);}} 
+        .head{{text-align:center;}} 
+        .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} 
+        .opt{{font-size:12px;color:#555;margin-left:20px;}} 
+        .break{{page-break-after:always;}} 
+        small{{color:#666;font-size:0.8em;}} 
+        @media print{{.ticket{{width:100%;box-shadow:none;margin:0;}} body{{background:white;padding:0;}}}}
+    </style>
+    </head>
+    <body onload='window.print(); setTimeout(function(){{window.close();}}, 1000);'>
+        {body}
+    </body></html>"""
 
 # --- 9. 後台管理 (完整修正版：支援全語系新增與編輯) ---
 
