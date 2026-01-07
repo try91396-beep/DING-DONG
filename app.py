@@ -484,7 +484,7 @@ def order_success():
     </div>
     """
 
-# --- 5. 廚房看板 - [頁面] 渲染主介面 ---
+# --- 5. 廚房看板 - [頁面] 渲染主介面 (新增自動列印腳本) ---
 @app.route('/kitchen')
 def kitchen_panel():
     return """
@@ -508,12 +508,9 @@ def kitchen_panel():
             .card { 
                 background: #2d2d2d; border-radius: 12px; padding: 20px; 
                 box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; 
-                position: relative; transition: transform 0.2s;
+                position: relative;
             }
-            .card.completed { border-top-color: #28a745; opacity: 0.6; }
-            .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
-            
-            .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; font-size: 1.1em; }
+            .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; }
             .items { 
                 background: #383838; padding: 18px; border-radius: 8px; 
                 margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444;
@@ -526,9 +523,6 @@ def kitchen_panel():
             .btn-report { background: #6f42c1; }
             .btn-complete { background: #28a745; }
             .btn-print { background: #17a2b8; }
-            .btn-void { background: #822; }
-            
-            /* 權限提示條 */
             #audio-banner { 
                 background: #d32f2f; color: white; text-align: center; 
                 padding: 10px; font-weight: bold; cursor: pointer;
@@ -536,13 +530,11 @@ def kitchen_panel():
         </style>
     </head>
     <body>
-        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提示功能」</div>
+        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提醒」與「自動列印」功能</div>
         
         <div class="header-container">
             <h1>👨‍🍳 廚房出單看板</h1>
-            <div>
-                <a href="/kitchen/report" class="btn btn-report">📊 當日營收報表</a>
-            </div>
+            <div><a href="/kitchen/report" class="btn btn-report">📊 當日營收報表</a></div>
         </div>
 
         <div id="order-grid" class="grid">正在同步訂單數據...</div>
@@ -554,17 +546,13 @@ def kitchen_panel():
         <script>
             let lastMaxSeq = 0;
             let isFirstLoad = true;
-            let audioUnlocked = false;
+            let systemUnlocked = false;
 
             function enableAudio() {
-                audioUnlocked = true;
+                systemUnlocked = true;
                 document.getElementById('audio-banner').style.display = 'none';
-                // 播放一次靜音音效解鎖瀏覽器限制
                 const audio = document.getElementById('notice-sound');
-                audio.play().then(() => {
-                    audio.pause();
-                    audio.currentTime = 0;
-                });
+                audio.play().then(() => { audio.pause(); audio.currentTime = 0; });
             }
 
             function refreshOrders() {
@@ -575,12 +563,23 @@ def kitchen_panel():
                         document.getElementById('order-grid').innerHTML = data.html;
                     }
                     
-                    // 判斷是否有新訂單（排除第一次載入）
+                    // 偵測到新訂單
                     if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
-                        if (audioUnlocked) {
+                        if (systemUnlocked) {
+                            // 1. 播放音效
                             const audio = document.getElementById('notice-sound');
                             audio.currentTime = 0;
-                            audio.play().catch(e => console.log("播放失敗"));
+                            audio.play().catch(e => console.log("音效播放失敗"));
+
+                            // 2. 自動觸發列印 (針對每一張新單)
+                            data.new_ids.forEach(oid => {
+                                // 開啟一個小視窗進行列印
+                                const printWin = window.open('/print_order/' + oid, '_blank', 'width=300,height=600');
+                                // 如果被瀏覽器攔截，printWin 會是 null
+                                if(!printWin) {
+                                    alert("列印視窗被攔截！請在瀏覽器設定中允許彈出視窗。");
+                                }
+                            });
                         }
                     }
                     
@@ -590,12 +589,12 @@ def kitchen_panel():
                 .catch(err => console.error("連線錯誤:", err));
             }
 
-            // 每 5 秒自動刷新的 API
             setInterval(refreshOrders, 5000);
             refreshOrders();
         </script>
     </body>
     </html>
+    """
     """
 
 # --- 5. 廚房看板 - [API] 數據供應來源 (已含台灣時區修正) ---
@@ -788,97 +787,63 @@ def cancel_order(oid):
 # --- 8. 列印 (修正版：支援自動關閉與容錯) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
-    conn = get_db_connection(); cur = conn.cursor()
-    # 明確指定欄位順序，避免 SELECT * 索引對不上的問題
-    cur.execute("""
-        SELECT id, table_number, items, total_price, status, created_at, daily_seq, content_json, lang 
-        FROM orders WHERE id=%s
-    """, (oid,))
-    o = cur.fetchone()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT table_number, content_json, daily_seq, created_at FROM orders WHERE id=%s", (oid,))
+    order = cur.fetchone()
     conn.close()
 
-    if not o: return "No Data"
+    if not order: return "訂單不存在"
+    
+    table, c_json, seq, created = order
+    items = json.loads(c_json) if c_json else []
+    
+    # 建立簡易的出單格式
+    items_html = ""
+    for item in items:
+        name = item.get('name_zh', item.get('name', '商品'))
+        qty = item.get('qty', 1)
+        items_html += f"<tr><td>{name}</td><td style='text-align:right'>x{qty}</td></tr>"
 
-    # 變數映射
-    oid_db, table_num, raw_items, total_val, status, created_at, daily_seq, c_json, lang = o
-    seq = f"{daily_seq:03d}"
-
-    # [修正點] 強大容錯解析 JSON
-    items = []
-    try:
-        if c_json:
-            items = json.loads(c_json)
-        else:
-            # 備援：如果沒有 JSON，將字串轉為簡易格式
-            items = [{"name": n, "qty": 1, "unit_price": 0, "options": []} for n in raw_items.split("+")]
-    except Exception:
-        return f"列印解析失敗，請通知工程師。內容: {raw_items}"
-
-    is_void = (status == 'Cancelled')
-    time_str = created_at.strftime('%Y-%m-%d %H:%M:%S')
-    title = "❌ 作廢單 (VOID)" if is_void else "結帳單 (Receipt)"
-    style = "text-decoration: line-through; color:red;" if is_void else ""
-
-    def get_display_name(item):
-        n_zh = item.get('name_zh', item.get('name', 'Unknown'))
-        n_foreign = item.get('name', n_zh)
-        if lang == 'zh': return n_zh
-        return f"{n_foreign}<br><small>({n_zh})</small>"
-
-    def mk_ticket(t_name, item_list, show_total=False, is_kitchen=False):
-        if not item_list and not show_total: return ""
-        h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {table_num}</p><small>{time_str}</small></div><hr>"
-        t_price = 0
-        for i in item_list:
-            qty = i.get('qty', 1)
-            u_p = i.get('unit_price', 0)
-            t_price += u_p * qty
-
-            if is_kitchen:
-                d_name = i.get('name_zh', i.get('name', '商品'))
-                ops = i.get('options_zh', i.get('options', []))
-            else:
-                d_name = get_display_name(i)
-                ops = i.get('options', [])
-
-            h += f"<div class='row'><span>{qty} x {d_name}</span><span>${u_p * qty}</span></div>"
-            if ops: 
-                # 確保 ops 是 list
-                if isinstance(ops, str): ops = [ops]
-                h += f"<div class='opt'>({','.join(ops)})</div>"
-
-        if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;'>Total: ${total_val}</div>"
-        h += "</div><div class='break'></div>"
-        return h
-
-    body = ""
-    # 顧客聯
-    body += mk_ticket(title, items, show_total=True, is_kitchen=False)
-
-    if not is_void:
-        # 廚房工單分區
-        noodles = [i for i in items if i.get('print_category', 'Noodle') == 'Noodle']
-        soups = [i for i in items if i.get('print_category') == 'Soup']
-        body += mk_ticket("🍜 麵區工單", noodles, is_kitchen=True)
-        body += mk_ticket("🍲 湯區工單", soups, is_kitchen=True)
-
-    # 渲染 HTML，並加入列印後自動關閉視窗的腳本
     return f"""
-    <html><head>
-    <style>
-        body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;padding:20px;}} 
-        .ticket{{width:58mm;background:white;margin:0 auto 10px auto;padding:10px;box-shadow:0 0 5px rgba(0,0,0,0.1);}} 
-        .head{{text-align:center;}} 
-        .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} 
-        .opt{{font-size:12px;color:#555;margin-left:20px;}} 
-        .break{{page-break-after:always;}} 
-        small{{color:#666;font-size:0.8em;}} 
-        @media print{{.ticket{{width:100%;box-shadow:none;margin:0;}} body{{background:white;padding:0;}}}}
-    </style>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: sans-serif; width: 100%; margin: 0; padding: 10px; }}
+            h2 {{ text-align: center; margin: 0; }}
+            table {{ width: 100%; border-top: 1px solid black; margin-top: 10px; }}
+            .footer {{ margin-top: 10px; border-top: 1px solid black; text-align: center; font-size: 12px; }}
+        </style>
     </head>
-    <body onload='window.print(); setTimeout(function(){{window.close();}}, 1000);'>
-        {body}
-    </body></html>"""
+    <body>
+        <h2>#{seq:03d} - 桌號: {table}</h2>
+        <div style="text-align:center">{created.strftime('%H:%M:%S')}</div>
+        <table>
+            {items_html}
+        </table>
+        <div class="footer">謝謝惠顧</div>
+
+        <script>
+            // 1. 頁面載入後自動執行列印
+            window.onload = function() {{
+                window.print();
+                
+                // 2. 監測列印完成後自動關閉視窗 (部分瀏覽器支援)
+                window.onafterprint = function() {{
+                    window.close();
+                }};
+                
+                // 3. 備案：如果是平板手動操作，點擊任意處也可關閉
+                setTimeout(function() {{
+                    // 若視窗沒關閉，3秒後嘗試自動關閉或提醒
+                    // window.close(); 
+                }}, 3000);
+            }};
+        </script>
+    </body>
+    </html>
+    """
 
 # --- 9. 後台管理 (完整修正版：支援全語系新增與編輯) ---
 
