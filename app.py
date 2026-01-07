@@ -604,7 +604,7 @@ def check_new_orders():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # 修正重點：確保 SQL 指令前面的縮進與 cur.execute 對齊
+    # 這裡的 SQL 必須整齊對齊
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -614,12 +614,14 @@ def check_new_orders():
     orders = cur.fetchall()
 
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
-    max_seq_val = cur.fetchone()[0] or 0
+    max_row = cur.fetchone()
+    max_seq_val = max_row[0] if max_row and max_row[0] else 0
 
     new_order_ids = []
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
+    
     conn.close()
 
     html_content = ""
@@ -628,15 +630,16 @@ def check_new_orders():
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
 
-        items_html = ""
+        items_display = ""
         if c_json:
             cart = json.loads(c_json)
             for item in cart:
-                # 這裡統一顯示中文名稱供廚房核對
-                n = item.get('name_zh', item.get('name', '商品'))
-                items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span></div>"
+                name = item.get('name_zh', item.get('name', '未知商品'))
+                items_display += f"<div>● {name} <span style='color:#ff9800'>x{item['qty']}</span></div>"
 
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
+        
+        # 按鈕：包含手動列印與完成
         btns = f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
@@ -647,7 +650,7 @@ def check_new_orders():
             <div style="margin: 10px 0;">
                 <span style="font-size:2.5em; color:#ff9800; font-weight:bold;">#{seq_num:03d}</span> 桌: {table}
             </div>
-            <div class="items">{items_html}</div>
+            <div class="items">{items_display}</div>
             <div style="border-top:1px solid #444; padding-top:10px;">{btns}</div>
         </div>
         """
@@ -656,31 +659,34 @@ def check_new_orders():
 # --- 6. 多語系列印收據 (優化自動關閉與中文備註) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT table_number, content_json, total_price, created_at, daily_seq, lang FROM orders WHERE id=%s", (oid,))
     row = cur.fetchone()
     conn.close()
-    if not row: return "Order Not Found"
+    
+    if not row: return "訂單不存在"
     
     table, c_json, total, created, seq, order_lang = row
-    t = load_translations().get(order_lang, load_translations()['zh'])
+    translations = load_translations()
+    t = translations.get(order_lang, translations['zh'])
     tw_time = created + timedelta(hours=8)
     time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
 
     items = json.loads(c_json) if c_json else []
     items_html = ""
     for i in items:
-        # 抓取該語系的名稱
+        # 根據訂單語系顯示名稱
         name_key = 'name' if order_lang == 'en' else f'name_{order_lang}'
         if order_lang == 'zh': name_key = 'name_zh'
         display_name = i.get(name_key, i.get('name_zh'))
         
-        # 備註中文 (若訂單非中文)
-        zh_ref = f"<br><small>(中: {i.get('name_zh')})</small>" if order_lang != 'zh' else ""
+        # 備註中文 (如果客人選的不是中文)
+        zh_note = f"<br><small>(中: {i.get('name_zh')})</small>" if order_lang != 'zh' else ""
         
         items_html += f"""
         <tr style="border-bottom:1px dashed #ccc;">
-            <td style="padding:5px 0;"><strong>{display_name}</strong>{zh_ref}</td>
+            <td style="padding:8px 0;"><strong>{display_name}</strong>{zh_note}</td>
             <td style="text-align:right;">x{i['qty']}</td>
             <td style="text-align:right;">${i['unit_price']*i['qty']}</td>
         </tr>"""
@@ -688,17 +694,19 @@ def print_order(oid):
     return f"""
     <html>
     <head><meta charset="UTF-8"></head>
-    <body onload="window.print(); setTimeout(()=>{{ window.close(); }}, 1000);" style="width:58mm; font-family:sans-serif; font-size:13px; margin:0; padding:10px;">
-        <div style="text-align:center;">
-            <h1 style="font-size:32px; margin:0;">#{seq:03d}</h1>
-            <p style="font-size:18px;">{t['table']}: {table}</p>
+    <body onload="window.print(); setTimeout(()=>{{ window.close(); }}, 1000);" style="width:58mm; font-family:sans-serif; margin:0; padding:10px;">
+        <div style="text-align:center; border-bottom:2px solid #000;">
+            <h1 style="font-size:40px; margin:0;">#{seq:03d}</h1>
+            <p style="font-size:20px; margin:5px 0;">{t['table']}: {table}</p>
         </div>
-        <p style="font-size:11px;">{time_str}</p>
-        <hr>
-        <table style="width:100%; border-collapse:collapse;">{items_html}</table>
-        <hr>
-        <div style="text-align:right; font-weight:bold; font-size:16px;">{t['total']}: ${total}</div>
-        <div style="text-align:center; margin-top:10px;">--- 廚房聯 ---</div>
+        <p style="font-size:12px;">{time_str}</p>
+        <table style="width:100%; border-collapse:collapse; font-size:16px;">
+            {items_html}
+        </table>
+        <div style="text-align:right; font-weight:bold; font-size:18px; border-top:2px solid #000; margin-top:10px; padding-top:5px;">
+            {t['total']}: ${total}
+        </div>
+        <div style="text-align:center; margin-top:20px; font-size:12px;">--- 廚房出單單據 ---</div>
     </body>
     </html>
     """
