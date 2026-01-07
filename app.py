@@ -552,14 +552,89 @@ def kitchen_panel():
     </html>
     """
 
+# --- 5. 廚房看板 - [頁面] 渲染主介面 ---
+@app.route('/kitchen')
+def kitchen_panel():
+    return """
+    <!DOCTYPE html>
+    <html lang="zh-TW">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>廚房出單看板</title>
+        <style>
+            body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 20px; margin: 0; }
+            .header-container { 
+                display: flex; justify-content: space-between; align-items: center; 
+                padding: 10px 20px; background: #222; border-bottom: 2px solid #333; margin-bottom: 20px;
+            }
+            h1 { color: #ff9800; margin: 0; font-size: 24px; }
+            .grid { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
+                gap: 20px; padding: 10px;
+            }
+            .card { 
+                background: #2d2d2d; border-radius: 12px; padding: 20px; 
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-top: 8px solid #ff9800;
+                position: relative;
+            }
+            .card.completed { border-top-color: #28a745; opacity: 0.7; }
+            .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
+            
+            .tag { position: absolute; top: 10px; right: 10px; font-weight: bold; font-size: 0.9em; }
+            .items { 
+                background: #383838; padding: 15px; border-radius: 8px; 
+                margin: 15px 0; font-size: 1.25em; min-height: 80px; line-height: 1.5;
+            }
+            .btn { 
+                display: inline-block; padding: 10px 15px; border-radius: 6px; 
+                text-decoration: none; color: white; margin-right: 5px;
+                font-size: 0.9em; border: none; cursor: pointer; transition: 0.2s;
+            }
+            .btn:hover { opacity: 0.8; }
+            .btn-report { background: #6f42c1; font-weight: bold; }
+            .btn-complete { background: #28a745; font-weight: bold; }
+            .btn-edit { background: #555; }
+            .btn-print { background: #17a2b8; }
+            .btn-void { background: #822; }
+        </style>
+    </head>
+    <body>
+        <div class="header-container">
+            <h1>👨‍🍳 廚房出單看板</h1>
+            <a href="/kitchen/report" class="btn btn-report">📊 日結報表 / 列印結帳單</a>
+        </div>
+        <div id="order-grid" class="grid">正在連線資料庫...</div>
+
+        <script>
+            let lastMaxSeq = 0;
+            function refreshOrders() {
+                fetch('/check_new_orders?current_seq=' + lastMaxSeq)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.html) {
+                        document.getElementById('order-grid').innerHTML = data.html;
+                    }
+                    lastMaxSeq = data.max_seq;
+                })
+                .catch(err => console.error("看板更新失敗:", err));
+            }
+            // 每 5 秒自動檢查新訂單
+            setInterval(refreshOrders, 5000);
+            refreshOrders();
+        </script>
+    </body>
+    </html>
+    """
+
 # --- 5. 廚房看板 - [API] 數據供應來源 ---
 @app.route('/check_new_orders')
 def check_new_orders():
     current_max = request.args.get('current_seq', 0, type=int)
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     
-    # 抓取近 18 小時訂單
+    # 抓取近 18 小時訂單，確保跨午夜時段可見
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -575,12 +650,11 @@ def check_new_orders():
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
-
     conn.close()
 
     html_content = ""
     if not orders:
-        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無新訂單</div>"
+        html_content = "<div style='grid-column: 1/-1; text-align:center; padding:100px; font-size:1.5em; color:#666;'>📭 目前暫無訂單</div>"
 
     for o in orders:
         oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
@@ -602,19 +676,14 @@ def check_new_orders():
         except:
             items_html = f"資料解析錯誤: {raw_items}"
 
-        tag = ""
-        if status == 'Cancelled': tag = "<span style='color:#dc3545;'>已作廢</span>"
-        elif status == 'Completed': tag = "<span style='color:#28a745;'>已完成</span>"
-        else: tag = "<span style='color:#ff9800;'>● 待處理</span>"
-
+        tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 待處理"
+        
         btns = ""
         if status == 'Pending':
             btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
-        
         if status != 'Cancelled':
             btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
             btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定要作廢此訂單嗎？\")'>🗑️ 作廢</a>"
-        
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
@@ -625,27 +694,26 @@ def check_new_orders():
                 <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
                 <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
             </div>
-            <div class="items">
-                {items_html}
-            </div>
-            <div style="border-top: 1px solid #444; padding-top: 15px;">
-                {btns}
-            </div>
+            <div class="items">{items_html}</div>
+            <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
         </div>
         """
-    
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
+
+    
 # --- 6. 日結報表 ---
 @app.route('/kitchen/report')
 def daily_report():
+    from datetime import date
     conn = get_db_connection(); cur = conn.cursor()
-    # 統計金額
+    
+    # 1. 統計金額與單量 (僅限當天)
     cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= CURRENT_DATE AND status != 'Cancelled'")
     valid_count, valid_total = cur.fetchone()
     cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= CURRENT_DATE AND status = 'Cancelled'")
     void_count, void_total = cur.fetchone()
     
-    # 統計商品
+    # 2. 統計品項數量
     cur.execute("SELECT content_json FROM orders WHERE created_at >= CURRENT_DATE AND status != 'Cancelled'")
     valid_rows = cur.fetchall()
     cur.execute("SELECT content_json FROM orders WHERE created_at >= CURRENT_DATE AND status = 'Cancelled'")
@@ -659,8 +727,8 @@ def daily_report():
             try:
                 items = json.loads(r[0])
                 for i in items:
-                    name = i.get('name_zh', i['name'])
-                    qty = int(i['qty'])
+                    name = i.get('name_zh', i.get('name', '未知'))
+                    qty = int(i.get('qty', 0))
                     stats[name] = stats.get(name, 0) + qty
             except: pass
         return stats
@@ -669,33 +737,70 @@ def daily_report():
     void_stats = agg_items(void_rows)
 
     def render_table(stats_dict):
-        h = "<table style='width:100%;border-collapse:collapse;margin-top:5px;'>"
-        h += "<tr style='background:#eee;'><th style='text-align:left;padding:5px;'>品項</th><th style='text-align:right;padding:5px;'>數量</th></tr>"
+        if not stats_dict: return "<p style='text-align:center; color:#888;'>無資料</p>"
+        h = "<table style='width:100%; border-collapse:collapse; font-size:14px; margin-top:5px;'>"
+        h += "<tr style='border-bottom:1px solid #000;'><th style='text-align:left;'>品項</th><th style='text-align:right;'>數量</th></tr>"
         for name, qty in sorted(stats_dict.items(), key=lambda x: x[1], reverse=True):
-            h += f"<tr><td style='border-bottom:1px solid #ddd;padding:5px;'>{name}</td><td style='text-align:right;border-bottom:1px solid #ddd;padding:5px;'>{qty}</td></tr>"
+            h += f"<tr><td style='padding:4px 0;'>{name}</td><td style='text-align:right;'>{qty}</td></tr>"
         h += "</table>"
         return h
 
+    today_str = date.today().strftime('%Y-%m-%d')
+
     return f"""
-    <!DOCTYPE html><body style="font-family:sans-serif;padding:20px;background:#f4f4f4;">
-        <div style="background:white;padding:30px;max-width:500px;margin:0 auto;border-radius:10px;">
-            <h2 style="text-align:center;">📅 本日結帳單</h2>
-            <p style="text-align:center;color:#666;">{date.today()}</p><hr>
-            
-            <h3>✅ 有效營收</h3>
-            <p>單量: {valid_count or 0} | 金額: <span style="font-size:1.5em;color:green;font-weight:bold">${valid_total or 0}</span></p>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>本日結帳單_{today_str}</title>
+        <style>
+            body {{ font-family: sans-serif; background: #eee; padding: 20px; display: flex; flex-direction: column; align-items: center; }}
+            .ticket {{ background: white; width: 58mm; padding: 15px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+            h2, h3 {{ text-align: center; margin: 10px 0; }}
+            hr {{ border: 0; border-top: 1px dashed #000; margin: 10px 0; }}
+            .summary-box {{ margin-bottom: 15px; font-size: 15px; }}
+            .summary-box b {{ font-size: 18px; color: green; }}
+            .no-print {{ margin-top: 20px; display: flex; gap: 10px; }}
+            .btn {{ padding: 10px 20px; border-radius: 5px; text-decoration: none; color: white; cursor: pointer; border: none; }}
+            @media print {{ 
+                .no-print {{ display: none; }} 
+                body {{ background: white; padding: 0; }} 
+                .ticket {{ box-shadow: none; border: none; width: 100%; }} 
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="ticket">
+            <h2>日結報表</h2>
+            <p style="text-align:center; font-size:12px;">日期: {today_str}</p>
+            <hr>
+            <div class="summary-box">
+                <b>✅ 有效營收</b><br>
+                單量: {valid_count or 0} 筆<br>
+                總額: <b>${valid_total or 0}</b>
+            </div>
             {render_table(valid_stats)}
             
-            <hr><h3 style="color:red;">❌ 作廢單據 (Void)</h3>
-            <p>單量: {void_count or 0} | 金額: ${void_total or 0}</p>
+            <hr>
+            <div class="summary-box" style="color:#822;">
+                <b>❌ 作廢統計</b><br>
+                單量: {void_count or 0} 筆<br>
+                總額: ${void_total or 0}
+            </div>
             {render_table(void_stats)}
-            
-            <hr><button onclick="window.print()" style="width:100%;padding:10px;">列印</button>
-            <br><br><a href="/kitchen" style="display:block;text-align:center;">回廚房</a>
+            <hr>
+            <p style="text-align:center; font-size:10px; color:#888;">列印時間: {today_str}</p>
+        </div>
+
+        <div class="no-print">
+            <button onclick="window.print()" class="btn" style="background:#28a745;">🖨️ 列印報表</button>
+            <a href="/kitchen" class="btn" style="background:#007bff;">🔙 回廚房看板</a>
         </div>
     </body>
+    </html>
     """
 
+    
 # --- 7. 狀態變更 ---
 @app.route('/kitchen/complete/<int:oid>')
 def complete_order(oid):
