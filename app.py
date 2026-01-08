@@ -880,7 +880,7 @@ def print_order(oid):
         {body}
     </body></html>"""
 
-# --- 9. 後台管理 (完整修正版：含切換、刪除與全語系支援) ---
+# --- 9. 後台管理 (完整修正版：含清空訂單、切換、刪除與全語系支援) ---
 
 # [API] 接收前端拖拉後的 ID 順序
 @app.route('/admin/reorder_products', methods=['POST'])
@@ -896,7 +896,7 @@ def reorder_products():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# [功能] 切換產品上架/下架狀態 (修正 404 問題)
+# [功能] 切換產品上架/下架狀態
 @app.route('/admin/toggle_product/<int:pid>')
 def toggle_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -911,6 +911,21 @@ def delete_product(pid):
     cur.execute("DELETE FROM products WHERE id = %s", (pid,))
     conn.commit(); conn.close()
     return redirect('/admin')
+
+# [功能] 徹底清空所有訂單記錄 (修正您提到的失效問題)
+@app.route('/admin/reset_orders')
+def reset_orders():
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        # 刪除 orders 表中的所有數據
+        cur.execute("DELETE FROM orders")
+        # 重設 daily_seq (可選，視您的需求而定)
+        # 如果您的 ID 是自增主鍵，也可以重設序列
+        cur.execute("ALTER SEQUENCE IF EXISTS orders_id_seq RESTART WITH 1")
+        conn.commit(); conn.close()
+        return redirect('/admin')
+    except Exception as e:
+        return f"清空失敗: {e}"
 
 # [頁面] 後台主控台
 @app.route('/admin', methods=['GET', 'POST'])
@@ -952,7 +967,6 @@ def admin_panel():
 
     rows = ""
     for p in prods:
-        # p[5] 是 is_available
         row_style = "" if p[5] else "background-color: #f0f0f0; opacity: 0.7;"
         status_text = "<span style='color:green'>上架</span>" if p[5] else "<span style='color:red'>下架</span>"
         toggle_link = f"<a href='/admin/toggle_product/{p[0]}' class='button button-clear' style='display:inline;padding:0;height:auto;line-height:normal;font-size:12px;'>[切換]</a>"
@@ -1033,7 +1047,7 @@ def admin_panel():
             <h3>📦 產品列表 (可拖曳排序)</h3>
             <div>
                  <button id="save-btn" onclick="saveOrder()" class="button" style="background:#9c27b0;border-color:#9c27b0;display:none;">💾 儲存排序</button>
-                 <a href="/admin/reset_orders" onclick="return confirm('確定清空所有訂單記錄？')" class="button button-clear" style="color:red;">⚠️ 清空訂單</a>
+                 <a href="/admin/reset_orders" onclick="return confirm('警告：這將永久刪除所有歷史訂單數據！確定嗎？')" class="button button-clear" style="color:red;">⚠️ 清空訂單記錄</a>
             </div>
         </div>
     </div>
@@ -1065,7 +1079,7 @@ def admin_panel():
     </body></html>
     """
 
-# --- 編輯產品頁面 ---
+# --- 編輯產品頁面 (維持原樣) ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -1137,7 +1151,6 @@ def edit_product(pid):
             </div>
         </form>
     </body></html>"""
-
 
 # --- 防休眠 ---
 def keep_alive():
