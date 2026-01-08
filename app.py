@@ -173,17 +173,14 @@ def menu():
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
-                if orig_res:
-                    final_lang = orig_res[0] 
+                if orig_res: final_lang = orig_res[0] 
 
             for item in cart_items:
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                
                 n_field = f"name_{final_lang}" if f"name_{final_lang}" in item else "name_zh"
                 n_display = item.get(n_field, item.get('name_zh'))
-                
                 opt_key = f"options_{final_lang}" if f"options_{final_lang}" in item else "options_zh"
                 opts = item.get(opt_key, item.get('options_zh', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
@@ -191,21 +188,19 @@ def menu():
 
             items_str = " + ".join(display_list)
 
-            cur.execute("SELECT COUNT(*) FROM orders WHERE created_at >= CURRENT_DATE")
-            new_seq = cur.fetchone()[0] + 1
-
+            # --- [關鍵修正：利用 SQL 原子操作防止單號重複] ---
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
-                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """, (table_number, items_str, total_price, final_lang, new_seq, cart_json, need_receipt))
+                VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
+                RETURNING id
+            """, (table_number, items_str, total_price, final_lang, cart_json, need_receipt))
 
             oid = cur.fetchone()[0]
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
-                conn.commit()
-                return "<script>window.close();</script>"
-
+            
             conn.commit()
+            if old_order_id: return "<script>window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
 
         except Exception as e:
@@ -214,10 +209,10 @@ def menu():
         finally:
             cur.close(); conn.close()
 
+    # --- GET 請求部分 (同原程式碼) ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "[]"
-
     if edit_oid:
         cur.execute("SELECT table_number, content_json FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
@@ -227,7 +222,7 @@ def menu():
 
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
-                name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
+               name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
         FROM products ORDER BY sort_order ASC, id ASC
     """)
     products = cur.fetchall()
@@ -236,29 +231,21 @@ def menu():
     p_list = []
     for p in products:
         p_list.append({
-            'id': p[0], 
-            'name_zh': p[1],
-            'name_en': p[8] or p[1],
-            'name_jp': p[9] or p[1],
-            'name_kr': p[10] or p[1],
-            'price': p[2], 
-            'category': p[3],
-            'image_url': p[4] or '', 
-            'is_available': p[5], 
+            'id': p[0], 'name_zh': p[1], 'name_en': p[8] or p[1], 'name_jp': p[9] or p[1], 'name_kr': p[10] or p[1],
+            'price': p[2], 'category': p[3], 'image_url': p[4] or '', 'is_available': p[5], 
             'custom_options_zh': p[6].split(',') if p[6] else [],
             'custom_options_en': p[11].split(',') if p[11] else (p[6].split(',') if p[6] else []),
             'custom_options_jp': p[12].split(',') if p[12] else (p[6].split(',') if p[6] else []),
             'custom_options_kr': p[13].split(',') if p[13] else (p[6].split(',') if p[6] else []),
             'print_category': p[14] or 'Noodle'
         })
-
     return render_frontend(p_list, t, url_table, lang, preload_cart, edit_oid)
 
 def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid} (語言自動適配)</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid}</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -286,41 +273,33 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
                style="padding:10px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:5px;font-size:1.1em;">
     </div>
     <div id="list"></div>
-    
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
         <input type="hidden" name="table_number" id="tbl_input">
         <input type="hidden" name="lang_input" value="{lang}">
         {old_oid_input}
-        
         <div class="cart-bar" id="bar">
             <div onclick="showCart()" style="flex-grow:1;">Total: $<span id="tot">0</span> (<span id="cnt">0</span>)</div>
             <label style="margin-right:10px;"><input type="checkbox" name="need_receipt" checked> {t['print_receipt_opt']}</label>
             <button type="button" onclick="sub()" style="background:#28a745;color:white;border:none;padding:10px 20px;border-radius:20px;">{t['checkout']}</button>
         </div>
     </form>
-    
     <div class="modal" id="opt-m"><div class="modal-c">
-        <h3 id="m-name"></h3>
-        <div id="m-opts"></div>
+        <h3 id="m-name"></h3><div id="m-opts"></div>
         <div style="margin-top:20px;text-align:center;">
             <button onclick="cq(-1)">-</button> <span id="m-q" style="margin:0 15px;font-weight:bold;">1</span> <button onclick="cq(1)">+</button>
         </div>
         <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:20px;">{t['modal_add_cart']}</button>
         <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:10px;border:none;margin-top:10px;">{t['modal_cancel']}</button>
     </div></div>
-
     <div class="modal" id="cart-m"><div class="modal-c">
         <h3>{t['cart_title']}</h3><div id="c-list"></div>
         <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:10px;">{t['close']}</button>
     </div></div>
-
     <script>
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, q=1, selectedOptIndices=[], addP=0;
-
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
-    
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
@@ -337,7 +316,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }});
     document.getElementById('list').innerHTML=h;
     upd();
-
     function openOpt(id){{
         cur=P.find(x=>x.id==id); q=1; selectedOptIndices=[]; addP=0;
         document.getElementById('m-name').innerText = cur['name_' + CUR_LANG] || cur.name_zh;
@@ -357,26 +335,18 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('m-q').innerText=1;
         document.getElementById('opt-m').style.display='flex';
     }}
-
     function addC(){{
         C.push({{ 
-            id: cur.id, 
-            name: cur.name_en, 
-            name_zh: cur.name_zh, 
-            name_jp: cur.name_jp, 
-            name_kr: cur.name_kr, 
-            unit_price: cur.price + addP, 
-            qty: q, 
+            id: cur.id, name: cur.name_en, name_zh: cur.name_zh, name_jp: cur.name_jp, name_kr: cur.name_kr, 
+            unit_price: cur.price + addP, qty: q, 
             options: selectedOptIndices.map(idx => cur.custom_options_en[idx]),
             options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
             options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx]),
             options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
-            category: cur.category, 
-            print_category: cur.print_category 
+            category: cur.category, print_category: cur.print_category 
         }});
         document.getElementById('opt-m').style.display='none'; upd();
     }}
-
     function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
     function upd(){{
         if(C.length){{
@@ -594,7 +564,7 @@ def cancel_order(oid):
     c=get_db_connection(); c.cursor().execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,)); c.commit(); c.close()
     return redirect('/kitchen')
 
-# --- 8. 列印路由 (修正版：解決結帳單列印仍是英文的問題) ---
+# --- 8. 列印路由 ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -618,12 +588,9 @@ def print_order(oid):
     title = "❌ 作廢單 (VOID)" if is_void else "結帳單 (Receipt)"
     style = "text-decoration: line-through; color:red;" if is_void else ""
 
-    # --- [關鍵修正邏輯] ---
     def get_display_name(item):
         n_zh = item.get('name_zh', '商品')
-        # 如果是中文訂單，只顯示中文
         if order_lang == 'zh': return n_zh
-        # 如果是外國語系，顯示「該語言名稱」+「(中文名稱)」
         n_foreign = item.get(f'name_{order_lang}', item.get('name', n_zh))
         return f"{n_foreign}<br><small>({n_zh})</small>"
 
@@ -655,18 +622,23 @@ def print_order(oid):
     return f"""
     <html><head><meta charset="UTF-8">
     <style>
-        body {{ font-family: 'Microsoft JhengHei', sans-serif; font-size: 14px; background: #eee; padding: 20px; }} 
-        .ticket {{ width: 58mm; background: white; margin: 0 auto 10px auto; padding: 10px; border: 1px dashed #ccc; }} 
+        @page {{ size: 58mm auto; margin: 0; }}
+        body {{ font-family: 'Microsoft JhengHei', sans-serif; font-size: 14px; background: #fff; margin: 0; padding: 0; }} 
+        .ticket {{ width: 54mm; margin: 0 auto; padding: 2mm; box-sizing: border-box; }} 
         .head {{ text-align: center; }} 
         .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; }} 
         .opt {{ font-size: 12px; color: #444; margin-left: 15px; }} 
         .break {{ page-break-after: always; }} 
         h1 {{ margin: 5px 0; font-size: 2.5em; }}
-        @media print {{ body {{ background: white; padding: 0; }} .ticket {{ width: 100%; border: none; }} }}
+        h2 {{ margin: 5px 0; font-size: 1.5em; }}
+        hr {{ border: none; border-top: 1px dashed #000; }}
+        @media print {{ 
+            body {{ background: white; }} 
+            .ticket {{ width: 100%; border: none; }} 
+        }}
     </style></head>
-    <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1000);'>{body}</body></html>
+    <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1200);'>{body}</body></html>
     """
-
 # --- 9. 後台管理 (完整修正版：含清空訂單、切換、刪除與全語系支援) ---
 
 # [API] 接收前端拖拉後的 ID 順序
