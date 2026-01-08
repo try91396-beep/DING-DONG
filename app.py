@@ -153,7 +153,7 @@ def language_select():
     </body></html>
     """
 
-# --- 3. 點餐頁面 (優化版：修正修改模式下的語系繼承與跳轉邏輯) ---
+# --- 3. 點餐頁面 (終極修正版：確保新增餐點包含所有語系名稱) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -180,26 +180,27 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                opts = item.get('options', [])
+                
+                # 這裡的邏輯決定了資料庫 items 字串欄位的顯示
+                # 為了讓看板始終好讀，我們在 items 欄位維持顯示中文
+                n_display = item.get('name_zh', item['name'])
+                opts = item.get('options_zh', item.get('options', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
-                display_list.append(f"{item['name']} {opt_str} x{qty}")
+                display_list.append(f"{n_display} {opt_str} x{qty}")
 
             items_str = " + ".join(display_list)
 
-            # --- [關鍵修正：語系繼承邏輯] ---
+            # --- [語系繼承] ---
             final_lang = lang_from_page 
             if old_order_id:
-                # 抓取舊單原始語系
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
                 if orig_res:
-                    final_lang = orig_res[0] # 這裡繼承了 en/jp/kr
+                    final_lang = orig_res[0] 
 
-            # 計算當日流水號
             cur.execute("SELECT COUNT(*) FROM orders WHERE created_at >= CURRENT_DATE")
             new_seq = cur.fetchone()[0] + 1
 
-            # 插入新訂單 (確保存入的是 final_lang)
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -210,11 +211,9 @@ def menu():
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
                 conn.commit()
-                # 修改模式通常是店員操作，直接關閉視窗回看板
                 return "<script>window.close();</script>"
 
             conn.commit()
-            # 關鍵修正：跳轉時也必須使用 final_lang，否則成功頁面的列印按鈕會抓錯語言
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
 
         except Exception as e:
@@ -245,32 +244,22 @@ def menu():
 
     p_list = []
     for p in products:
-        name_zh = p[1]
-        opts_zh = p[6].split(',') if p[6] else []
-        d_name = p[1]
-        d_opts_str = p[6]
-
-        if lang == 'en':
-            if p[8]: d_name = p[8]
-            if p[11]: d_opts_str = p[11]
-        elif lang == 'jp':
-            if p[9]: d_name = p[9]
-            if p[12]: d_opts_str = p[12]
-        elif lang == 'kr':
-            if p[10]: d_name = p[10]
-            if p[13]: d_opts_str = p[13]
-
-        d_opts = d_opts_str.split(',') if d_opts_str else []
-        print_cat = p[14] if p[14] else 'Noodle'
-
+        # 強制保存所有語系名稱供 JS 使用
         p_list.append({
             'id': p[0], 
-            'name': d_name, 'name_zh': name_zh,        
-            'price': p[2], 'category': p[3],
-            'image_url': p[4] if p[4] else '', 
+            'name_zh': p[1],
+            'name_en': p[8] or p[1],
+            'name_jp': p[9] or p[1],
+            'name_kr': p[10] or p[1],
+            'price': p[2], 
+            'category': p[3],
+            'image_url': p[4] or '', 
             'is_available': p[5], 
-            'custom_options': d_opts, 'custom_options_zh': opts_zh,
-            'print_category': print_cat
+            'custom_options_zh': p[6].split(',') if p[6] else [],
+            'custom_options_en': p[11].split(',') if p[11] else (p[6].split(',') if p[6] else []),
+            'custom_options_jp': p[12].split(',') if p[12] else (p[6].split(',') if p[6] else []),
+            'custom_options_kr': p[13].split(',') if p[13] else (p[6].split(',') if p[6] else []),
+            'print_category': p[14] or 'Noodle'
         })
 
     return render_frontend(p_list, t, url_table, lang, preload_cart, edit_oid)
@@ -279,8 +268,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid} (系統將自動恢復原始語系列印)</div>' if edit_oid else ''
-    ai_badge = f"<div style='text-align:center;color:#999;font-size:0.8em;padding:10px;'>🤖 {t.get('ai_note', 'Translated by AI')}</div>"
+    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 修改模式：系統將自動恢復原始語系列印</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -307,9 +295,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         <input type="text" id="visible_table" value="{default_table}" placeholder="{t['table_placeholder']}" 
                style="padding:10px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:5px;font-size:1.1em;">
     </div>
-    
     <div id="list"></div>
-    {ai_badge}
     
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
@@ -340,36 +326,38 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </div></div>
 
     <script>
-    const P={p_json}, T={t_json}, PRELOAD={preload_cart};
+    const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, q=1, selectedOptIndices=[], addP=0;
 
-    if(PRELOAD && PRELOAD.length > 0){{ C = PRELOAD; setTimeout(upd, 100); }}
+    if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
     
+    // 初始化列表
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
-        
         let isAvail = p.is_available;
-        let img = p.image_url ? `<img src="${{p.image_url}}" class="menu-img">` : '';
-        let badge = isAvail ? '' : `<div class="sold-out-badge">${{T.sold_out}}</div>`;
-        
+        // 顯示名稱根據介面語言
+        let d_name = p['name_' + CUR_LANG] || p.name_zh;
         h+=`<div class="menu-item ${{isAvail ? '' : 'sold-out'}}">
-            ${{badge}} ${{img}}
+            ${{isAvail ? '' : `<div class="sold-out-badge">${{T.sold_out}}</div>`}}
+            ${{p.image_url ? `<img src="${{p.image_url}}" class="menu-img">` : ''}}
             <div class="menu-info">
-                <div><b>${{p.name}}</b><div style="color:#e91e63">$${{p.price}}</div></div>
+                <div><b>${{d_name}}</b><div style="color:#e91e63">$${{p.price}}</div></div>
                 <button class="add-btn" onclick="openOpt(${{p.id}})" ${{isAvail ? '' : 'disabled'}}>${{isAvail ? T.add : T.sold_out}}</button>
             </div>
         </div>`;
     }});
     document.getElementById('list').innerHTML=h;
+    upd();
 
     function openOpt(id){{
         cur=P.find(x=>x.id==id); q=1; selectedOptIndices=[]; addP=0;
-        document.getElementById('m-name').innerText=cur.name;
+        document.getElementById('m-name').innerText = cur['name_' + CUR_LANG] || cur.name_zh;
         let area=document.getElementById('m-opts'); area.innerHTML="";
-        cur.custom_options.forEach((o, index)=>{{
-            let parts = o.split(/[:：+]/);
-            let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[parts.length-1]) : 0;
+        let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
+        opts.forEach((o, index)=>{{
+            let parts = o.split(/[+]/);
+            let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
             d.onclick=()=>{{
@@ -381,13 +369,28 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('m-q').innerText=1;
         document.getElementById('opt-m').style.display='flex';
     }}
-    function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
+
+    // --- [核心修正：addC 函數] ---
     function addC(){{
-        let finalOpts = selectedOptIndices.map(idx => cur.custom_options[idx]);
-        let finalOptsZH = selectedOptIndices.map(idx => cur.custom_options_zh[idx] || cur.custom_options[idx]);
-        C.push({{ id: cur.id, name: cur.name, name_zh: cur.name_zh, unit_price: cur.price + addP, qty: q, options: finalOpts, options_zh: finalOptsZH, category: cur.category, print_category: cur.print_category }});
+        // 不論店員用什麼語系，我們把所有翻譯都存進去
+        // 這樣列印程式抓 'name' 時會抓到英文，抓 'name_zh' 時會抓到中文
+        C.push({{ 
+            id: cur.id, 
+            name: cur.name_en, // 強制將 name 存為英文
+            name_zh: cur.name_zh, 
+            name_jp: cur.name_jp,
+            name_kr: cur.name_kr,
+            unit_price: cur.price + addP, 
+            qty: q, 
+            options: selectedOptIndices.map(idx => cur['custom_options_' + CUR_LANG][idx]),
+            options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
+            category: cur.category, 
+            print_category: cur.print_category 
+        }});
         document.getElementById('opt-m').style.display='none'; upd();
     }}
+
+    function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
     function upd(){{
         if(C.length){{
             document.getElementById('bar').style.display='flex';
@@ -399,7 +402,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let h="";
         C.forEach((i,x)=>{{
             h+=`<div style="border-bottom:1px solid #eee;padding:10px;display:flex;justify-content:space-between;">
-                <div><b>${{i.name}}</b> x${{i.qty}}<br><small>${{i.options.join(',')}}</small></div>
+                <div><b>${{i['name_' + CUR_LANG] || i.name_zh}}</b> x${{i.qty}}<br><small>${{i.options.join(',')}}</small></div>
                 <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;">🗑️</button>
             </div>`;
         }});
@@ -415,6 +418,8 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }}
     </script></body></html>
     """
+
+    
 # --- 4. 下單成功 (標準台灣時間修正版) ---
 @app.route('/order_success')
 def order_success():
