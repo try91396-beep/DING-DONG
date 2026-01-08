@@ -880,7 +880,7 @@ def print_order(oid):
         {body}
     </body></html>"""
 
-# --- 9. 後台管理 (完整修正版：支援全語系新增與編輯) ---
+# --- 9. 後台管理 (完整修正版：含切換、刪除與全語系支援) ---
 
 # [API] 接收前端拖拉後的 ID 順序
 @app.route('/admin/reorder_products', methods=['POST'])
@@ -896,12 +896,28 @@ def reorder_products():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+# [功能] 切換產品上架/下架狀態 (修正 404 問題)
+@app.route('/admin/toggle_product/<int:pid>')
+def toggle_product(pid):
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("UPDATE products SET is_available = NOT is_available WHERE id = %s", (pid,))
+    conn.commit(); conn.close()
+    return redirect('/admin')
+
+# [功能] 刪除產品
+@app.route('/admin/delete_product/<int:pid>')
+def delete_product(pid):
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("DELETE FROM products WHERE id = %s", (pid,))
+    conn.commit(); conn.close()
+    return redirect('/admin')
+
 # [頁面] 後台主控台
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
 
-    # --- [POST] 手動新增產品 (修正：加入日韓文欄位) ---
+    # --- [POST] 手動新增產品 ---
     if request.method == 'POST':
         try:
             cur.execute("""
@@ -936,9 +952,10 @@ def admin_panel():
 
     rows = ""
     for p in prods:
+        # p[5] 是 is_available
         row_style = "" if p[5] else "background-color: #f0f0f0; opacity: 0.7;"
         status_text = "<span style='color:green'>上架</span>" if p[5] else "<span style='color:red'>下架</span>"
-        toggle = f"<a href='/admin/toggle_product/{p[0]}'>切換</a>"
+        toggle_link = f"<a href='/admin/toggle_product/{p[0]}' class='button button-clear' style='display:inline;padding:0;height:auto;line-height:normal;font-size:12px;'>[切換]</a>"
         p_cat = p[14] if len(p)>14 and p[14] else 'Noodle'
 
         rows += f"""
@@ -948,16 +965,18 @@ def admin_panel():
             <td><b>{p[1]}</b><br><small style="color:#888">{p[3]}</small></td>
             <td>{p[2]}</td>
             <td>{p_cat}</td>
-            <td>{status_text} {toggle}</td>
+            <td>{status_text} <br> {toggle_link}</td>
             <td>
                 <a href='/admin/edit_product/{p[0]}'>編輯</a> | 
-                <a href='/admin/delete_product/{p[0]}' onclick='return confirm(\"確定刪除？\")'>刪除</a>
+                <a href='/admin/delete_product/{p[0]}' onclick='return confirm(\"確定刪除？\")' style='color:red;'>刪除</a>
             </td>
         </tr>"""
 
     return f"""
     <!DOCTYPE html><html><head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>餐廳後台管理</title>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.14.0/Sortable.min.js"></script>
         <style>
@@ -965,20 +984,13 @@ def admin_panel():
             .sortable-ghost {{ background: #e3f2fd; opacity: 0.5; }}
             .handle {{ touch-action: none; }} 
             h5 {{ margin-bottom: 5px; color: #9b4dca; border-left: 4px solid #9b4dca; padding-left: 10px; }}
+            .button-clear {{ text-decoration: underline; }}
         </style>
     </head>
     <body style="padding:20px;">
     
     <div style="background:#f4f7f6; padding:20px; border-radius:8px; margin-bottom:30px; border:1px solid #ddd;">
-        <h4 style="margin-top:0;">➕ 新增產品 / 批次管理</h4>
-        <div style="margin-bottom:20px;padding-bottom:15px;border-bottom:1px dashed #ccc;">
-            <form action="/admin/import_excel" method="post" enctype="multipart/form-data" style="margin:0;display:flex;align-items:center;">
-                <label style="margin-right:10px;margin-bottom:0;">Excel 匯入:</label>
-                <input type="file" name="file" accept=".xlsx" required style="margin-right:10px;margin-bottom:0;">
-                <button type="submit" class="button button-small button-outline" style="margin-bottom:0;">上傳匯入</button>
-            </form>
-        </div>
-
+        <h4 style="margin-top:0;">➕ 新增產品</h4>
         <form method="POST">
             <h5>1. 基本資料</h5>
             <div class="row">
@@ -1018,11 +1030,10 @@ def admin_panel():
 
     <div style="position:sticky; top:0; background:white; z-index:100; padding:10px 0; border-bottom:1px solid #eee;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
-            <h3>📦 產品列表</h3>
+            <h3>📦 產品列表 (可拖曳排序)</h3>
             <div>
                  <button id="save-btn" onclick="saveOrder()" class="button" style="background:#9c27b0;border-color:#9c27b0;display:none;">💾 儲存排序</button>
-                 <a href="/admin/export_excel" class="button button-outline">📥 匯出 Excel</a>
-                 <a href="/admin/reset_orders" onclick="return confirm('確定清空所有訂單？')" class="button button-clear" style="color:red;">⚠️ 清空訂單</a>
+                 <a href="/admin/reset_orders" onclick="return confirm('確定清空所有訂單記錄？')" class="button button-clear" style="color:red;">⚠️ 清空訂單</a>
             </div>
         </div>
     </div>
@@ -1044,14 +1055,17 @@ def admin_panel():
                 method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
                 body: JSON.stringify({{ order: order }})
             }}).then(r => r.json()).then(data => {{
-                if(data.status === 'success') location.reload();
+                if(data.status === 'success') {{
+                    alert('排序已儲存！');
+                    location.reload();
+                }}
             }});
         }}
     </script>
     </body></html>
     """
 
-# --- 編輯產品頁面 (保持不變，已支援全語系) ---
+# --- 編輯產品頁面 ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -1085,7 +1099,7 @@ def edit_product(pid):
     def v(val): return val if val else "" 
 
     return f"""
-    <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css"></head>
+    <!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css"></head>
     <body style="padding:20px;">
         <h3>編輯產品 #{p[0]}</h3>
         <form method="POST">
