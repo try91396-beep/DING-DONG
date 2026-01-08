@@ -153,7 +153,7 @@ def language_select():
     </body></html>
     """
 
-# --- 3. 點餐頁面 (終極修正版：確保新增餐點包含所有語系名稱) ---
+# --- 3. 點餐頁面 (語系全兼容修正版) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -176,27 +176,31 @@ def menu():
             total_price = 0
             display_list = []
 
-            for item in cart_items:
-                price = int(float(item['unit_price']))
-                qty = int(float(item['qty']))
-                total_price += (price * qty)
-                
-                # 這裡的邏輯決定了資料庫 items 字串欄位的顯示
-                # 為了讓看板始終好讀，我們在 items 欄位維持顯示中文
-                n_display = item.get('name_zh', item['name'])
-                opts = item.get('options_zh', item.get('options', []))
-                opt_str = f"({','.join(opts)})" if opts else ""
-                display_list.append(f"{n_display} {opt_str} x{qty}")
-
-            items_str = " + ".join(display_list)
-
-            # --- [語系繼承] ---
+            # 繼承語系邏輯
             final_lang = lang_from_page 
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
                 if orig_res:
                     final_lang = orig_res[0] 
+
+            for item in cart_items:
+                price = int(float(item['unit_price']))
+                qty = int(float(item['qty']))
+                total_price += (price * qty)
+                
+                # 看板顯示邏輯：根據 final_lang 決定看板摘要字串
+                # 這樣店員在看板上看修改後的訂單，會顯示客人該語系的名稱
+                n_field = f"name_{final_lang}" if f"name_{final_lang}" in item else "name_zh"
+                n_display = item.get(n_field, item.get('name_zh'))
+                
+                # 選項也根據語系抓取
+                opt_key = f"options_{final_lang}" if f"options_{final_lang}" in item else "options_zh"
+                opts = item.get(opt_key, item.get('options_zh', []))
+                opt_str = f"({','.join(opts)})" if opts else ""
+                display_list.append(f"{n_display} {opt_str} x{qty}")
+
+            items_str = " + ".join(display_list)
 
             cur.execute("SELECT COUNT(*) FROM orders WHERE created_at >= CURRENT_DATE")
             new_seq = cur.fetchone()[0] + 1
@@ -207,7 +211,6 @@ def menu():
             """, (table_number, items_str, total_price, final_lang, new_seq, cart_json, need_receipt))
 
             oid = cur.fetchone()[0]
-
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
                 conn.commit()
@@ -244,7 +247,6 @@ def menu():
 
     p_list = []
     for p in products:
-        # 強制保存所有語系名稱供 JS 使用
         p_list.append({
             'id': p[0], 
             'name_zh': p[1],
@@ -268,7 +270,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 修改模式：系統將自動恢復原始語系列印</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid} (語言自動適配)</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -331,12 +333,11 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
     
-    // 初始化列表
+    // 初始化列表：根據當前頁面語系顯示
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
         let isAvail = p.is_available;
-        // 顯示名稱根據介面語言
         let d_name = p['name_' + CUR_LANG] || p.name_zh;
         h+=`<div class="menu-item ${{isAvail ? '' : 'sold-out'}}">
             ${{isAvail ? '' : `<div class="sold-out-badge">${{T.sold_out}}</div>`}}
@@ -370,20 +371,21 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('opt-m').style.display='flex';
     }}
 
-    // --- [核心修正：addC 函數] ---
+    // --- [關鍵修正：addC 函數同時保存日、英、韓名稱] ---
     function addC(){{
-        // 不論店員用什麼語系，我們把所有翻譯都存進去
-        // 這樣列印程式抓 'name' 時會抓到英文，抓 'name_zh' 時會抓到中文
         C.push({{ 
             id: cur.id, 
-            name: cur.name_en, // 強制將 name 存為英文
+            name: cur.name_en, // 結帳單英文欄位
             name_zh: cur.name_zh, 
-            name_jp: cur.name_jp,
-            name_kr: cur.name_kr,
+            name_jp: cur.name_jp, // 新增：保存日文名稱
+            name_kr: cur.name_kr, // 新增：保存韓文名稱
             unit_price: cur.price + addP, 
             qty: q, 
-            options: selectedOptIndices.map(idx => cur['custom_options_' + CUR_LANG][idx]),
+            // 同時保存所有語系的選項翻譯
+            options: selectedOptIndices.map(idx => cur.custom_options_en[idx]),
             options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
+            options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx]),
+            options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
             category: cur.category, 
             print_category: cur.print_category 
         }});
@@ -402,7 +404,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let h="";
         C.forEach((i,x)=>{{
             h+=`<div style="border-bottom:1px solid #eee;padding:10px;display:flex;justify-content:space-between;">
-                <div><b>${{i['name_' + CUR_LANG] || i.name_zh}}</b> x${{i.qty}}<br><small>${{i.options.join(',')}}</small></div>
+                <div><b>${{i['name_' + CUR_LANG] || i.name_zh}}</b> x${{i.qty}}</div>
                 <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;">🗑️</button>
             </div>`;
         }});
