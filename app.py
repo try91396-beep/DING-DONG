@@ -153,7 +153,7 @@ def language_select():
     </body></html>
     """
 
-# --- 3. 點餐頁面 (修正版：修改訂單時保留原始語系) ---
+# --- 3. 點餐頁面 (優化版：修正修改模式下的語系繼承與跳轉邏輯) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -167,7 +167,6 @@ def menu():
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            # 這是目前頁面的語言
             lang_from_page = request.form.get('lang_input', 'zh')
             old_order_id = request.form.get('old_order_id')
 
@@ -187,22 +186,20 @@ def menu():
 
             items_str = " + ".join(display_list)
 
-            # --- [關鍵修正開始] ---
-            final_lang = lang_from_page # 預設使用當前頁面語言
-            
+            # --- [關鍵修正：語系繼承邏輯] ---
+            final_lang = lang_from_page 
             if old_order_id:
-                # 如果是修改模式，先去找出這張舊單當初是用什麼語言下單的
+                # 抓取舊單原始語系
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
-                orig_lang_res = cur.fetchone()
-                if orig_lang_res:
-                    final_lang = orig_lang_res[0] # 強制繼承原始語言，不被店員介面的 zh 覆蓋
-            # --- [關鍵修正結束] ---
+                orig_res = cur.fetchone()
+                if orig_res:
+                    final_lang = orig_res[0] # 這裡繼承了 en/jp/kr
 
             # 計算當日流水號
             cur.execute("SELECT COUNT(*) FROM orders WHERE created_at >= CURRENT_DATE")
             new_seq = cur.fetchone()[0] + 1
 
-            # 插入新訂單 (使用保持不變的 final_lang)
+            # 插入新訂單 (確保存入的是 final_lang)
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -211,13 +208,13 @@ def menu():
             oid = cur.fetchone()[0]
 
             if old_order_id:
-                # 將舊訂單設為作廢
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
                 conn.commit()
-                # 修改完後關閉視窗(回到廚房看板)
+                # 修改模式通常是店員操作，直接關閉視窗回看板
                 return "<script>window.close();</script>"
 
             conn.commit()
+            # 關鍵修正：跳轉時也必須使用 final_lang，否則成功頁面的列印按鈕會抓錯語言
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
 
         except Exception as e:
@@ -238,7 +235,6 @@ def menu():
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
 
-    # 讀取所有產品
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
                 name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
@@ -283,7 +279,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid} (將繼承原始語系列印)</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:10px;color:#856404;text-align:center;">⚠️ 正在編輯 #{edit_oid} (系統將自動恢復原始語系列印)</div>' if edit_oid else ''
     ai_badge = f"<div style='text-align:center;color:#999;font-size:0.8em;padding:10px;'>🤖 {t.get('ai_note', 'Translated by AI')}</div>"
 
     return f"""
@@ -419,7 +415,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }}
     </script></body></html>
     """
-
 # --- 4. 下單成功 (標準台灣時間修正版) ---
 @app.route('/order_success')
 def order_success():
