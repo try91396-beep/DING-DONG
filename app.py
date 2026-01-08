@@ -610,15 +610,16 @@ def kitchen_panel():
     </html>
     """
 
-# --- 5. 廚房看板 - [API] 數據供應來源 ---
+# --- 5. 廚房看板 - [API] 數據供應來源 (修正版：支援中文修改與原語系列印) ---
 @app.route('/check_new_orders')
 def check_new_orders():
     from datetime import timedelta
     import json
+    # 從前端獲取當前已知的最大序號，用於偵測新訂單
     current_max = request.args.get('current_seq', 0, type=int)
     conn = get_db_connection(); cur = conn.cursor()
 
-    # 抓取近 18 小時訂單
+    # 1. 抓取近 18 小時訂單 (包含語系資訊 lang)
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -627,14 +628,16 @@ def check_new_orders():
     """)
     orders = cur.fetchall()
 
+    # 2. 取得目前資料庫中最大的序號
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at > (NOW() - INTERVAL '18 hours')")
     max_seq_val = cur.fetchone()[0] or 0
 
+    # 3. 偵測新訂單 ID (用於觸發自動列印)
     new_order_ids = []
-    # 偵測比當前記錄更大的 daily_seq
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
+    
     conn.close()
 
     html_content = ""
@@ -642,14 +645,15 @@ def check_new_orders():
         html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>目前無新訂單</div>"
 
     for o in orders:
-        oid, table, raw_items, total, status, created, lang, seq_num, c_json = o
+        oid, table, raw_items, total, status, created, order_lang, seq_num, c_json = o
         cls = status.lower()
         seq = f"{seq_num:03d}"
 
-        # 轉換為台灣時間
+        # 轉換為台灣時間 (UTC+8)
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
 
+        # 處理品項顯示 (看板統一顯示中文以利廚房作業)
         items_html = ""
         try:
             if c_json:
@@ -666,19 +670,27 @@ def check_new_orders():
 
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
         
-        # 將原本的 <a> 標籤連結改為使用 action() 函數以實現無重整
+        # --- 按鈕邏輯修正 ---
         btns = ""
         if status == 'Pending':
+            # 完成按鈕 (非同步)
             btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 完成</button>"
+        
         if status != 'Cancelled':
-            btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
+            # 修改按鈕：強制帶入 lang=zh，讓店員在中文介面修改訂單
+            btns += f"<a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 修改 (中)</a>"
+            
+            # 作廢按鈕 (非同步)
             btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 作廢</button>"
-        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
+        
+        # 列印按鈕：不指定語言，讓 /print_order 路由根據資料庫內存的 order_lang 自動判斷
+        # 或者您可以顯式傳遞：f"/print_order/{oid}?lang={order_lang}"
+        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印 ({order_lang})</a>"
 
         html_content += f"""
         <div class="card {cls}">
             <div class="tag" style="color:{'#28a745' if status=='Completed' else '#ff9800'}">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">{time_str} (TPE)</div>
+            <div style="font-size:0.9em; color:#888;">{time_str} (TPE) | 語系: {order_lang}</div>
             <div style="margin: 10px 0;">
                 <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span> 
                 <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
@@ -687,7 +699,12 @@ def check_new_orders():
             <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
         </div>
         """
-    return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
+    
+    return jsonify({
+        'html': html_content, 
+        'max_seq': max_seq_val, 
+        'new_ids': new_order_ids
+    })
 
 # --- 6. 日結報表 ---
 @app.route('/kitchen/report')
@@ -800,11 +817,12 @@ def cancel_order(oid):
     c=get_db_connection(); c.cursor().execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,)); c.commit(); c.close()
     return redirect('/kitchen')
 
-# --- 8. 列印 (修正版：支援自動關閉與容錯) ---
+# --- 8. 列印 (修正版：支援自動關閉、語系分離與容錯) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
+    import json
     conn = get_db_connection(); cur = conn.cursor()
-    # 明確指定欄位順序，避免 SELECT * 索引對不上的問題
+    # 明確指定欄位順序
     cur.execute("""
         SELECT id, table_number, items, total_price, status, created_at, daily_seq, content_json, lang 
         FROM orders WHERE id=%s
@@ -814,18 +832,18 @@ def print_order(oid):
 
     if not o: return "No Data"
 
-    # 變數映射
-    oid_db, table_num, raw_items, total_val, status, created_at, daily_seq, c_json, lang = o
+    # 變數映射 (注意順序與 SQL 語法一致)
+    oid_db, table_num, raw_items, total_val, status, created_at, daily_seq, c_json, order_lang = o
     seq = f"{daily_seq:03d}"
 
-    # [修正點] 強大容錯解析 JSON
+    # 強大容錯解析 JSON
     items = []
     try:
         if c_json:
             items = json.loads(c_json)
         else:
-            # 備援：如果沒有 JSON，將字串轉為簡易格式
-            items = [{"name": n, "qty": 1, "unit_price": 0, "options": []} for n in raw_items.split("+")]
+            # 備援：將字串轉為簡易格式
+            items = [{"name": n, "qty": 1, "unit_price": 0, "options": [], "options_zh": []} for n in raw_items.split("+")]
     except Exception:
         return f"列印解析失敗，請通知工程師。內容: {raw_items}"
 
@@ -834,66 +852,93 @@ def print_order(oid):
     title = "❌ 作廢單 (VOID)" if is_void else "結帳單 (Receipt)"
     style = "text-decoration: line-through; color:red;" if is_void else ""
 
+    # 根據語系決定顧客聯顯示名稱
     def get_display_name(item):
         n_zh = item.get('name_zh', item.get('name', 'Unknown'))
         n_foreign = item.get('name', n_zh)
-        if lang == 'zh': return n_zh
+        if order_lang == 'zh': 
+            return n_zh
+        # 如果是外國語言，顯示外國語名稱，下方括號註記中文
         return f"{n_foreign}<br><small>({n_zh})</small>"
 
     def mk_ticket(t_name, item_list, show_total=False, is_kitchen=False):
         if not item_list and not show_total: return ""
-        h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {table_num}</p><small>{time_str}</small></div><hr>"
-        t_price = 0
+        
+        h = f"""<div class='ticket' style='{style}'>
+                <div class='head'>
+                    <h2>{t_name}</h2>
+                    <h1>#{seq}</h1>
+                    <p>Table: {table_num}</p>
+                    <small>{time_str}</small>
+                </div><hr>"""
+        
         for i in item_list:
             qty = i.get('qty', 1)
             u_p = i.get('unit_price', 0)
-            t_price += u_p * qty
 
             if is_kitchen:
+                # 廚房聯：固定顯示中文名稱與中文選項
                 d_name = i.get('name_zh', i.get('name', '商品'))
                 ops = i.get('options_zh', i.get('options', []))
             else:
+                # 顧客聯：根據下單語言顯示，並顯示該語言選項
                 d_name = get_display_name(i)
                 ops = i.get('options', [])
 
+            # 確保 ops 是 list 格式
+            if isinstance(ops, str): ops = [ops]
+
             h += f"<div class='row'><span>{qty} x {d_name}</span><span>${u_p * qty}</span></div>"
             if ops: 
-                # 確保 ops 是 list
-                if isinstance(ops, str): ops = [ops]
-                h += f"<div class='opt'>({','.join(ops)})</div>"
+                h += f"<div class='opt'>└ {', '.join(ops)}</div>"
 
-        if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;'>Total: ${total_val}</div>"
+        if show_total: 
+            h += f"<hr><div style='text-align:right;font-size:1.2em;font-weight:bold;'>Total: ${total_val}</div>"
+        
         h += "</div><div class='break'></div>"
         return h
 
     body = ""
-    # 顧客聯
+    # 1. 產生顧客聯 (使用下單語系)
     body += mk_ticket(title, items, show_total=True, is_kitchen=False)
 
     if not is_void:
-        # 廚房工單分區
+        # 2. 廚房工單分區 (固定顯示中文)
         noodles = [i for i in items if i.get('print_category', 'Noodle') == 'Noodle']
         soups = [i for i in items if i.get('print_category') == 'Soup']
-        body += mk_ticket("🍜 麵區工單", noodles, is_kitchen=True)
-        body += mk_ticket("🍲 湯區工單", soups, is_kitchen=True)
+        
+        if noodles:
+            body += mk_ticket("🍜 麵區工單", noodles, is_kitchen=True)
+        if soups:
+            body += mk_ticket("🍲 湯區工單", soups, is_kitchen=True)
 
     # 渲染 HTML，並加入列印後自動關閉視窗的腳本
     return f"""
-    <html><head>
-    <style>
-        body{{font-family:'Courier New', 'Microsoft JhengHei', sans-serif;font-size:14px;background:#eee;padding:20px;}} 
-        .ticket{{width:58mm;background:white;margin:0 auto 10px auto;padding:10px;box-shadow:0 0 5px rgba(0,0,0,0.1);}} 
-        .head{{text-align:center;}} 
-        .row{{display:flex;justify-content:space-between;margin-top:5px;font-weight:bold;}} 
-        .opt{{font-size:12px;color:#555;margin-left:20px;}} 
-        .break{{page-break-after:always;}} 
-        small{{color:#666;font-size:0.8em;}} 
-        @media print{{.ticket{{width:100%;box-shadow:none;margin:0;}} body{{background:white;padding:0;}}}}
-    </style>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: 'Microsoft JhengHei', 'Courier New', sans-serif; font-size: 14px; background: #eee; padding: 20px; }} 
+            .ticket {{ width: 58mm; background: white; margin: 0 auto 10px auto; padding: 10px; box-shadow: 0 0 5px rgba(0,0,0,0.1); border: 1px dashed #ccc; }} 
+            .head {{ text-align: center; }} 
+            .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; line-height: 1.2; }} 
+            .opt {{ font-size: 12px; color: #444; margin-left: 15px; margin-bottom: 5px; border-bottom: 1px dotted #eee; }} 
+            .break {{ page-break-after: always; }} 
+            small {{ color: #666; font-size: 0.85em; }} 
+            h1 {{ margin: 5px 0; font-size: 2.5em; }}
+            h2 {{ margin: 0; font-size: 1.2em; }}
+            @media print {{ 
+                body {{ background: white; padding: 0; }} 
+                .ticket {{ width: 100%; box-shadow: none; margin: 0; border: none; }} 
+            }}
+        </style>
     </head>
-    <body onload='window.print(); setTimeout(function(){{window.close();}}, 1000);'>
+    <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1000);'>
         {body}
-    </body></html>"""
+    </body>
+    </html>"""
+    
 
 # --- 9. 後台管理 (完整修正版：含清空訂單、切換、刪除與全語系支援) ---
 
