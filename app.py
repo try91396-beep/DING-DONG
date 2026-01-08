@@ -564,7 +564,7 @@ def cancel_order(oid):
     c=get_db_connection(); c.cursor().execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,)); c.commit(); c.close()
     return redirect('/kitchen')
 
-# --- 8. 列印路由 ---
+# --- 8. 列印路由 (修正長訂單自動分頁問題) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -579,7 +579,7 @@ def print_order(oid):
     seq = f"{daily_seq:03d}"
     items = []
     try:
-        items = json.loads(c_json) if c_json else [{"name": n, "qty": 1, "unit_price": 0, "options": [], "options_zh": []} for n in raw_items.split("+")]
+        items = json.loads(c_json) if c_json else []
     except: return "解析失敗"
 
     is_void = (status == 'Cancelled')
@@ -599,20 +599,15 @@ def print_order(oid):
         h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {table_num}</p><small>{time_str}</small></div><hr>"
         for i in item_list:
             qty = i.get('qty', 1); u_p = i.get('unit_price', 0)
-            if is_kitchen:
-                d_name = i.get('name_zh', '商品')
-                ops = i.get('options_zh', [])
-            else:
-                d_name = get_display_name(i)
-                ops = i.get(f'options_{order_lang}', i.get('options', []))
-            
+            d_name = i.get('name_zh', '商品') if is_kitchen else get_display_name(i)
+            ops = i.get('options_zh', []) if is_kitchen else i.get(f'options_{order_lang}', i.get('options', []))
             if isinstance(ops, str): ops = [ops]
             h += f"<div class='row'><span>{qty} x {d_name}</span><span>${u_p * qty}</span></div>"
             if ops: h += f"<div class='opt'>└ {', '.join(ops)}</div>"
         if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;font-weight:bold;'>Total: ${total_val}</div>"
         return h + "</div><div class='break'></div>"
 
-    body = mk_ticket(title, items, show_total=True, is_kitchen=False)
+    body = mk_ticket(title, items, show_total=True)
     if not is_void:
         noodles = [i for i in items if i.get('print_category', 'Noodle') == 'Noodle']
         soups = [i for i in items if i.get('print_category') == 'Soup']
@@ -622,16 +617,37 @@ def print_order(oid):
     return f"""
     <html><head><meta charset="UTF-8">
     <style>
-        @page {{ size: 58mm auto; margin: 0; }}
-        body {{ font-family: 'Microsoft JhengHei', sans-serif; font-size: 14px; background: #fff; margin: 0; padding: 0; }} 
-        .ticket {{ width: 54mm; margin: 0 auto; padding: 2mm; box-sizing: border-box; }} 
+        /* 設定紙張：auto 長度能防止強制分頁 */
+        @page {{ 
+            size: 58mm auto; 
+            margin: 0; 
+        }}
+        body {{ 
+            font-family: 'Microsoft JhengHei', sans-serif; 
+            font-size: 14px; 
+            background: #fff; 
+            margin: 0; 
+            padding: 0;
+            width: 58mm;
+        }} 
+        .ticket {{ 
+            width: 54mm; 
+            margin: 0 auto; 
+            padding: 2mm; 
+            box-sizing: border-box;
+            page-break-inside: avoid; /* [重要] 防止單張票據內部被切斷 */
+            overflow: visible;
+        }} 
         .head {{ text-align: center; }} 
         .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; }} 
         .opt {{ font-size: 12px; color: #444; margin-left: 15px; }} 
-        .break {{ page-break-after: always; }} 
+        .break {{ 
+            page-break-after: always; /* 僅在結帳單與工單之間換頁 */
+        }} 
         h1 {{ margin: 5px 0; font-size: 2.5em; }}
         h2 {{ margin: 5px 0; font-size: 1.5em; }}
         hr {{ border: none; border-top: 1px dashed #000; }}
+        
         @media print {{ 
             body {{ background: white; }} 
             .ticket {{ width: 100%; border: none; }} 
