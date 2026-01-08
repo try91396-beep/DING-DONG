@@ -484,7 +484,7 @@ def order_success():
     </div>
     """
 
-# --- 5. 廚房看板 - [頁面] 渲染主介面 ---
+# --- 5. 廚房看板 - [頁面] 渲染主介面 (升級版：無重整操作 + 自動列印) ---
 @app.route('/kitchen')
 def kitchen_panel():
     return """
@@ -527,8 +527,8 @@ def kitchen_panel():
             .btn-complete { background: #28a745; }
             .btn-print { background: #17a2b8; }
             .btn-void { background: #822; }
+            .btn-edit { background: #555; }
             
-            /* 權限提示條 */
             #audio-banner { 
                 background: #d32f2f; color: white; text-align: center; 
                 padding: 10px; font-weight: bold; cursor: pointer;
@@ -536,7 +536,7 @@ def kitchen_panel():
         </style>
     </head>
     <body>
-        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音提示功能」</div>
+        <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音」與「自動列印」功能</div>
         
         <div class="header-container">
             <h1>👨‍🍳 廚房出單看板</h1>
@@ -559,12 +559,19 @@ def kitchen_panel():
             function enableAudio() {
                 audioUnlocked = true;
                 document.getElementById('audio-banner').style.display = 'none';
-                // 播放一次靜音音效解鎖瀏覽器限制
                 const audio = document.getElementById('notice-sound');
                 audio.play().then(() => {
                     audio.pause();
                     audio.currentTime = 0;
                 });
+                alert("功能已啟動！若無法自動彈出列印頁，請查看瀏覽器網址列右側是否攔截了彈出視窗。");
+            }
+
+            // --- 核心：非同步操作函數 ---
+            function action(url) {
+                fetch(url).then(() => {
+                    refreshOrders(); // 操作完立即刷新，不重整網頁
+                }).catch(err => console.error("操作失敗:", err));
             }
 
             function refreshOrders() {
@@ -575,12 +582,18 @@ def kitchen_panel():
                         document.getElementById('order-grid').innerHTML = data.html;
                     }
                     
-                    // 判斷是否有新訂單（排除第一次載入）
+                    // 偵測新訂單
                     if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                        // 1. 播放聲音
                         if (audioUnlocked) {
                             const audio = document.getElementById('notice-sound');
                             audio.currentTime = 0;
-                            audio.play().catch(e => console.log("播放失敗"));
+                            audio.play().catch(e => console.log("聲音播放失敗"));
+                            
+                            // 2. 自動列印 (打開列印分頁)
+                            data.new_ids.forEach(id => {
+                                window.open('/print_order/' + id, '_blank');
+                            });
                         }
                     }
                     
@@ -590,7 +603,6 @@ def kitchen_panel():
                 .catch(err => console.error("連線錯誤:", err));
             }
 
-            // 每 5 秒自動刷新的 API
             setInterval(refreshOrders, 5000);
             refreshOrders();
         </script>
@@ -598,10 +610,11 @@ def kitchen_panel():
     </html>
     """
 
-# --- 5. 廚房看板 - [API] 數據供應來源 (已含台灣時區修正) ---
+# --- 5. 廚房看板 - [API] 數據供應來源 ---
 @app.route('/check_new_orders')
 def check_new_orders():
     from datetime import timedelta
+    import json
     current_max = request.args.get('current_seq', 0, type=int)
     conn = get_db_connection(); cur = conn.cursor()
 
@@ -618,6 +631,7 @@ def check_new_orders():
     max_seq_val = cur.fetchone()[0] or 0
 
     new_order_ids = []
+    # 偵測比當前記錄更大的 daily_seq
     if current_max > 0:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at > (NOW() - INTERVAL '18 hours')", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
@@ -632,7 +646,7 @@ def check_new_orders():
         cls = status.lower()
         seq = f"{seq_num:03d}"
 
-        # 轉換為台灣時間 (UTC+8)
+        # 轉換為台灣時間
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M:%S')
 
@@ -651,12 +665,14 @@ def check_new_orders():
             items_html = f"解析錯誤: {raw_items}"
 
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
+        
+        # 將原本的 <a> 標籤連結改為使用 action() 函數以實現無重整
         btns = ""
         if status == 'Pending':
-            btns += f"<a href='/kitchen/complete/{oid}' class='btn btn-complete'>✔️ 完成</a>"
+            btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 完成</button>"
         if status != 'Cancelled':
             btns += f"<a href='/menu?edit_oid={oid}' target='_blank' class='btn btn-edit'>✏️ 修改</a>"
-            btns += f"<a href='/order/cancel/{oid}' class='btn btn-void' onclick='return confirm(\"確定作廢？\")'>🗑️ 作廢</a>"
+            btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 作廢</button>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印</a>"
 
         html_content += f"""
@@ -672,7 +688,6 @@ def check_new_orders():
         </div>
         """
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
-
 
 # --- 6. 日結報表 ---
 @app.route('/kitchen/report')
