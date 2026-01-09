@@ -252,7 +252,33 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     <html><head><title>{t['title']}</title><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
     <style>
         body{{font-family:'Microsoft JhengHei',sans-serif;margin:0;padding-bottom:140px;background:#f8f9fa;touch-action:manipulation;}}
-        .header{{background:white;padding:15px;position:sticky;top:0;z-index:99;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}
+        .header{{background:white;padding:15px 15px 5px 15px;position:sticky;top:0;z-index:99;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}
+        
+        /* 分類滑動條樣式 */
+        .cat-bar {{
+            display: flex;
+            overflow-x: auto;
+            white-space: nowrap;
+            padding: 10px 0;
+            gap: 10px;
+            scrollbar-width: none; /* Firefox */
+        }}
+        .cat-bar::-webkit-scrollbar {{ display: none; }} /* Chrome/Safari */
+        .cat-btn {{
+            background: #f1f3f5;
+            border: 1px solid #dee2e6;
+            padding: 6px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            color: #495057;
+            cursor: pointer;
+        }}
+        .cat-btn.active {{
+            background: #28a745;
+            color: white;
+            border-color: #28a745;
+        }}
+
         .menu-item{{background:white;margin:10px;padding:10px;border-radius:10px;display:flex;box-shadow:0 2px 4px rgba(0,0,0,0.05);position:relative;}}
         .menu-img{{width:80px;height:80px;border-radius:8px;object-fit:cover;background:#eee;}}
         .menu-info{{flex:1;padding-left:15px;display:flex;flex-direction:column;justify-content:space-between;}}
@@ -270,9 +296,8 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         .modal-c{{background:white;width:100%;padding:20px;border-radius:20px 20px 0 0;max-height:80vh;overflow-y:auto;box-sizing:border-box;position:relative;}}
         .opt-tag{{border:1px solid #ddd;padding:5px 10px;border-radius:15px;margin:3px;display:inline-block;cursor:pointer;touch-action:manipulation;}}
         .opt-tag.sel{{background:#e3f2fd;border-color:#2196f3;color:#2196f3;}}
-        .cat-header {{padding:10px 15px;font-weight:bold;color:#444;background:#eee;margin-top:10px;}}
+        .cat-header {{padding:10px 15px;font-weight:bold;color:#444;background:#eee;margin-top:10px; scroll-margin-top: 140px;}}
         
-        /* 數量控制樣式 - 加入 touch-action 防止放大 */
         .qty-ctrl{{display:flex;align-items:center;gap:10px;justify-content:center;margin:15px 0;}}
         .qty-ctrl button{{width:44px;height:44px;border-radius:22px;border:1px solid #ddd;background:white;font-size:1.5em;line-height:1;touch-action:manipulation;}}
         .qty-input{{width:60px;text-align:center;font-size:1.2em;border:1px solid #ddd;padding:5px;border-radius:5px;}}
@@ -283,11 +308,14 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </style></head><body>
     <div class="header">
         {edit_notice}
-        <h3>{t['welcome']}</h3>
+        <h3 style="margin:0 0 10px 0;">{t['welcome']}</h3>
         <input type="text" id="visible_table" value="{default_table}" placeholder="{t['table_placeholder']}" 
-               style="padding:10px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:5px;font-size:1.1em;">
+               style="padding:10px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:5px;font-size:1.1em;margin-bottom:5px;">
+        <div class="cat-bar" id="cat-nav"></div>
     </div>
+    
     <div id="list"></div>
+    
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
         <input type="hidden" name="table_number" id="tbl_input">
@@ -338,9 +366,15 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
-    let h="", cat="";
+    // 生成菜單與分類導覽
+    let h="", cat="", cats=[];
     P.forEach(p=>{{
-        if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
+        if(p.category!=cat) {{ 
+            let catId = "cat-" + p.category;
+            h+=`<div class="cat-header" id="${{catId}}">${{p.category}}</div>`; 
+            cat=p.category; 
+            cats.push(p.category);
+        }}
         let isAvail = p.is_available;
         let d_name = p['name_' + CUR_LANG] || p.name_zh;
         h+=`<div class="menu-item ${{isAvail ? '' : 'sold-out'}}">
@@ -353,9 +387,24 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         </div>`;
     }});
     document.getElementById('list').innerHTML=h;
-    upd();
 
-    // 關閉彈窗邏輯
+    // 生成分類按鈕
+    let navH = "";
+    cats.forEach(c => {{
+        navH += `<div class="cat-btn" onclick="scrollToCat('${{c}}', this)">${{c}}</div>`;
+    }});
+    document.getElementById('cat-nav').innerHTML = navH;
+
+    function scrollToCat(catName, btn) {{
+        const el = document.getElementById("cat-" + catName);
+        if(el) {{
+            el.scrollIntoView({{ behavior: 'smooth' }});
+            // 切換 Active 樣式
+            document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        }}
+    }}
+
     function closeModalByBg(e, id) {{
         document.getElementById(id).style.display = 'none';
     }}
@@ -460,6 +509,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('cart_input').value = JSON.stringify(C);
         if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
     }}
+    upd(); // 初始化購物車顯示狀態
     </script></body></html>
     """
 
