@@ -160,7 +160,6 @@ def menu():
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            # 關鍵修正：確實抓取頁面傳回的語言設定
             final_lang = request.form.get('lang_input', 'zh')
             old_order_id = request.form.get('old_order_id')
 
@@ -170,7 +169,6 @@ def menu():
             total_price = 0
             display_list = []
 
-            # 如果是編輯舊訂單，沿用舊訂單語言；否則使用目前選擇語言
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -181,11 +179,9 @@ def menu():
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
                 
-                # 關鍵修正：根據 final_lang 動態選擇顯示名稱
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
                 
-                # 根據 final_lang 動態選擇客製化選項文字
                 opt_key = f"options_{final_lang}"
                 opts = item.get(opt_key, item.get('options_zh', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
@@ -194,7 +190,6 @@ def menu():
 
             items_str = " + ".join(display_list)
 
-            # 插入資料庫
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -215,7 +210,6 @@ def menu():
         finally:
             cur.close(); conn.close()
 
-    # --- GET 請求部分 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "[]"
@@ -266,7 +260,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         .sold-out {{ filter: grayscale(1); opacity: 0.6; pointer-events: none; }}
         .sold-out-badge {{ position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; z-index: 5; }}
         
-        /* 底部控制欄 */
         .cart-bar{{position:fixed;bottom:0;width:100%;background:white;padding:12px;box-shadow:0 -2px 10px rgba(0,0,0,0.1);display:none;flex-direction:column;box-sizing:border-box;z-index:100;}}
         .cart-summary{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding:0 5px;}}
         .cart-buttons{{display:flex;gap:10px;}}
@@ -274,10 +267,20 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         .btn-checkout{{background:#28a745;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;}}
         
         .modal{{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;z-index:200;justify-content:center;align-items:flex-end;}}
-        .modal-c{{background:white;width:100%;padding:20px;border-radius:20px 20px 0 0;max-height:80vh;overflow-y:auto;}}
+        .modal-c{{background:white;width:100%;padding:20px;border-radius:20px 20px 0 0;max-height:80vh;overflow-y:auto;box-sizing:border-box;}}
         .opt-tag{{border:1px solid #ddd;padding:5px 10px;border-radius:15px;margin:3px;display:inline-block;cursor:pointer;}}
         .opt-tag.sel{{background:#e3f2fd;border-color:#2196f3;color:#2196f3;}}
         .cat-header {{padding:10px 15px;font-weight:bold;color:#444;background:#eee;margin-top:10px;}}
+        
+        /* 數量控制樣式 */
+        .qty-ctrl{{display:flex;align-items:center;gap:10px;justify-content:center;margin:15px 0;}}
+        .qty-ctrl button{{width:40px;height:40px;border-radius:20px;border:1px solid #ddd;background:white;font-size:1.5em;line-height:1;}}
+        .qty-input{{width:60px;text-align:center;font-size:1.2em;border:1px solid #ddd;padding:5px;border-radius:5px;}}
+        
+        /* 購物車內數量控制微調 */
+        .cart-item-row{{border-bottom:1px solid #eee;padding:12px 0;display:flex;flex-direction:column;gap:5px;}}
+        .cart-item-main{{display:flex;justify-content:space-between;align-items:center;}}
+        .cart-qty-sub{{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:5px;}}
     </style></head><body>
     <div class="header">
         {edit_notice}
@@ -305,33 +308,33 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     
     <div class="modal" id="opt-m"><div class="modal-c">
         <h3 id="m-name"></h3><div id="m-opts"></div>
-        <div style="margin-top:20px;text-align:center;">
-            <button onclick="cq(-1)">-</button> <span id="m-q" style="margin:0 15px;font-weight:bold;">1</span> <button onclick="cq(1)">+</button>
+        <div class="qty-ctrl">
+            <button onclick="cq(-1)">-</button>
+            <input type="number" id="m-q" class="qty-input" value="1" min="1" inputmode="numeric">
+            <button onclick="cq(1)">+</button>
         </div>
-        <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:20px;">{t['modal_add_cart']}</button>
+        <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:10px;font-size:1.1em;">{t['modal_add_cart']}</button>
         <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:10px;border:none;margin-top:10px;">{t['modal_cancel']}</button>
     </div></div>
 
     <div class="modal" id="cart-m"><div class="modal-c">
-        <h3>{t['cart_title']}</h3><div id="c-list"></div>
-        <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:10px;border:1px solid #ddd;border-radius:10px;">{t['close']}</button>
+        <h3>{t['cart_title']}</h3>
+        <div id="c-list"></div>
+        <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:15px;border:1px solid #ddd;border-radius:10px;background:#f8f9fa;">{t['close']}</button>
     </div></div>
 
     <script>
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
-    let C=[], cur=null, q=1, selectedOptIndices=[], addP=0;
+    let C=[], cur=null, selectedOptIndices=[], addP=0;
     
-    // --- 關鍵修正：處理返回鍵自動清空 ---
     window.onpageshow = function(event) {{
         if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {{
-            C = [];
-            upd();
+            C = []; upd();
         }}
     }};
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
-    // 渲染菜單
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
@@ -350,7 +353,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     upd();
 
     function openOpt(id){{
-        cur=P.find(x=>x.id==id); q=1; selectedOptIndices=[]; addP=0;
+        cur=P.find(x=>x.id==id); selectedOptIndices=[]; addP=0;
         document.getElementById('m-name').innerText = cur['name_' + CUR_LANG] || cur.name_zh;
         let area=document.getElementById('m-opts'); area.innerHTML="";
         let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
@@ -365,11 +368,19 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             }};
             area.appendChild(d);
         }});
-        document.getElementById('m-q').innerText=1;
+        document.getElementById('m-q').value=1; // 預設數量為1
         document.getElementById('opt-m').style.display='flex';
     }}
 
+    // 加入購物車數量按鈕
+    function cq(n){{
+        let input = document.getElementById('m-q');
+        let val = parseInt(input.value) || 1;
+        if(val + n >= 1) input.value = val + n;
+    }}
+
     function addC(){{
+        let q = parseInt(document.getElementById('m-q').value) || 1;
         C.push({{ 
             id: cur.id, 
             name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
@@ -380,10 +391,9 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
             category: cur.category, print_category: cur.print_category 
         }});
-        document.getElementById('opt-m').style.display='none'; upd();
+        document.getElementById('opt-m').style.display='none'; 
+        upd();
     }}
-
-    function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
 
     function upd(){{
         if(C.length){{
@@ -393,13 +403,46 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         }} else document.getElementById('bar').style.display='none';
     }}
 
+    // 購物車內修改數量
+    function updateCartQty(idx, n){{
+        C[idx].qty += n;
+        if(C[idx].qty <= 0) {{
+            C.splice(idx, 1);
+        }}
+        showCart();
+        upd();
+    }}
+    
+    function setCartQty(idx, val){{
+        let q = parseInt(val) || 1;
+        if(q < 1) q = 1;
+        C[idx].qty = q;
+        upd();
+        // 為了不讓鍵盤在輸入時一直重新渲染導致失去焦點，這裡只更新總金額不重新整理列表
+        document.getElementById('tot').innerText = C.reduce((a,b)=>a+b.unit_price*b.qty,0);
+        document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
+    }}
+
     function showCart(){{
         let h="";
         C.forEach((i,x)=>{{
             let d_name = i['name_' + CUR_LANG] || i.name_zh;
-            h+=`<div style="border-bottom:1px solid #eee;padding:10px;display:flex;justify-content:space-between;align-items:center;">
-                <div><b>${{d_name}}</b> x${{i.qty}}</div>
-                <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;font-size:1.2em;">🗑️</button>
+            let opts = i['options_' + CUR_LANG] || i.options_zh || [];
+            let opt_str = opts.length ? `<div style="font-size:0.85em;color:#666;">(${{opts.join(',')}})</div>` : '';
+            
+            h+=`<div class="cart-item-row">
+                <div class="cart-item-main">
+                    <div><b>${{d_name}}</b>${{opt_str}}</div>
+                    <div style="font-weight:bold;color:#e91e63">$${{i.unit_price * i.qty}}</div>
+                </div>
+                <div class="cart-qty-sub">
+                    <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;margin-right:auto;">🗑️</button>
+                    <div class="qty-ctrl" style="margin:0;">
+                        <button style="width:30px;height:30px;font-size:1.2em;" onclick="updateCartQty(${{x}}, -1)">-</button>
+                        <input type="number" class="qty-input" style="width:50px;font-size:1em;" value="${{i.qty}}" onchange="setCartQty(${{x}}, this.value)" inputmode="numeric">
+                        <button style="width:30px;height:30px;font-size:1.2em;" onclick="updateCartQty(${{x}}, 1)">+</button>
+                    </div>
+                </div>
             </div>`;
         }});
         document.getElementById('c-list').innerHTML=h || `<p style="text-align:center;">${{T.empty_cart}}</p>`;
@@ -409,16 +452,15 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     function sub(){{
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
-        
-        // 關鍵修正：將當前語言同步到隱藏表單
         document.getElementById('lang_final_input').value = CUR_LANG;
         document.getElementById('tbl_input').value = t;
         document.getElementById('cart_input').value = JSON.stringify(C);
-        
         if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
     }}
     </script></body></html>
     """
+
+    
 # --- 4. 下單成功 ---
 @app.route('/order_success')
 def order_success():
