@@ -144,11 +144,13 @@ def language_select():
         .zh{{background:#e91e63;}} .en{{background:#007bff;}} .jp{{background:#ff9800;}} .kr{{background:#20c997;}}
     </style></head>
     <body>
-        <h2>Select Language / 請選擇語言</h2>
+        <h2>龍江路大鼎豬血湯專門店</h2>
         <a href="/menu?lang=zh{qs_table}" class="btn zh">中文</a>
         <a href="/menu?lang=en{qs_table}" class="btn en">English</a>
         <a href="/menu?lang=jp{qs_table}" class="btn jp">日本語</a>
         <a href="/menu?lang=kr{qs_table}" class="btn kr">한국어</a>
+        <h3>電話:02-2515-2519</h3>
+        <h4>地址:10491臺北市中山區龍江路164號</h4>
     </body></html>
     """
 
