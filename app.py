@@ -160,7 +160,8 @@ def menu():
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            lang_from_page = request.form.get('lang_input', 'zh')
+            # 關鍵修正：確實抓取頁面傳回的語言設定
+            final_lang = request.form.get('lang_input', 'zh')
             old_order_id = request.form.get('old_order_id')
 
             if not cart_json or cart_json == '[]': return "Empty Cart"
@@ -169,7 +170,7 @@ def menu():
             total_price = 0
             display_list = []
 
-            final_lang = lang_from_page 
+            # 如果是編輯舊訂單，沿用舊訂單語言；否則使用目前選擇語言
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -179,16 +180,21 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                n_field = f"name_{final_lang}" if f"name_{final_lang}" in item else "name_zh"
-                n_display = item.get(n_field, item.get('name_zh'))
-                opt_key = f"options_{final_lang}" if f"options_{final_lang}" in item else "options_zh"
+                
+                # 關鍵修正：根據 final_lang 動態選擇顯示名稱
+                name_key = f"name_{final_lang}"
+                n_display = item.get(name_key, item.get('name_zh'))
+                
+                # 根據 final_lang 動態選擇客製化選項文字
+                opt_key = f"options_{final_lang}"
                 opts = item.get(opt_key, item.get('options_zh', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
+                
                 display_list.append(f"{n_display} {opt_str} x{qty}")
 
             items_str = " + ".join(display_list)
 
-            # --- [利用 SQL 原子操作防止單號重複] ---
+            # 插入資料庫
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -260,7 +266,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         .sold-out {{ filter: grayscale(1); opacity: 0.6; pointer-events: none; }}
         .sold-out-badge {{ position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; z-index: 5; }}
         
-        /* 購物車底列修正 */
+        /* 底部控制欄 */
         .cart-bar{{position:fixed;bottom:0;width:100%;background:white;padding:12px;box-shadow:0 -2px 10px rgba(0,0,0,0.1);display:none;flex-direction:column;box-sizing:border-box;z-index:100;}}
         .cart-summary{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding:0 5px;}}
         .cart-buttons{{display:flex;gap:10px;}}
@@ -283,7 +289,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
         <input type="hidden" name="table_number" id="tbl_input">
-        <input type="hidden" name="lang_input" value="{lang}">
+        <input type="hidden" name="lang_input" id="lang_final_input" value="{lang}">
         {old_oid_input}
         <div class="cart-bar" id="bar">
             <div class="cart-summary">
@@ -296,6 +302,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             </div>
         </div>
     </form>
+    
     <div class="modal" id="opt-m"><div class="modal-c">
         <h3 id="m-name"></h3><div id="m-opts"></div>
         <div style="margin-top:20px;text-align:center;">
@@ -304,23 +311,27 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:20px;">{t['modal_add_cart']}</button>
         <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:10px;border:none;margin-top:10px;">{t['modal_cancel']}</button>
     </div></div>
+
     <div class="modal" id="cart-m"><div class="modal-c">
         <h3>{t['cart_title']}</h3><div id="c-list"></div>
         <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:10px;border:1px solid #ddd;border-radius:10px;">{t['close']}</button>
     </div></div>
+
     <script>
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, q=1, selectedOptIndices=[], addP=0;
     
-    // --- 防止返回鍵保留資料的關鍵修正 ---
+    // --- 關鍵修正：處理返回鍵自動清空 ---
     window.onpageshow = function(event) {{
         if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {{
-            C = []; // 清空購物車變數
-            upd();  // 更新 UI
+            C = [];
+            upd();
         }}
     }};
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
+
+    // 渲染菜單
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
@@ -357,19 +368,23 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('m-q').innerText=1;
         document.getElementById('opt-m').style.display='flex';
     }}
+
     function addC(){{
         C.push({{ 
-            id: cur.id, name: cur.name_en, name_zh: cur.name_zh, name_jp: cur.name_jp, name_kr: cur.name_kr, 
+            id: cur.id, 
+            name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
             unit_price: cur.price + addP, qty: q, 
-            options: selectedOptIndices.map(idx => cur.custom_options_en[idx]),
             options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
+            options_en: selectedOptIndices.map(idx => cur.custom_options_en[idx]),
             options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx]),
             options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
             category: cur.category, print_category: cur.print_category 
         }});
         document.getElementById('opt-m').style.display='none'; upd();
     }}
+
     function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
+
     function upd(){{
         if(C.length){{
             document.getElementById('bar').style.display='flex';
@@ -377,27 +392,33 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
         }} else document.getElementById('bar').style.display='none';
     }}
+
     function showCart(){{
         let h="";
         C.forEach((i,x)=>{{
+            let d_name = i['name_' + CUR_LANG] || i.name_zh;
             h+=`<div style="border-bottom:1px solid #eee;padding:10px;display:flex;justify-content:space-between;align-items:center;">
-                <div><b>${{i['name_' + CUR_LANG] || i.name_zh}}</b> x${{i.qty}}</div>
+                <div><b>${{d_name}}</b> x${{i.qty}}</div>
                 <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;font-size:1.2em;">🗑️</button>
             </div>`;
         }});
-        document.getElementById('c-list').innerHTML=h || '<p style="text-align:center;">Empty</p>';
+        document.getElementById('c-list').innerHTML=h || `<p style="text-align:center;">${{T.empty_cart}}</p>`;
         document.getElementById('cart-m').style.display='flex';
     }}
+
     function sub(){{
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
-        document.getElementById('tbl_input').value=t;
-        document.getElementById('cart_input').value=JSON.stringify(C);
+        
+        // 關鍵修正：將當前語言同步到隱藏表單
+        document.getElementById('lang_final_input').value = CUR_LANG;
+        document.getElementById('tbl_input').value = t;
+        document.getElementById('cart_input').value = JSON.stringify(C);
+        
         if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
     }}
     </script></body></html>
     """
-
 # --- 4. 下單成功 ---
 @app.route('/order_success')
 def order_success():
