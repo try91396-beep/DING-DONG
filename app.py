@@ -62,7 +62,7 @@ def load_translations():
         }
     }
 
-# --- 1. 資料庫初始化 ---
+# --- 1. 資料庫初始化 (新增分類語系支援) ---
 @app.route('/init_db')
 def init_db():
     conn = get_db_connection()
@@ -81,7 +81,8 @@ def init_db():
                 sort_order INTEGER DEFAULT 100,
                 name_en VARCHAR(100), name_jp VARCHAR(100), name_kr VARCHAR(100),
                 custom_options_en TEXT, custom_options_jp TEXT, custom_options_kr TEXT,
-                print_category VARCHAR(20) DEFAULT 'Noodle'
+                print_category VARCHAR(20) DEFAULT 'Noodle',
+                category_en VARCHAR(50), category_jp VARCHAR(50), category_kr VARCHAR(50)
             );
         ''')
         cur.execute('''
@@ -98,6 +99,7 @@ def init_db():
                 lang VARCHAR(10) DEFAULT 'zh'
             );
         ''')
+        # 確保現有資料表也會補上新欄位
         alters = [
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;",
@@ -108,6 +110,9 @@ def init_db():
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_options_jp TEXT;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_options_kr TEXT;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS print_category VARCHAR(20) DEFAULT 'Noodle';",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS category_en VARCHAR(50);",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS category_jp VARCHAR(50);",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS category_kr VARCHAR(50);",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS daily_seq INTEGER DEFAULT 0;",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS content_json TEXT;",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS need_receipt BOOLEAN DEFAULT FALSE;",
@@ -117,7 +122,7 @@ def init_db():
             try: cur.execute(cmd)
             except: pass
 
-        return "資料庫結構檢查完成。<a href='/'>回首頁</a> | <a href='/admin'>回後台</a>"
+        return "資料庫結構檢查完成（含分類語系）。<a href='/'>回首頁</a> | <a href='/admin'>回後台</a>"
     except Exception as e:
         return f"DB Error: {e}"
     finally:
@@ -793,9 +798,8 @@ def print_order(oid):
     </style></head>
     <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1200);'>{body}</body></html>
     """
-# --- 9. 後台管理 (完整修正版：含清空訂單、切換、刪除與全語系支援) ---
+# --- 9. 後台管理 (完整修正版) ---
 
-# [API] 接收前端拖拉後的 ID 順序
 @app.route('/admin/reorder_products', methods=['POST'])
 def reorder_products():
     try:
@@ -809,7 +813,6 @@ def reorder_products():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# [功能] 切換產品上架/下架狀態
 @app.route('/admin/toggle_product/<int:pid>')
 def toggle_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -817,7 +820,6 @@ def toggle_product(pid):
     conn.commit(); conn.close()
     return redirect('/admin')
 
-# [功能] 刪除產品
 @app.route('/admin/delete_product/<int:pid>')
 def delete_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -825,41 +827,36 @@ def delete_product(pid):
     conn.commit(); conn.close()
     return redirect('/admin')
 
-# [功能] 徹底清空所有訂單記錄 (修正您提到的失效問題)
 @app.route('/admin/reset_orders')
 def reset_orders():
     try:
         conn = get_db_connection(); cur = conn.cursor()
-        # 刪除 orders 表中的所有數據
         cur.execute("DELETE FROM orders")
-        # 重設 daily_seq (可選，視您的需求而定)
-        # 如果您的 ID 是自增主鍵，也可以重設序列
         cur.execute("ALTER SEQUENCE IF EXISTS orders_id_seq RESTART WITH 1")
         conn.commit(); conn.close()
         return redirect('/admin')
     except Exception as e:
         return f"清空失敗: {e}"
 
-# [頁面] 後台主控台
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
 
-    # --- [POST] 手動新增產品 ---
     if request.method == 'POST':
         try:
             cur.execute("""
                 INSERT INTO products (name, price, category, image_url, custom_options, 
                 name_en, name_jp, name_kr,
                 custom_options_en, custom_options_jp, custom_options_kr,
-                print_category, sort_order)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 9999)
+                print_category, category_en, category_jp, category_kr, sort_order)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 9999)
             """, (
                 request.form.get('name'), request.form.get('price'), request.form.get('category'), 
                 request.form.get('image_url'), request.form.get('custom_options'),
                 request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
                 request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
-                request.form.get('print_category', 'Noodle')
+                request.form.get('print_category', 'Noodle'),
+                request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr')
             ))
             conn.commit()
             return redirect('/admin')
@@ -868,10 +865,11 @@ def admin_panel():
         finally:
             cur.close(); conn.close()
 
-    # --- [GET] 讀取產品列表 ---
+    # 讀取產品列表 (包含分類語系)
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order, 
-               name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category 
+               name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, 
+               print_category, category_en, category_jp, category_kr
         FROM products 
         ORDER BY sort_order ASC, id DESC
     """)
@@ -884,12 +882,15 @@ def admin_panel():
         status_text = "<span style='color:green'>上架</span>" if p[5] else "<span style='color:red'>下架</span>"
         toggle_link = f"<a href='/admin/toggle_product/{p[0]}' class='button button-clear' style='display:inline;padding:0;height:auto;line-height:normal;font-size:12px;'>[切換]</a>"
         p_cat = p[14] if len(p)>14 and p[14] else 'Noodle'
+        
+        # 顯示各語言分類供參考
+        cat_display = f"{p[3]} <br><small style='color:#666'>(EN:{p[15] or '-'} JP:{p[16] or '-'})</small>"
 
         rows += f"""
         <tr data-id="{p[0]}" class="draggable-item" style="{row_style}">
             <td style="cursor:move;font-size:1.5em;color:#888;width:50px;text-align:center;" class="handle">☰</td>
             <td>{p[0]}</td>
-            <td><b>{p[1]}</b><br><small style="color:#888">{p[3]}</small></td>
+            <td><b>{p[1]}</b><br><small style="color:#888">{cat_display}</small></td>
             <td>{p[2]}</td>
             <td>{p_cat}</td>
             <td>{status_text} <br> {toggle_link}</td>
@@ -919,11 +920,10 @@ def admin_panel():
     <div style="background:#f4f7f6; padding:20px; border-radius:8px; margin-bottom:30px; border:1px solid #ddd;">
         <h4 style="margin-top:0;">➕ 新增產品</h4>
         <form method="POST">
-            <h5>1. 基本資料</h5>
+            <h5>1. 基本資料 & 分類翻譯</h5>
             <div class="row">
                 <div class="column"><label>名稱 (中文)</label><input type="text" name="name" required></div>
                 <div class="column"><label>價格</label><input type="number" name="price" required></div>
-                <div class="column"><label>分類</label><input type="text" name="category" required></div>
                 <div class="column">
                     <label>出單區域</label>
                     <select name="print_category">
@@ -932,15 +932,21 @@ def admin_panel():
                     </select>
                 </div>
             </div>
+            <div class="row">
+                <div class="column"><label>分類 (中文)</label><input type="text" name="category" required></div>
+                <div class="column"><label>分類 (EN)</label><input type="text" name="category_en"></div>
+                <div class="column"><label>分類 (JP)</label><input type="text" name="category_jp"></div>
+                <div class="column"><label>分類 (KR)</label><input type="text" name="category_kr"></div>
+            </div>
             
-            <h5>2. 多國語言名稱</h5>
+            <h5>2. 品名翻譯</h5>
             <div class="row">
                 <div class="column"><label>English</label><input type="text" name="name_en"></div>
                 <div class="column"><label>日本語</label><input type="text" name="name_jp"></div>
                 <div class="column"><label>한국어</label><input type="text" name="name_kr"></div>
             </div>
 
-            <h5>3. 客製選項 (例: 加麵:+20,不要蔥:+0)</h5>
+            <h5>3. 客製選項</h5>
             <div class="row">
                 <div class="column"><label>中文選項</label><input type="text" name="custom_options"></div>
                 <div class="column"><label>English</label><input type="text" name="custom_options_en"></div>
@@ -992,7 +998,7 @@ def admin_panel():
     </body></html>
     """
 
-# --- 編輯產品頁面 (維持原樣) ---
+# --- 編輯產品頁面 ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -1003,7 +1009,8 @@ def edit_product(pid):
                 name=%s, price=%s, category=%s, image_url=%s, custom_options=%s,
                 name_en=%s, name_jp=%s, name_kr=%s,
                 custom_options_en=%s, custom_options_jp=%s, custom_options_kr=%s,
-                print_category=%s, sort_order=%s
+                print_category=%s, sort_order=%s,
+                category_en=%s, category_jp=%s, category_kr=%s
                 WHERE id=%s
             """, (
                 request.form.get('name'), request.form.get('price'), request.form.get('category'),
@@ -1011,6 +1018,7 @@ def edit_product(pid):
                 request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
                 request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
                 request.form.get('print_category'), request.form.get('sort_order'),
+                request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
                 pid
             ))
             conn.commit()
@@ -1020,8 +1028,14 @@ def edit_product(pid):
         finally:
             conn.close()
 
+    # 讀取現有產品資料 (根據 ID)
     cur.execute("SELECT * FROM products WHERE id=%s", (pid,))
     p = cur.fetchone()
+    
+    # 建立欄位名稱對照字典，避免索引錯誤 (PostgreSQL 欄位順序需對齊 init_db)
+    # 假設欄位順序為: 0:id, 1:name, 2:price, 3:category, 4:image, 5:avail, 6:custom, 7:sort, 
+    # 8:n_en, 9:n_jp, 10:n_kr, 11:o_en, 12:o_jp, 13:o_kr, 14:print, 15:c_en, 16:c_jp, 17:c_kr
+    
     conn.close()
     def v(val): return val if val else "" 
 
@@ -1030,34 +1044,45 @@ def edit_product(pid):
     <body style="padding:20px;">
         <h3>編輯產品 #{p[0]}</h3>
         <form method="POST">
+            <h5>1. 基本資料 & 排序</h5>
             <div class="row">
                 <div class="column"><label>名稱 (中文)</label><input type="text" name="name" value="{v(p[1])}"></div>
                 <div class="column"><label>價格</label><input type="number" name="price" value="{p[2]}"></div>
                 <div class="column"><label>排序</label><input type="number" name="sort_order" value="{p[7]}"></div>
             </div>
+            
+            <h5>2. 分類與區域</h5>
             <div class="row">
-                <div class="column"><label>分類</label><input type="text" name="category" value="{v(p[3])}"></div>
+                <div class="column"><label>分類 (中文)</label><input type="text" name="category" value="{v(p[3])}"></div>
+                <div class="column"><label>分類 (EN)</label><input type="text" name="category_en" value="{v(p[15])}"></div>
+                <div class="column"><label>分類 (JP)</label><input type="text" name="category_jp" value="{v(p[16])}"></div>
+                <div class="column"><label>分類 (KR)</label><input type="text" name="category_kr" value="{v(p[17])}"></div>
+            </div>
+            <div class="row">
                 <div class="column"><label>出單區域</label>
                     <select name="print_category">
                         <option value="Noodle" {'selected' if p[14]=='Noodle' else ''}>麵區</option>
                         <option value="Soup" {'selected' if p[14]=='Soup' else ''}>湯區</option>
                     </select>
                 </div>
+                <div class="column"><label>圖片 URL</label><input type="text" name="image_url" value="{v(p[4])}"></div>
             </div>
-            <label>圖片 URL</label><input type="text" name="image_url" value="{v(p[4])}">
+
             <hr>
-            <h5>🌐 多國語言名稱</h5>
+            <h5>🌐 品名多國語言</h5>
             <div class="row">
                 <div class="column"><label>English</label><input type="text" name="name_en" value="{v(p[8])}"></div>
                 <div class="column"><label>日本語</label><input type="text" name="name_jp" value="{v(p[9])}"></div>
                 <div class="column"><label>한국어</label><input type="text" name="name_kr" value="{v(p[10])}"></div>
             </div>
             <hr>
-            <h5>🛠️ 客製化選項</h5>
+            <h5>🛠️ 客製化選項翻譯</h5>
             <label>中文選項</label><input type="text" name="custom_options" value="{v(p[6])}">
-            <label>English Options</label><input type="text" name="custom_options_en" value="{v(p[11])}">
-            <label>日本語オプション</label><input type="text" name="custom_options_jp" value="{v(p[12])}">
-            <label>한국어 옵션</label><input type="text" name="custom_options_kr" value="{v(p[13])}">
+            <div class="row">
+                <div class="column"><label>English</label><input type="text" name="custom_options_en" value="{v(p[11])}"></div>
+                <div class="column"><label>日本語</label><input type="text" name="custom_options_jp" value="{v(p[12])}"></div>
+                <div class="column"><label>한국어</label><input type="text" name="custom_options_kr" value="{v(p[13])}"></div>
+            </div>
             <div style="margin-top:20px;">
                 <button type="submit">💾 儲存</button>
                 <a href="/admin" class="button button-outline">取消</a>
