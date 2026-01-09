@@ -179,10 +179,8 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                
                 n_field = f"name_{final_lang}" if f"name_{final_lang}" in item else "name_zh"
                 n_display = item.get(n_field, item.get('name_zh'))
-                
                 opt_key = f"options_{final_lang}" if f"options_{final_lang}" in item else "options_zh"
                 opts = item.get(opt_key, item.get('options_zh', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
@@ -190,7 +188,7 @@ def menu():
 
             items_str = " + ".join(display_list)
 
-            # --- [關鍵修正：利用 SQL 原子操作防止單號重複] ---
+            # --- [利用 SQL 原子操作防止單號重複] ---
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -200,10 +198,9 @@ def menu():
             oid = cur.fetchone()[0]
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
-                conn.commit()
-                return "<script>window.close();</script>"
-
+            
             conn.commit()
+            if old_order_id: return "<script>window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
 
         except Exception as e:
@@ -212,10 +209,10 @@ def menu():
         finally:
             cur.close(); conn.close()
 
+    # --- GET 請求部分 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "[]"
-
     if edit_oid:
         cur.execute("SELECT table_number, content_json FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
@@ -225,7 +222,7 @@ def menu():
 
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
-                name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
+               name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, print_category
         FROM products ORDER BY sort_order ASC, id ASC
     """)
     products = cur.fetchall()
@@ -242,7 +239,6 @@ def menu():
             'custom_options_kr': p[13].split(',') if p[13] else (p[6].split(',') if p[6] else []),
             'print_category': p[14] or 'Noodle'
         })
-
     return render_frontend(p_list, t, url_table, lang, preload_cart, edit_oid)
 
 def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
@@ -255,7 +251,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     <!DOCTYPE html>
     <html><head><title>{t['title']}</title><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
     <style>
-        body{{font-family:'Microsoft JhengHei',sans-serif;margin:0;padding-bottom:120px;background:#f8f9fa;}}
+        body{{font-family:'Microsoft JhengHei',sans-serif;margin:0;padding-bottom:140px;background:#f8f9fa;}}
         .header{{background:white;padding:15px;position:sticky;top:0;z-index:99;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}
         .menu-item{{background:white;margin:10px;padding:10px;border-radius:10px;display:flex;box-shadow:0 2px 4px rgba(0,0,0,0.05);position:relative;}}
         .menu-img{{width:80px;height:80px;border-radius:8px;object-fit:cover;background:#eee;}}
@@ -264,12 +260,12 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         .sold-out {{ filter: grayscale(1); opacity: 0.6; pointer-events: none; }}
         .sold-out-badge {{ position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; z-index: 5; }}
         
-        /* 底部按鈕區修正 */
-        .cart-bar{{position:fixed;bottom:0;width:100%;background:white;padding:10px 15px;box-shadow:0 -2px 10px rgba(0,0,0,0.1);display:none;flex-direction:column;box-sizing:border-box;z-index:100;}}
-        .bar-top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
-        .bar-btns{{display:flex;gap:10px;}}
-        .btn-orange{{flex:1;background:#ff9800;color:white;border:none;padding:12px;border-radius:10px;font-size:1.1em;font-weight:bold;cursor:pointer;}}
-        .btn-green{{flex:1;background:#28a745;color:white;border:none;padding:12px;border-radius:10px;font-size:1.1em;font-weight:bold;cursor:pointer;}}
+        /* 購物車底列修正 */
+        .cart-bar{{position:fixed;bottom:0;width:100%;background:white;padding:12px;box-shadow:0 -2px 10px rgba(0,0,0,0.1);display:none;flex-direction:column;box-sizing:border-box;z-index:100;}}
+        .cart-summary{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding:0 5px;}}
+        .cart-buttons{{display:flex;gap:10px;}}
+        .btn-view-cart{{background:#ff9800;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;}}
+        .btn-checkout{{background:#28a745;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;}}
         
         .modal{{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;z-index:200;justify-content:center;align-items:flex-end;}}
         .modal-c{{background:white;width:100%;padding:20px;border-radius:20px 20px 0 0;max-height:80vh;overflow-y:auto;}}
@@ -284,55 +280,47 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
                style="padding:10px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:5px;font-size:1.1em;">
     </div>
     <div id="list"></div>
-    
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
         <input type="hidden" name="table_number" id="tbl_input">
         <input type="hidden" name="lang_input" value="{lang}">
         {old_oid_input}
-        
         <div class="cart-bar" id="bar">
-            <div class="bar-top">
-                <div style="font-weight:bold;">Total: $<span id="tot">0</span> (<span id="cnt">0</span>)</div>
-                <label style="font-size:0.9em;"><input type="checkbox" name="need_receipt" checked> {t['print_receipt_opt']}</label>
+            <div class="cart-summary">
+                <div style="font-weight:bold; font-size:1.1em;">Total: $<span id="tot">0</span> (<span id="cnt">0</span>)</div>
+                <label><input type="checkbox" name="need_receipt" checked> {t['print_receipt_opt']}</label>
             </div>
-            <div class="bar-btns">
-                <button type="button" class="btn-orange" onclick="showCart()">🛒 {t['cart_detail']}</button>
-                <button type="button" class="btn-green" onclick="sub()">{t['checkout']}</button>
+            <div class="cart-buttons">
+                <button type="button" class="btn-view-cart" onclick="showCart()">🛒 {t['cart_detail']}</button>
+                <button type="button" class="btn-checkout" onclick="sub()">{t['checkout']}</button>
             </div>
         </div>
     </form>
-    
     <div class="modal" id="opt-m"><div class="modal-c">
-        <h3 id="m-name"></h3>
-        <div id="m-opts"></div>
+        <h3 id="m-name"></h3><div id="m-opts"></div>
         <div style="margin-top:20px;text-align:center;">
             <button onclick="cq(-1)">-</button> <span id="m-q" style="margin:0 15px;font-weight:bold;">1</span> <button onclick="cq(1)">+</button>
         </div>
         <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:20px;">{t['modal_add_cart']}</button>
         <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:10px;border:none;margin-top:10px;">{t['modal_cancel']}</button>
     </div></div>
-
     <div class="modal" id="cart-m"><div class="modal-c">
         <h3>{t['cart_title']}</h3><div id="c-list"></div>
-        <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:10px;border:1px solid #ccc;border-radius:10px;">{t['close']}</button>
+        <button onclick="document.getElementById('cart-m').style.display='none'" style="width:100%;padding:10px;margin-top:10px;border:1px solid #ddd;border-radius:10px;">{t['close']}</button>
     </div></div>
-
     <script>
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, q=1, selectedOptIndices=[], addP=0;
+    
+    // --- 防止返回鍵保留資料的關鍵修正 ---
+    window.onpageshow = function(event) {{
+        if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {{
+            C = []; // 清空購物車變數
+            upd();  // 更新 UI
+        }}
+    }};
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
-
-    // --- [關鍵修正：偵測返回鍵清空購物車] ---
-    window.addEventListener('pageshow', function(event) {{
-        // 如果 event.persisted 為 true，代表是從瀏覽器快取(快照)載入頁面 (即按下返回鍵)
-        if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {{
-            C = []; 
-            upd();
-        }}
-    }});
-    
     let h="", cat="";
     P.forEach(p=>{{
         if(p.category!=cat) {{ h+=`<div class="cat-header">${{p.category}}</div>`; cat=p.category; }}
@@ -369,7 +357,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('m-q').innerText=1;
         document.getElementById('opt-m').style.display='flex';
     }}
-
     function addC(){{
         C.push({{ 
             id: cur.id, name: cur.name_en, name_zh: cur.name_zh, name_jp: cur.name_jp, name_kr: cur.name_kr, 
@@ -382,19 +369,14 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         }});
         document.getElementById('opt-m').style.display='none'; upd();
     }}
-
     function cq(n){{ if(q+n>0) {{q+=n; document.getElementById('m-q').innerText=q;}} }}
-    
     function upd(){{
         if(C.length){{
             document.getElementById('bar').style.display='flex';
             document.getElementById('tot').innerText = C.reduce((a,b)=>a+b.unit_price*b.qty,0);
             document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
-        }} else {{
-            document.getElementById('bar').style.display='none';
-        }}
+        }} else document.getElementById('bar').style.display='none';
     }}
-    
     function showCart(){{
         let h="";
         C.forEach((i,x)=>{{
@@ -403,11 +385,9 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
                 <button onclick="C.splice(${{x}},1);upd();showCart()" style="color:red;border:none;background:none;font-size:1.2em;">🗑️</button>
             </div>`;
         }});
-        if(C.length==0) h = "<p style='text-align:center;padding:20px;'>{t['empty_cart']}</p>";
-        document.getElementById('c-list').innerHTML=h;
+        document.getElementById('c-list').innerHTML=h || '<p style="text-align:center;">Empty</p>';
         document.getElementById('cart-m').style.display='flex';
     }}
-    
     function sub(){{
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
@@ -417,82 +397,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }}
     </script></body></html>
     """
-
-# --- 8. 列印路由 ---
-@app.route('/print_order/<int:oid>')
-def print_order(oid):
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("""
-        SELECT id, table_number, items, total_price, status, created_at, daily_seq, content_json, lang 
-        FROM orders WHERE id=%s
-    """, (oid,))
-    o = cur.fetchone(); conn.close()
-    if not o: return "No Data"
-
-    oid_db, table_num, raw_items, total_val, status, created_at, daily_seq, c_json, order_lang = o
-    seq = f"{daily_seq:03d}"
-    items = []
-    try:
-        items = json.loads(c_json) if c_json else []
-    except: return "解析失敗"
-
-    is_void = (status == 'Cancelled')
-    tw_time = created_at + timedelta(hours=8)
-    time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
-    title = "❌ 作廢單 (VOID)" if is_void else "結帳單 (Receipt)"
-    style = "text-decoration: line-through; color:red;" if is_void else ""
-
-    def get_display_name(item):
-        n_zh = item.get('name_zh', '商品')
-        if order_lang == 'zh': return n_zh
-        n_foreign = item.get(f'name_{order_lang}', item.get('name', n_zh))
-        return f"{n_foreign}<br><small>({n_zh})</small>"
-
-    def mk_ticket(t_name, item_list, show_total=False, is_kitchen=False):
-        if not item_list and not show_total: return ""
-        h = f"<div class='ticket' style='{style}'><div class='head'><h2>{t_name}</h2><h1>#{seq}</h1><p>Table: {table_num}</p><small>{time_str}</small></div><hr>"
-        for i in item_list:
-            qty = i.get('qty', 1); u_p = i.get('unit_price', 0)
-            if is_kitchen:
-                d_name = i.get('name_zh', '商品')
-                ops = i.get('options_zh', [])
-            else:
-                d_name = get_display_name(i)
-                ops = i.get(f'options_{order_lang}', i.get('options', []))
-            
-            if isinstance(ops, str): ops = [ops]
-            h += f"<div class='row'><span>{qty} x {d_name}</span><span>${u_p * qty}</span></div>"
-            if ops: h += f"<div class='opt'>└ {', '.join(ops)}</div>"
-        if show_total: h += f"<hr><div style='text-align:right;font-size:1.2em;font-weight:bold;'>Total: ${total_val}</div>"
-        return h + "</div><div class='break'></div>"
-
-    body = mk_ticket(title, items, show_total=True, is_kitchen=False)
-    if not is_void:
-        noodles = [i for i in items if i.get('print_category', 'Noodle') == 'Noodle']
-        soups = [i for i in items if i.get('print_category') == 'Soup']
-        if noodles: body += mk_ticket("🍜 麵區工單", noodles, is_kitchen=True)
-        if soups: body += mk_ticket("🍲 湯區工單", soups, is_kitchen=True)
-
-    return f"""
-    <html><head><meta charset="UTF-8">
-    <style>
-        @page {{ size: 58mm auto; margin: 0; }}
-        body {{ font-family: 'Microsoft JhengHei', sans-serif; font-size: 14px; background: #fff; margin: 0; padding: 0; width: 58mm; }} 
-        .ticket {{ width: 54mm; margin: 0 auto; padding: 2mm; box-sizing: border-box; page-break-inside: avoid; overflow: visible; }} 
-        .head {{ text-align: center; }} 
-        .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; }} 
-        .opt {{ font-size: 12px; color: #444; margin-left: 15px; }} 
-        .break {{ page-break-after: always; }} 
-        h1 {{ margin: 5px 0; font-size: 2.5em; }}
-        h2 {{ margin: 5px 0; font-size: 1.5em; }}
-        hr {{ border: none; border-top: 1px dashed #000; }}
-        @media print {{ body {{ background: white; }} .ticket {{ width: 100%; border: none; }} }}
-    </style></head>
-    <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1200);'>{body}</body></html>
-    """
-
-
-
 
 # --- 4. 下單成功 ---
 @app.route('/order_success')
@@ -1049,7 +953,7 @@ def edit_product(pid):
 # --- 防休眠 ---
 def keep_alive():
     while True:
-        try: urllib.request.urlopen("https://qr-mbdv.onrender.com")
+        try: urllib.request.urlopen("https://ding-dong-tipi.onrender.com")
         except: pass
         time.sleep(800)
 threading.Thread(target=keep_alive, daemon=True).start()
