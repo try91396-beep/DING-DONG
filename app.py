@@ -244,19 +244,20 @@ def language_select():
 # --- 3. 點餐頁面 ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
-    # 優先取得 URL 中的語系，若無則預設為 zh
+    # 這裡的 lang 只用於 GET 顯示或 POST 失敗時的預設
     lang = request.args.get('lang', 'zh')
-    t = load_translations().get(lang, load_translations()['zh'])
+    t_data = load_translations()
+    
     conn = get_db_connection()
     cur = conn.cursor()
 
     if request.method == 'POST':
         try:
+            # 關鍵修正：直接從 POST 表單中抓取語系，若無才用 URL 的
+            final_lang = request.form.get('lang_input', lang)
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            # 關鍵點：從前端隱藏欄位獲取正確的語系，避免 POST 後跳回中文
-            final_lang = request.form.get('lang_input', lang) 
             old_order_id = request.form.get('old_order_id')
 
             if not cart_json or cart_json == '[]': return "Empty Cart"
@@ -268,7 +269,7 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                # 根據 final_lang 決定顯示在資料庫 items 欄位的名稱
+                # 根據送出的語系決定資料庫顯示名稱
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
                 opt_key = f"options_{final_lang}"
@@ -288,8 +289,6 @@ def menu():
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
-            
-            # 如果是修改訂單，關閉視窗；如果是新下單，導向成功頁面並帶上語系參數
             if old_order_id: return "<script>window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
         except Exception as e:
@@ -298,9 +297,9 @@ def menu():
         finally:
             cur.close(); conn.close()
 
-    # GET 請求邏輯
-    url_table = request.args.get('table', '')
+    # GET 邏輯：處理編輯模式的語系初始化
     edit_oid = request.args.get('edit_oid')
+    url_table = request.args.get('table', '')
     preload_cart = "[]"
     if edit_oid:
         cur.execute("SELECT table_number, content_json, lang FROM orders WHERE id=%s", (edit_oid,))
@@ -308,10 +307,12 @@ def menu():
         if old_data:
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
-            # 若 URL 沒帶語系但有編輯單據，則採用原單據語系
-            if not request.args.get('lang'):
+            # 如果是編輯單據且 URL 沒強制指定語系，則繼承原單語系
+            if 'lang' not in request.args:
                 lang = old_data[2]
-                t = load_translations().get(lang, load_translations()['zh'])
+
+    # 載入對應翻譯
+    t = t_data.get(lang, t_data['zh'])
 
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
@@ -341,7 +342,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;font-size:1.1em;">⚠️ 正在編輯 #{edit_oid}</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;font-size:1.1em;">⚠️ 正在編輯 #{edit_oid} (語系: {lang})</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -427,8 +428,13 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </div>
 
     <script>
+    // 1. 初始化環境變數
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, selectedOptIndices=[], addP=0, editIndex=-1;
+    
+    // 初始化時立即同步語系到隱藏欄位
+    document.getElementById('lang_final_input').value = CUR_LANG;
+
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
     let h="", lastCatKey="", cats=[];
@@ -477,7 +483,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         addP = 0;
         document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
         
-        // 修正：這裡動態判斷顯示文字
         let saveLabel = "儲存修改";
         if(CUR_LANG == 'en') saveLabel = "Save Changes";
         else if(CUR_LANG == 'jp') saveLabel = "変更を保存";
@@ -588,12 +593,16 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
         
-        // 關鍵：確保隱藏欄位的語系與當前 JS 變數 CUR_LANG 一致
+        // 2. 提交前最終校對隱藏欄位值
         document.getElementById('lang_final_input').value = CUR_LANG;
         
         document.getElementById('tbl_input').value = t;
         document.getElementById('cart_input').value = JSON.stringify(C);
-        if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
+        
+        if(confirm(T.confirm_order)) {{
+            console.log("Submitting lang:", CUR_LANG); // 調試用
+            document.getElementById('order-form').submit();
+        }}
     }}
     upd(); 
     </script></body></html>
