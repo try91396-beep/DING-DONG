@@ -228,7 +228,7 @@ def language_select():
     """
 
 
-# --- 3. 點餐頁面 (快取優化與語言分離版) ---
+# --- 3. 點餐頁面 (徹底解決返回鍵殘留版) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     # 網頁介面顯示語言
@@ -295,7 +295,7 @@ def menu():
     # --- GET 邏輯 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
-    preload_cart = "null" # 預設不預載，交給 JS 從 Cache 讀取
+    preload_cart = "null" 
     order_lang = display_lang 
 
     if edit_oid:
@@ -303,7 +303,7 @@ def menu():
         old_data = cur.fetchone()
         if old_data:
             if not url_table: url_table = old_data[0]
-            preload_cart = old_data[1] # 編輯模式則需要強制載入舊單內容
+            preload_cart = old_data[1] 
             order_lang = old_data[2] if old_data[2] else 'zh'
 
     cur.execute("""
@@ -378,9 +378,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
                style="padding:12px;width:100%;box-sizing:border-box;border:2px solid #ddd;border-radius:8px;font-size:1.2em;margin-bottom:8px;">
         <div class="cat-bar" id="cat-nav"></div>
     </div>
-    
     <div id="list"></div>
-    
     <form id="order-form" method="POST" action="/menu">
         <input type="hidden" name="cart_data" id="cart_input">
         <input type="hidden" name="table_number" id="tbl_input">
@@ -397,7 +395,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             </div>
         </div>
     </form>
-    
+
     <div class="modal" id="opt-m" onclick="closeModalByBg(event, 'opt-m')">
         <div class="modal-c" onclick="event.stopPropagation()">
             <h3 id="m-name" style="font-size:1.5em;margin-top:0;"></h3><div id="m-opts"></div>
@@ -410,7 +408,6 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:12px;border:none;margin-top:10px;font-size:1.1em;color:#666;">{t['modal_cancel']}</button>
         </div>
     </div>
-
     <div class="modal" id="cart-m" onclick="closeModalByBg(event, 'cart-m')">
         <div class="modal-c" onclick="event.stopPropagation()">
             <h2 style="margin-top:0;">{t['cart_title']}</h2>
@@ -430,17 +427,29 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
 
     function initCart() {{
         if(EDIT_OID && PRELOAD_CART) {{
-            C = PRELOAD_CART; // 編輯模式使用伺服器給的舊資料
+            C = PRELOAD_CART;
         }} else {{
             let cached = localStorage.getItem('cart_cache');
-            if(cached) {{
-                try {{ C = JSON.parse(cached); }} catch(e) {{ C = []; }}
-            }}
+            C = cached ? JSON.parse(cached) : [];
         }}
         upd();
     }}
 
-    // 渲染清單
+    // --- 【修正重點】防止返回鍵殘留 ---
+    window.addEventListener('pageshow', function(event) {{
+        // event.persisted 為 true 表示頁面是從 bfcache (往返快取) 載入的
+        // 或者當 localStorage 為空，但記憶體變數 C 有值時，強制同步
+        if (event.persisted || !localStorage.getItem('cart_cache')) {{
+            if (!EDIT_OID) {{
+                C = [];
+                let cached = localStorage.getItem('cart_cache');
+                if (cached) C = JSON.parse(cached);
+                upd();
+            }}
+        }}
+    }});
+
+    // 渲染清單邏輯 (與原程式相同)
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
@@ -462,9 +471,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
         </div>`;
     }});
     document.getElementById('list').innerHTML=h;
-
-    let navH = "";
-    cats.forEach(c => {{ navH += `<div class="cat-btn" onclick="scrollToCat('${{c.id}}', this)">${{c.name}}</div>`; }});
+    let navH = ""; cats.forEach(c => {{ navH += `<div class="cat-btn" onclick="scrollToCat('${{c.id}}', this)">${{c.name}}</div>`; }});
     document.getElementById('cat-nav').innerHTML = navH;
 
     function scrollToCat(catId, btn) {{
@@ -479,18 +486,15 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     function closeModalByBg(e, id) {{ document.getElementById(id).style.display = 'none'; }}
 
     function openOpt(productId, cartIndex = -1){{
-        cur = P.find(x=>x.id==productId);
-        editIndex = cartIndex;
-        selectedOptIndices = [];
-        addP = 0;
+        cur = P.find(x=>x.id==productId); editIndex = cartIndex;
+        selectedOptIndices = []; addP = 0;
         document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
         document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? (T.save_changes || "💾 儲存修改") : T.modal_add_cart;
         let area = document.getElementById('m-opts'); area.innerHTML = "";
         let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
         let existingOpts = editIndex > -1 ? C[editIndex].options_zh : [];
         opts.forEach((o, index)=>{{
-            let parts = o.split(/[+]/);
-            let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
+            let parts = o.split(/[+]/); let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
             if(editIndex > -1 && existingOpts.includes(cur.custom_options_zh[index])) {{
@@ -511,8 +515,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     }}
 
     function cq(n){{
-        let input = document.getElementById('m-q');
-        let val = parseInt(input.value) || 1;
+        let input = document.getElementById('m-q'); let val = parseInt(input.value) || 1;
         if(val + n >= 1) input.value = val + n;
     }}
 
@@ -529,8 +532,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
         }};
         if(editIndex > -1) C[editIndex] = itemData; else C.push(itemData);
         document.getElementById('opt-m').style.display='none'; 
-        saveCache(); upd();
-        if(editIndex > -1) showCart();
+        saveCache(); upd(); if(editIndex > -1) showCart();
     }}
 
     function upd() {{
@@ -544,16 +546,13 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     }}
 
     function updateCartQty(idx, n){{
-        C[idx].qty += n;
-        if(C[idx].qty <= 0) C.splice(idx, 1);
+        C[idx].qty += n; if(C[idx].qty <= 0) C.splice(idx, 1);
         saveCache(); showCart(); upd();
     }}
     
     function setCartQty(idx, val){{
         let q = parseInt(val) || 1; if(q < 1) q = 1;
         C[idx].qty = q; saveCache(); upd();
-        document.getElementById('tot').innerText = C.reduce((a,b)=>a+b.unit_price*b.qty,0);
-        document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
     }}
 
     function showCart(){{
@@ -589,13 +588,16 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             document.getElementById('lang_final_input').value = ORDER_LANG;
             document.getElementById('tbl_input').value = t;
             document.getElementById('cart_input').value = JSON.stringify(C);
-            // 提交前先標記，下一個頁面載入時清空 localStorage
+            // 1. 先清除快取
             localStorage.removeItem('cart_cache');
+            // 2. 立即將記憶體中的購物車清空，防止返回時殘留
+            C = [];
+            // 3. 提交表單
             document.getElementById('order-form').submit();
         }}
     }}
     
-    initCart(); // 初始化購物車（從快取讀取）
+    initCart();
     </script></body></html>
     """
     
@@ -817,8 +819,8 @@ def check_new_orders():
         btns = ""
         if status == 'Pending': btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 付款完成</button>"
         if status != 'Cancelled':
-            btns += f"<a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 修改 (中)</a>"
-            btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 作廢</button>"
+            btns += f"<a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 單據修改</a>"
+            btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 單據作廢</button>"
         btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印 ({order_lang})</a>"
         html_content += f"""
         <div class="card {cls}"><div class="tag" style="color:{'#28a745' if status=='Completed' else '#ff9800'}">{tag}</div>
