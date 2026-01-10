@@ -29,7 +29,7 @@ def load_translations():
             "custom_options": "客製化選項", "order_success": "下單成功！", "kitchen_prep": "廚房備餐中", 
             "pay_at_counter": "請至櫃檯結帳", "order_details": "訂單明細", 
             "print_receipt_opt": "列印收據", "daily_seq_prefix": "單號", "ai_note": "翻譯由 AI 提供",
-            "edit_options": "重選選項"
+            "edit_options": "重選選項","save_changes": "💾 儲存修改"
         },
         "en": {
             "title": "Order", "welcome": "Welcome", "table_placeholder": "Table No.",
@@ -40,7 +40,7 @@ def load_translations():
             "custom_options": "Options", "order_success": "Success!", "kitchen_prep": "Preparing...",
             "pay_at_counter": "Please pay at counter", "order_details": "Order Details",
             "print_receipt_opt": "Print Receipt", "daily_seq_prefix": "No.", "ai_note": "Translated by AI",
-            "edit_options": "Edit Options"
+            "edit_options": "Edit Options","save_changes": "💾 Save Changes"
         },
         "jp": {
             "title": "注文", "welcome": "ようこそ", "table_placeholder": "卓番",
@@ -51,7 +51,7 @@ def load_translations():
             "custom_options": "オプション", "order_success": "送信完了", "kitchen_prep": "調理中...",
             "pay_at_counter": "レジでお会計ください", "order_details": "注文詳細",
             "print_receipt_opt": "レシート印刷", "daily_seq_prefix": "番号", "ai_note": "AIによる翻訳",
-            "edit_options": "オプション変更"
+            "edit_options": "オプション変更","save_changes": "💾 変更を保存"
         },
         "kr": {
             "title": "주문", "welcome": "환영합니다", "table_placeholder": "테이블 번호",
@@ -62,7 +62,7 @@ def load_translations():
             "custom_options": "옵션", "order_success": "주문 성공!", "kitchen_prep": "준비 중...",
             "pay_at_counter": "카운터에서 결제해주세요", "order_details": "주문 내역",
             "print_receipt_opt": "영수증 출력", "daily_seq_prefix": "번호", "ai_note": "AI 번역",
-            "edit_options": "옵션 변경"
+            "edit_options": "옵션 변경","save_changes": "💾 변경사항 저장"
         }
     }
 
@@ -468,7 +468,8 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         addP = 0;
 
         document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
-        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? "💾 儲存修改" : T.modal_add_cart;
+        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? (T.save_changes || "💾 Save Changes") : T.modal_add_cart;
+        //document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? "💾 儲存修改" : T.modal_add_cart;
 
         let area = document.getElementById('m-opts'); 
         area.innerHTML = "";
