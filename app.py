@@ -244,7 +244,7 @@ def language_select():
 # --- 3. 點餐頁面 ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
-    # 這裡的 lang 只用於 GET 顯示或 POST 失敗時的預設
+    # 取得 URL 中的語系，預設為 zh
     lang = request.args.get('lang', 'zh')
     t_data = load_translations()
     
@@ -253,7 +253,7 @@ def menu():
 
     if request.method == 'POST':
         try:
-            # 關鍵修正：直接從 POST 表單中抓取語系，若無才用 URL 的
+            # 優先從表單獲取語系，這能確保編輯後的單據語系一致
             final_lang = request.form.get('lang_input', lang)
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
@@ -269,7 +269,8 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                # 根據送出的語系決定資料庫顯示名稱
+                
+                # 根據 final_lang 決定要在「訂單摘要欄位(items)」顯示的語言
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
                 opt_key = f"options_{final_lang}"
@@ -278,6 +279,8 @@ def menu():
                 display_list.append(f"{n_display} {opt_str} x{qty}")
 
             items_str = " + ".join(display_list)
+            
+            # 寫入資料庫
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -285,11 +288,15 @@ def menu():
             """, (table_number, items_str, total_price, final_lang, cart_json, need_receipt))
 
             oid = cur.fetchone()[0]
+            
+            # 如果是編輯模式，將舊單取消
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
-            if old_order_id: return "<script>window.close();</script>"
+            if old_order_id:
+                # 編輯模式完成後關閉視窗並通知父視窗更新 (可選)
+                return "<script>alert('Order Updated'); window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
         except Exception as e:
             conn.rollback()
@@ -297,21 +304,21 @@ def menu():
         finally:
             cur.close(); conn.close()
 
-    # GET 邏輯：處理編輯模式的語系初始化
+    # GET 邏輯：處理編輯模式
     edit_oid = request.args.get('edit_oid')
     url_table = request.args.get('table', '')
     preload_cart = "[]"
+    
     if edit_oid:
         cur.execute("SELECT table_number, content_json, lang FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
         if old_data:
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
-            # 如果是編輯單據且 URL 沒強制指定語系，則繼承原單語系
+            # 強制鎖定語系為原訂單語系，除非 URL 有特別指定
             if 'lang' not in request.args:
                 lang = old_data[2]
 
-    # 載入對應翻譯
     t = t_data.get(lang, t_data['zh'])
 
     cur.execute("""
@@ -331,9 +338,9 @@ def menu():
             'category_zh': p[3], 'category_en': p[15] or p[3], 'category_jp': p[16] or p[3], 'category_kr': p[17] or p[3],
             'image_url': p[4] or '', 'is_available': p[5], 
             'custom_options_zh': p[6].split(',') if p[6] else [],
-            'custom_options_en': p[11].split(',') if p[11] else (p[6].split(',') if p[6] else []),
-            'custom_options_jp': p[12].split(',') if p[12] else (p[6].split(',') if p[6] else []),
-            'custom_options_kr': p[13].split(',') if p[13] else (p[6].split(',') if p[6] else []),
+            'custom_options_en': p[11].split(',') if p[11] else [],
+            'custom_options_jp': p[12].split(',') if p[12] else [],
+            'custom_options_kr': p[13].split(',') if p[13] else [],
             'print_category': p[14] or 'Noodle'
         })
     return render_frontend(p_list, t, url_table, lang, preload_cart, edit_oid)
@@ -342,7 +349,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;font-size:1.1em;">⚠️ 正在編輯 #{edit_oid} (語系: {lang})</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;font-size:1.1em;">⚠️ Editing Order #{edit_oid} (Lang: {lang})</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -428,15 +435,14 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     </div>
 
     <script>
-    // 1. 初始化環境變數
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
     let C=[], cur=null, selectedOptIndices=[], addP=0, editIndex=-1;
     
-    // 初始化時立即同步語系到隱藏欄位
     document.getElementById('lang_final_input').value = CUR_LANG;
 
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
+    // 初始化菜單列表
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
@@ -492,17 +498,22 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         
         let area = document.getElementById('m-opts'); 
         area.innerHTML = "";
+        
+        // 核心修正：不管是哪種語言，選項的索引(index)是統一的
         let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
-        let existingOpts = editIndex > -1 ? C[editIndex].options_zh : [];
+        let existingOptsZh = editIndex > -1 ? C[editIndex].options_zh : [];
 
         opts.forEach((o, index)=>{{
             let parts = o.split(/[+]/);
             let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
-            if(editIndex > -1 && existingOpts.includes(cur.custom_options_zh[index])) {{
+            
+            // 如果是在編輯，比對中文原始值來判斷是否選中
+            if(editIndex > -1 && existingOptsZh.includes(cur.custom_options_zh[index])) {{
                 selectedOptIndices.push(index); addP += p; d.classList.add('sel');
             }}
+            
             d.onclick=()=>{{
                 if(selectedOptIndices.includes(index)){{
                     selectedOptIndices = selectedOptIndices.filter(i=>i!=index);
@@ -525,20 +536,28 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         if(val + n >= 1) input.value = val + n;
     }}
 
+    // 核心修正：保存時強制帶入所有語系的名稱與選項
     function addC(){{
         let q = parseInt(document.getElementById('m-q').value) || 1;
         let itemData = {{ 
             id: cur.id, 
-            name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
-            unit_price: cur.price + addP, qty: q, 
+            name_zh: cur.name_zh, 
+            name_en: cur.name_en, 
+            name_jp: cur.name_jp, 
+            name_kr: cur.name_kr, 
+            unit_price: cur.price + addP, 
+            qty: q, 
             options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
-            options_en: selectedOptIndices.map(idx => cur.custom_options_en[idx]),
-            options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx]),
-            options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
-            category: cur.category_zh, print_category: cur.print_category 
+            options_en: selectedOptIndices.map(idx => cur.custom_options_en[idx] || cur.custom_options_zh[idx]),
+            options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx] || cur.custom_options_zh[idx]),
+            options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx] || cur.custom_options_zh[idx]),
+            category: cur.category_zh, 
+            print_category: cur.print_category 
         }};
+        
         if(editIndex > -1) C[editIndex] = itemData;
         else C.push(itemData);
+        
         document.getElementById('opt-m').style.display='none'; 
         upd();
         if(editIndex > -1) showCart();
@@ -593,14 +612,12 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
         
-        // 2. 提交前最終校對隱藏欄位值
+        // 最終確認語系
         document.getElementById('lang_final_input').value = CUR_LANG;
-        
         document.getElementById('tbl_input').value = t;
         document.getElementById('cart_input').value = JSON.stringify(C);
         
         if(confirm(T.confirm_order)) {{
-            console.log("Submitting lang:", CUR_LANG); // 調試用
             document.getElementById('order-form').submit();
         }}
     }}
