@@ -244,7 +244,7 @@ def language_select():
 # --- 3. 點餐頁面 ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
-    # 取得 URL 中的語系，預設為 zh
+    # 預設語系處理
     lang = request.args.get('lang', 'zh')
     t_data = load_translations()
     
@@ -253,7 +253,7 @@ def menu():
 
     if request.method == 'POST':
         try:
-            # 優先從表單獲取語系，這能確保編輯後的單據語系一致
+            # 【關鍵修正 1】：從隱藏欄位獲取當前頁面的語系，這能確保編輯後的單據語系不變
             final_lang = request.form.get('lang_input', lang)
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
@@ -270,7 +270,7 @@ def menu():
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
                 
-                # 根據 final_lang 決定要在「訂單摘要欄位(items)」顯示的語言
+                # 根據送出的語系決定資料庫顯示名稱
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
                 opt_key = f"options_{final_lang}"
@@ -280,7 +280,7 @@ def menu():
 
             items_str = " + ".join(display_list)
             
-            # 寫入資料庫
+            # 寫入新訂單
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -289,13 +289,13 @@ def menu():
 
             oid = cur.fetchone()[0]
             
-            # 如果是編輯模式，將舊單取消
+            # 如果是編輯單據，取消舊單
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
             if old_order_id:
-                # 編輯模式完成後關閉視窗並通知父視窗更新 (可選)
+                # 廚房修改完畢後關閉小視窗
                 return "<script>alert('Order Updated'); window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
         except Exception as e:
@@ -315,7 +315,7 @@ def menu():
         if old_data:
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
-            # 強制鎖定語系為原訂單語系，除非 URL 有特別指定
+            # 【關鍵修正 2】：如果是編輯模式且 URL 沒強制語系，則繼承原單語系 (en/jp/kr)
             if 'lang' not in request.args:
                 lang = old_data[2]
 
@@ -499,7 +499,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let area = document.getElementById('m-opts'); 
         area.innerHTML = "";
         
-        // 核心修正：不管是哪種語言，選項的索引(index)是統一的
         let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
         let existingOptsZh = editIndex > -1 ? C[editIndex].options_zh : [];
 
@@ -509,7 +508,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
             
-            // 如果是在編輯，比對中文原始值來判斷是否選中
+            // 比對中文原始值判斷是否選中
             if(editIndex > -1 && existingOptsZh.includes(cur.custom_options_zh[index])) {{
                 selectedOptIndices.push(index); addP += p; d.classList.add('sel');
             }}
@@ -536,7 +535,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         if(val + n >= 1) input.value = val + n;
     }}
 
-    // 核心修正：保存時強制帶入所有語系的名稱與選項
+    // 【關鍵修正 3】：儲存修改時，強制把所有語系的名稱與選項同步帶入，避免編輯後丟失 en 資訊
     function addC(){{
         let q = parseInt(document.getElementById('m-q').value) || 1;
         let itemData = {{ 
@@ -612,7 +611,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
         
-        // 最終確認語系
+        // 【關鍵修正 4】：確保提交時語系標籤絕對是當前的 CUR_LANG
         document.getElementById('lang_final_input').value = CUR_LANG;
         document.getElementById('tbl_input').value = t;
         document.getElementById('cart_input').value = JSON.stringify(C);
@@ -624,7 +623,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     upd(); 
     </script></body></html>
     """
-
+    
     
 # --- 4. 下單成功 (滿版優化版) ---
 @app.route('/order_success')
