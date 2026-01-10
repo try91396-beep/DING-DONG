@@ -228,10 +228,10 @@ def language_select():
     """
 
 
-# --- 3. 點餐頁面 (介面與訂單語言分離修正版) ---
+# --- 3. 點餐頁面 (快取優化與語言分離版) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
-    # 這是目前網頁介面要顯示的語言 (如員工要看中文)
+    # 網頁介面顯示語言
     display_lang = request.args.get('lang', 'zh')
     t_all = load_translations()
     t = t_all.get(display_lang, t_all['zh'])
@@ -244,7 +244,6 @@ def menu():
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            # final_lang 是訂單存入資料庫的語言，預設由前端傳回
             final_lang = request.form.get('lang_input', 'zh')
             old_order_id = request.form.get('old_order_id')
 
@@ -254,7 +253,7 @@ def menu():
             total_price = 0
             display_list = []
 
-            # 如果是編輯舊訂單，強制鎖定使用「原訂單語系」來產生 items 摘要文字
+            # 編輯模式：鎖定原語系摘要
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -265,14 +264,11 @@ def menu():
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
                 
-                # 摘要文字語系與訂單語系一致
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
-                
                 opt_key = f"options_{final_lang}"
                 opts = item.get(opt_key, item.get('options_zh', []))
                 opt_str = f"({','.join(opts)})" if opts else ""
-                
                 display_list.append(f"{n_display} {opt_str} x{qty}")
 
             items_str = " + ".join(display_list)
@@ -288,7 +284,7 @@ def menu():
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
-            if old_order_id: return f"<script>alert('Order #{old_order_id} Updated to #{oid}'); if(window.opener) window.opener.location.reload(); window.close();</script>"
+            if old_order_id: return f"<script>localStorage.removeItem('cart_cache'); alert('Order #{old_order_id} Updated'); if(window.opener) window.opener.location.reload(); window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
         except Exception as e:
             conn.rollback()
@@ -296,19 +292,18 @@ def menu():
         finally:
             cur.close(); conn.close()
 
-    # --- GET 載入頁面邏輯 ---
+    # --- GET 邏輯 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
-    preload_cart = "[]"
-    order_lang = display_lang # 預設訂單語系跟介面一樣
+    preload_cart = "null" # 預設不預載，交給 JS 從 Cache 讀取
+    order_lang = display_lang 
 
     if edit_oid:
         cur.execute("SELECT table_number, content_json, lang FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
         if old_data:
             if not url_table: url_table = old_data[0]
-            preload_cart = old_data[1]
-            # 重要：鎖定這張訂單的語系，但不影響介面的 display_lang
+            preload_cart = old_data[1] # 編輯模式則需要強制載入舊單內容
             order_lang = old_data[2] if old_data[2] else 'zh'
 
     cur.execute("""
@@ -324,8 +319,7 @@ def menu():
     for p in products:
         p_list.append({
             'id': p[0], 'name_zh': p[1], 'name_en': p[8] or p[1], 'name_jp': p[9] or p[1], 'name_kr': p[10] or p[1],
-            'price': p[2], 
-            'category_zh': p[3], 'category_en': p[15] or p[3], 'category_jp': p[16] or p[3], 'category_kr': p[17] or p[3],
+            'price': p[2], 'category_zh': p[3], 'category_en': p[15] or p[3], 'category_jp': p[16] or p[3], 'category_kr': p[17] or p[3],
             'image_url': p[4] or '', 'is_available': p[5], 
             'custom_options_zh': p[6].split(',') if p[6] else [],
             'custom_options_en': p[11].split(',') if p[11] else (p[6].split(',') if p[6] else []),
@@ -333,7 +327,6 @@ def menu():
             'custom_options_kr': p[13].split(',') if p[13] else (p[6].split(',') if p[6] else []),
             'print_category': p[14] or 'Noodle'
         })
-    # 注意傳入 render_frontend 的參數：t 用 display_lang 決定，order_lang 用來決定存檔語系
     return render_frontend(p_list, t, url_table, display_lang, order_lang, preload_cart, edit_oid)
 
 def render_frontend(products, t, default_table, display_lang, order_lang, preload_cart, edit_oid):
@@ -341,7 +334,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;">⚠️ 正在編輯 #{edit_oid} (原訂單語系: {order_lang})</div>' if edit_oid else ''
+    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;">⚠️ 正在編輯 #{edit_oid} ({order_lang})</div>' if edit_oid else ''
 
     return f"""
     <!DOCTYPE html>
@@ -427,15 +420,30 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     </div>
 
     <script>
-    const P={p_json}, T={t_json}, PRELOAD={preload_cart}, DISPLAY_LANG="{display_lang}", ORDER_LANG="{order_lang}";
+    const P={p_json}, T={t_json}, EDIT_OID="{edit_oid}", PRELOAD_CART={preload_cart}, CUR_LANG="{display_lang}", ORDER_LANG="{order_lang}";
     let C=[], cur=null, selectedOptIndices=[], addP=0, editIndex=-1;
-    
-    if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
+    // --- 購物車快取邏輯 ---
+    function saveCache() {{ 
+        if(!EDIT_OID) localStorage.setItem('cart_cache', JSON.stringify(C)); 
+    }}
+
+    function initCart() {{
+        if(EDIT_OID && PRELOAD_CART) {{
+            C = PRELOAD_CART; // 編輯模式使用伺服器給的舊資料
+        }} else {{
+            let cached = localStorage.getItem('cart_cache');
+            if(cached) {{
+                try {{ C = JSON.parse(cached); }} catch(e) {{ C = []; }}
+            }}
+        }}
+        upd();
+    }}
+
+    // 渲染清單
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
-        // 介面顯示依照 DISPLAY_LANG
-        let currentCatName = p['category_' + DISPLAY_LANG] || p.category_zh;
+        let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
         let catId = "cat-" + p.category_zh; 
         if(p.category_zh != lastCatKey) {{ 
             h+=`<div class="cat-header" id="${{catId}}">${{currentCatName}}</div>`; 
@@ -443,7 +451,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             cats.push({{ id: catId, name: currentCatName }});
         }}
         let isAvail = p.is_available;
-        let d_name = p['name_' + DISPLAY_LANG] || p.name_zh;
+        let d_name = p['name_' + CUR_LANG] || p.name_zh;
         h+=`<div class="menu-item ${{isAvail ? '' : 'sold-out'}}">
             ${{isAvail ? '' : `<div class="sold-out-badge">${{T.sold_out}}</div>`}}
             ${{p.image_url ? `<img src="${{p.image_url}}" class="menu-img">` : ''}}
@@ -475,39 +483,28 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
         editIndex = cartIndex;
         selectedOptIndices = [];
         addP = 0;
-
-        document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + DISPLAY_LANG] || cur.name_zh);
+        document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
         document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? (T.save_changes || "💾 儲存修改") : T.modal_add_cart;
-
-        let area = document.getElementById('m-opts'); 
-        area.innerHTML = "";
-        let opts = cur['custom_options_' + DISPLAY_LANG] || cur.custom_options_zh;
+        let area = document.getElementById('m-opts'); area.innerHTML = "";
+        let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
         let existingOpts = editIndex > -1 ? C[editIndex].options_zh : [];
-
         opts.forEach((o, index)=>{{
             let parts = o.split(/[+]/);
             let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
-
             if(editIndex > -1 && existingOpts.includes(cur.custom_options_zh[index])) {{
-                selectedOptIndices.push(index);
-                addP += p;
-                d.classList.add('sel');
+                selectedOptIndices.push(index); addP += p; d.classList.add('sel');
             }}
-
             d.onclick=()=>{{
                 if(selectedOptIndices.includes(index)){{
-                    selectedOptIndices = selectedOptIndices.filter(i=>i!=index);
-                    addP-=p; d.classList.remove('sel');
+                    selectedOptIndices = selectedOptIndices.filter(i=>i!=index); addP-=p; d.classList.remove('sel');
                 }} else {{
-                    selectedOptIndices.push(index);
-                    addP+=p; d.classList.add('sel');
+                    selectedOptIndices.push(index); addP+=p; d.classList.add('sel');
                 }}
             }};
             area.appendChild(d);
         }});
-
         document.getElementById('m-q').value = editIndex > -1 ? C[editIndex].qty : 1;
         document.getElementById('opt-m').style.display = 'flex';
         document.getElementById('cart-m').style.display = 'none';
@@ -522,8 +519,7 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     function addC(){{
         let q = parseInt(document.getElementById('m-q').value) || 1;
         let itemData = {{ 
-            id: cur.id, 
-            name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
+            id: cur.id, name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
             unit_price: cur.price + addP, qty: q, 
             options_zh: selectedOptIndices.map(idx => cur.custom_options_zh[idx]),
             options_en: selectedOptIndices.map(idx => cur.custom_options_en[idx] || cur.custom_options_zh[idx]),
@@ -531,15 +527,9 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx] || cur.custom_options_zh[idx]),
             category: cur.category_zh, print_category: cur.print_category 
         }};
-
-        if(editIndex > -1) {{
-            C[editIndex] = itemData;
-        }} else {{
-            C.push(itemData);
-        }}
-
+        if(editIndex > -1) C[editIndex] = itemData; else C.push(itemData);
         document.getElementById('opt-m').style.display='none'; 
-        upd();
+        saveCache(); upd();
         if(editIndex > -1) showCart();
     }}
 
@@ -556,15 +546,12 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     function updateCartQty(idx, n){{
         C[idx].qty += n;
         if(C[idx].qty <= 0) C.splice(idx, 1);
-        showCart();
-        upd();
+        saveCache(); showCart(); upd();
     }}
     
     function setCartQty(idx, val){{
-        let q = parseInt(val) || 1;
-        if(q < 1) q = 1;
-        C[idx].qty = q;
-        upd();
+        let q = parseInt(val) || 1; if(q < 1) q = 1;
+        C[idx].qty = q; saveCache(); upd();
         document.getElementById('tot').innerText = C.reduce((a,b)=>a+b.unit_price*b.qty,0);
         document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
     }}
@@ -572,19 +559,16 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     function showCart(){{
         let h="";
         C.forEach((i,x)=>{{
-            let d_name = i['name_' + DISPLAY_LANG] || i.name_zh;
-            let opts = i['options_' + DISPLAY_LANG] || i.options_zh || [];
+            let d_name = i['name_' + CUR_LANG] || i.name_zh;
+            let opts = i['options_' + CUR_LANG] || i.options_zh || [];
             let opt_str = opts.length ? `<div style="font-size:0.9em;color:#666;margin-top:4px;">(${{opts.join(',')}})</div>` : '';
-            
             h+=`<div class="cart-item-row">
                 <div class="cart-item-main">
-                    <div style="flex:1;">
-                        <b style="font-size:1.15em;">${{d_name}}</b>${{opt_str}}
-                    </div>
+                    <div style="flex:1;"><b style="font-size:1.15em;">${{d_name}}</b>${{opt_str}}</div>
                     <div style="font-weight:bold;color:#e91e63;font-size:1.1em;margin-left:10px;">$${{i.unit_price * i.qty}}</div>
                 </div>
                 <div class="cart-qty-sub">
-                    <button onclick="if(confirm('Delete?')){{C.splice(${{x}},1);upd();showCart();}}" style="border:1px solid #ffcdd2; background:#fff5f5; border-radius:8px; padding:6px 10px; cursor:pointer; margin-right:auto;">🗑️</button>
+                    <button onclick="if(confirm('Delete?')){{C.splice(${{x}},1);saveCache();upd();showCart();}}" style="border:1px solid #ffcdd2; background:#fff5f5; border-radius:8px; padding:6px 10px; cursor:pointer; margin-right:auto;">🗑️</button>
                     <button class="btn-edit-opt" onclick="openOpt(${{i.id}}, ${{x}})">${{T.edit_options || 'Edit Options'}}</button>
                     <div class="qty-ctrl" style="margin:0; gap:8px;">
                         <button onclick="updateCartQty(${{x}}, -1)" style="width:36px;height:36px;font-size:1.2em;">-</button>
@@ -601,13 +585,17 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     function sub(){{
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
-        // 這裡確保將原訂單語系傳回後端
-        document.getElementById('lang_final_input').value = ORDER_LANG;
-        document.getElementById('tbl_input').value = t;
-        document.getElementById('cart_input').value = JSON.stringify(C);
-        if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
+        if(confirm(T.confirm_order)) {{
+            document.getElementById('lang_final_input').value = ORDER_LANG;
+            document.getElementById('tbl_input').value = t;
+            document.getElementById('cart_input').value = JSON.stringify(C);
+            // 提交前先標記，下一個頁面載入時清空 localStorage
+            localStorage.removeItem('cart_cache');
+            document.getElementById('order-form').submit();
+        }}
     }}
-    upd(); 
+    
+    initCart(); // 初始化購物車（從快取讀取）
     </script></body></html>
     """
     
