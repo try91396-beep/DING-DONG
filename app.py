@@ -154,7 +154,7 @@ def language_select():
     </body></html>
     """
 
-# --- 3. 點餐頁面 (更新分類翻譯支援) ---
+# --- 3. 點餐頁面 (更新分類翻譯支援 + 購物車可點擊修改) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -227,7 +227,6 @@ def menu():
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
 
-    # 這裡加入 category_en, category_jp, category_kr
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
                name_en, name_jp, name_kr, custom_options_en, custom_options_jp, custom_options_kr, 
@@ -253,7 +252,7 @@ def menu():
     return render_frontend(p_list, t, url_table, lang, preload_cart, edit_oid)
 
 def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
-    import json # 確保有導入
+    import json
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
@@ -265,43 +264,33 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     <style>
         body{{font-family:'Microsoft JhengHei',sans-serif;margin:0;padding-bottom:140px;background:#f8f9fa;touch-action:manipulation;}}
         .header{{background:white;padding:15px 15px 5px 15px;position:sticky;top:0;z-index:99;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}
-        
-        .cat-bar {{
-            display: flex; overflow-x: auto; white-space: nowrap; padding: 10px 0; gap: 10px; scrollbar-width: none;
-        }}
+        .cat-bar {{ display: flex; overflow-x: auto; white-space: nowrap; padding: 10px 0; gap: 10px; scrollbar-width: none; }}
         .cat-bar::-webkit-scrollbar {{ display: none; }}
-        .cat-btn {{
-            background: #f1f3f5; border: 1px solid #dee2e6; padding: 6px 15px; border-radius: 20px;
-            font-size: 0.9em; color: #495057; cursor: pointer;
-        }}
+        .cat-btn {{ background: #f1f3f5; border: 1px solid #dee2e6; padding: 6px 15px; border-radius: 20px; font-size: 0.9em; color: #495057; cursor: pointer; }}
         .cat-btn.active {{ background: #28a745; color: white; border-color: #28a745; }}
-
         .menu-item{{background:white;margin:10px;padding:10px;border-radius:10px;display:flex;box-shadow:0 2px 4px rgba(0,0,0,0.05);position:relative;}}
         .menu-img{{width:80px;height:80px;border-radius:8px;object-fit:cover;background:#eee;}}
         .menu-info{{flex:1;padding-left:15px;display:flex;flex-direction:column;justify-content:space-between;}}
-        .add-btn{{background:#28a745;color:white;border:none;padding:5px 15px;border-radius:15px;align-self:flex-end;touch-action:manipulation;}}
+        .add-btn{{background:#28a745;color:white;border:none;padding:5px 15px;border-radius:15px;align-self:flex-end;}}
         .sold-out {{ filter: grayscale(1); opacity: 0.6; pointer-events: none; }}
         .sold-out-badge {{ position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; z-index: 5; }}
-        
         .cart-bar{{position:fixed;bottom:0;width:100%;background:white;padding:12px;box-shadow:0 -2px 10px rgba(0,0,0,0.1);display:none;flex-direction:column;box-sizing:border-box;z-index:100;}}
         .cart-summary{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding:0 5px;}}
         .cart-buttons{{display:flex;gap:10px;}}
-        .btn-view-cart{{background:#ff9800;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;touch-action:manipulation;}}
-        .btn-checkout{{background:#28a745;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;touch-action:manipulation;}}
-        
+        .btn-view-cart{{background:#ff9800;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;}}
+        .btn-checkout{{background:#28a745;color:white;border:none;flex:1;padding:12px;border-radius:10px;font-weight:bold;font-size:1.1em;}}
         .modal{{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;z-index:200;justify-content:center;align-items:flex-end;}}
         .modal-c{{background:white;width:100%;padding:20px;border-radius:20px 20px 0 0;max-height:80vh;overflow-y:auto;box-sizing:border-box;position:relative;}}
-        .opt-tag{{border:1px solid #ddd;padding:5px 10px;border-radius:15px;margin:3px;display:inline-block;cursor:pointer;touch-action:manipulation;}}
+        .opt-tag{{border:1px solid #ddd;padding:5px 10px;border-radius:15px;margin:3px;display:inline-block;cursor:pointer;}}
         .opt-tag.sel{{background:#e3f2fd;border-color:#2196f3;color:#2196f3;}}
         .cat-header {{padding:10px 15px;font-weight:bold;color:#444;background:#eee;margin-top:10px; scroll-margin-top: 140px;}}
-        
         .qty-ctrl{{display:flex;align-items:center;gap:10px;justify-content:center;margin:15px 0;}}
-        .qty-ctrl button{{width:44px;height:44px;border-radius:22px;border:1px solid #ddd;background:white;font-size:1.5em;line-height:1;touch-action:manipulation;}}
+        .qty-ctrl button{{width:44px;height:44px;border-radius:22px;border:1px solid #ddd;background:white;font-size:1.5em;line-height:1;}}
         .qty-input{{width:60px;text-align:center;font-size:1.2em;border:1px solid #ddd;padding:5px;border-radius:5px;}}
-        
         .cart-item-row{{border-bottom:1px solid #eee;padding:12px 0;display:flex;flex-direction:column;gap:5px;}}
         .cart-item-main{{display:flex;justify-content:space-between;align-items:center;}}
         .cart-qty-sub{{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:5px;}}
+        .edit-hint {{ font-size: 0.7em; color: #2196f3; margin-top: 2px; }}
     </style></head><body>
     <div class="header">
         {edit_notice}
@@ -338,7 +327,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
                 <input type="number" id="m-q" class="qty-input" value="1" min="1" inputmode="numeric">
                 <button onclick="cq(1)">+</button>
             </div>
-            <button onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:10px;font-size:1.1em;">{t['modal_add_cart']}</button>
+            <button id="m-confirm-btn" onclick="addC()" style="width:100%;background:#28a745;color:white;padding:12px;border:none;border-radius:10px;margin-top:10px;font-size:1.1em;">{t['modal_add_cart']}</button>
             <button onclick="document.getElementById('opt-m').style.display='none'" style="width:100%;background:white;padding:10px;border:none;margin-top:10px;">{t['modal_cancel']}</button>
         </div>
     </div>
@@ -353,30 +342,20 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
 
     <script>
     const P={p_json}, T={t_json}, PRELOAD={preload_cart}, CUR_LANG="{lang}";
-    let C=[], cur=null, selectedOptIndices=[], addP=0;
+    let C=[], cur=null, selectedOptIndices=[], addP=0, editIndex=-1;
     
-    window.onpageshow = function(event) {{
-        if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {{
-            C = []; upd();
-        }}
-    }};
-
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
-    // 生成菜單與分類導覽 (核心修改處)
+    // 生成菜單
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
-        // 根據當前語言獲取分類名稱
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
-        // 使用 category_zh 作為唯一標識(ID)，避免因為翻譯不同導致 ID 衝突
         let catId = "cat-" + p.category_zh; 
-
         if(p.category_zh != lastCatKey) {{ 
             h+=`<div class="cat-header" id="${{catId}}">${{currentCatName}}</div>`; 
             lastCatKey=p.category_zh; 
             cats.push({{ id: catId, name: currentCatName }});
         }}
-        
         let isAvail = p.is_available;
         let d_name = p['name_' + CUR_LANG] || p.name_zh;
         h+=`<div class="menu-item ${{isAvail ? '' : 'sold-out'}}">
@@ -390,11 +369,9 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }});
     document.getElementById('list').innerHTML=h;
 
-    // 生成分類按鈕
+    // 分類導覽按鈕
     let navH = "";
-    cats.forEach(c => {{
-        navH += `<div class="cat-btn" onclick="scrollToCat('${{c.id}}', this)">${{c.name}}</div>`;
-    }});
+    cats.forEach(c => {{ navH += `<div class="cat-btn" onclick="scrollToCat('${{c.id}}', this)">${{c.name}}</div>`; }});
     document.getElementById('cat-nav').innerHTML = navH;
 
     function scrollToCat(catId, btn) {{
@@ -406,28 +383,54 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         }}
     }}
 
-    function closeModalByBg(e, id) {{
-        document.getElementById(id).style.display = 'none';
-    }}
+    function closeModalByBg(e, id) {{ document.getElementById(id).style.display = 'none'; }}
 
-    function openOpt(id){{
-        cur=P.find(x=>x.id==id); selectedOptIndices=[]; addP=0;
-        document.getElementById('m-name').innerText = cur['name_' + CUR_LANG] || cur.name_zh;
-        let area=document.getElementById('m-opts'); area.innerHTML="";
+    // 開啟選項視窗 (新增/修改)
+    function openOpt(productId, cartIndex = -1){{
+        cur = P.find(x=>x.id==productId);
+        editIndex = cartIndex;
+        selectedOptIndices = [];
+        addP = 0;
+
+        document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
+        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? "💾 儲存修改" : T.modal_add_cart;
+
+        let area = document.getElementById('m-opts'); 
+        area.innerHTML = "";
         let opts = cur['custom_options_' + CUR_LANG] || cur.custom_options_zh;
+        
+        // 如果是編輯模式，先抓取原本選中的選項
+        let existingOpts = editIndex > -1 ? C[editIndex].options_zh : [];
+
         opts.forEach((o, index)=>{{
             let parts = o.split(/[+]/);
             let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
+
+            // 判斷原本是否有選中這項
+            if(editIndex > -1 && existingOpts.includes(cur.custom_options_zh[index])) {{
+                selectedOptIndices.push(index);
+                addP += p;
+                d.classList.add('sel');
+            }}
+
             d.onclick=()=>{{
-                if(selectedOptIndices.includes(index)){{ selectedOptIndices = selectedOptIndices.filter(i=>i!=index); addP-=p; d.classList.remove('sel'); }}
-                else{{ selectedOptIndices.push(index); addP+=p; d.classList.add('sel'); }}
+                if(selectedOptIndices.includes(index)){{
+                    selectedOptIndices = selectedOptIndices.filter(i=>i!=index);
+                    addP-=p; d.classList.remove('sel');
+                }} else {{
+                    selectedOptIndices.push(index);
+                    addP+=p; d.classList.add('sel');
+                }}
             }};
             area.appendChild(d);
         }});
-        document.getElementById('m-q').value=1;
-        document.getElementById('opt-m').style.display='flex';
+
+        document.getElementById('m-q').value = editIndex > -1 ? C[editIndex].qty : 1;
+        document.getElementById('opt-m').style.display = 'flex';
+        // 如果是從購物車點擊的，關閉購物車彈窗
+        document.getElementById('cart-m').style.display = 'none';
     }}
 
     function cq(n){{
@@ -436,9 +439,10 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         if(val + n >= 1) input.value = val + n;
     }}
 
+    // 加入/儲存到購物車
     function addC(){{
         let q = parseInt(document.getElementById('m-q').value) || 1;
-        C.push({{ 
+        let itemData = {{ 
             id: cur.id, 
             name_zh: cur.name_zh, name_en: cur.name_en, name_jp: cur.name_jp, name_kr: cur.name_kr, 
             unit_price: cur.price + addP, qty: q, 
@@ -447,9 +451,17 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             options_jp: selectedOptIndices.map(idx => cur.custom_options_jp[idx]),
             options_kr: selectedOptIndices.map(idx => cur.custom_options_kr[idx]),
             category: cur.category_zh, print_category: cur.print_category 
-        }});
+        }};
+
+        if(editIndex > -1) {{
+            C[editIndex] = itemData; // 替換舊數據
+        }} else {{
+            C.push(itemData); // 新增
+        }}
+
         document.getElementById('opt-m').style.display='none'; 
         upd();
+        if(editIndex > -1) showCart(); // 修改完重新打開購物車顯示
     }}
 
     function upd(){{
@@ -476,6 +488,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
     }}
 
+    // 購物車顯示與「點擊修改」邏輯
     function showCart(){{
         let h="";
         C.forEach((i,x)=>{{
@@ -483,9 +496,13 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             let opts = i['options_' + CUR_LANG] || i.options_zh || [];
             let opt_str = opts.length ? `<div style="font-size:0.85em;color:#666;">(${{opts.join(',')}})</div>` : '';
             
+            // 加入 onclick="openOpt(i.id, x)" 使其可修改
             h+=`<div class="cart-item-row">
-                <div class="cart-item-main">
-                    <div><b>${{d_name}}</b>${{opt_str}}</div>
+                <div class="cart-item-main" onclick="openOpt(${{i.id}}, ${{x}})" style="cursor:pointer;">
+                    <div>
+                        <b>${{d_name}}</b>${{opt_str}}
+                        <div class="edit-hint">點擊可重新選擇選項</div>
+                    </div>
                     <div style="font-weight:bold;color:#e91e63">$${{i.unit_price * i.qty}}</div>
                 </div>
                 <div class="cart-qty-sub">
@@ -515,7 +532,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     """
 
     
-# --- 4. 下單成功 ---
+# --- 4. 下單成功 (滿版優化版) ---
 @app.route('/order_success')
 def order_success():
     oid = request.args.get('order_id')
@@ -526,41 +543,128 @@ def order_success():
     cur.execute("SELECT daily_seq, content_json, total_price, created_at FROM orders WHERE id=%s", (oid,))
     row = cur.fetchone(); conn.close()
     if not row: return "Order Not Found"
+    
     seq, json_str, total, created_at = row
     tw_time = created_at + timedelta(hours=8)
     time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
     items = json.loads(json_str) if json_str else []
+    
     items_html = ""
     for i in items:
-        d_name = i.get(f'name_{lang}', i.get('name_zh', i.get('name')))
+        # 取得對應語言名稱
+        d_name = i.get(f'name_{lang}', i.get('name_zh', i.get('name', 'Product')))
+        # 取得客製化選項
         ops = i.get(f'options_{lang}', i.get('options_zh', i.get('options', [])))
-        opt_str = f" <br><small style='color:#888;'>└ {','.join(ops)}</small>" if ops else ""
+        opt_str = f" <br><small style='color:#777; font-size:0.9em;'>└ {', '.join(ops)}</small>" if ops else ""
+        
         items_html += f"""
-        <div style='display:flex; justify-content:space-between; border-bottom:1px dashed #ddd; padding:10px 0;'>
-            <span><b style="font-size:1.1em;">{d_name}</b> x{i['qty']}{opt_str}</span>
-            <span style="font-weight:bold;">${i['unit_price'] * i['qty']}</span>
+        <div style='display:flex; justify-content:space-between; align-items: flex-start; border-bottom:1px solid #eee; padding:15px 0;'>
+            <div style="text-align: left; padding-right: 10px;">
+                <div style="font-size:1.1em; font-weight:bold; color:#333;">{d_name} <span style="color:#888; font-weight:normal;">x{i['qty']}</span></div>
+                {opt_str}
+            </div>
+            <div style="font-weight:bold; font-size:1.1em; white-space:nowrap;">${i['unit_price'] * i['qty']}</div>
         </div>
         """
+
     return f"""
-    <div style="max-width:450px; margin:30px auto; text-align:center; font-family:'Microsoft JhengHei', sans-serif; padding:25px; border:1px solid #eee; border-radius:15px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
-        <div style="font-size:50px; margin-bottom:10px;">✅</div>
-        <h1 style="color:#28a745; margin:0;">{t['order_success']}</h1>
-        <div style="margin:20px 0; padding:15px; background:#fff5f8; border-radius:10px;">
-            <div style="font-size:0.9em; color:#e91e63; font-weight:bold; margin-bottom:5px;">取餐單號 / Order Number</div>
-            <div style="font-size:4em; font-weight:bold; color:#e91e63; line-height:1;">#{seq:03d}</div>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>Order Success</title>
+        <style>
+            body {{ margin: 0; padding: 0; background: #fdfdfd; font-family: 'Microsoft JhengHei', -apple-system, sans-serif; }}
+            .container {{ 
+                min-height: 100vh; 
+                display: flex; 
+                flex-direction: column; 
+                padding: 20px; 
+                box-sizing: border-box; 
+            }}
+            .card {{ 
+                background: #fff; 
+                flex-grow: 1; 
+                border-radius: 20px; 
+                box-shadow: 0 4px 20px rgba(0,0,0,0.08); 
+                padding: 30px 20px; 
+                text-align: center;
+                display: flex;
+                flex-direction: column;
+            }}
+            .success-icon {{ font-size: 60px; margin-bottom: 10px; }}
+            .status-title {{ color: #28a745; margin: 0 0 20px 0; font-size: 1.8em; }}
+            .seq-box {{ 
+                background: #fff5f8; 
+                border-radius: 15px; 
+                padding: 20px; 
+                margin-bottom: 25px; 
+                border: 2px solid #ffeef2;
+            }}
+            .seq-label {{ font-size: 1em; color: #e91e63; font-weight: bold; margin-bottom: 8px; letter-spacing: 1px; }}
+            .seq-number {{ font-size: 5em; font-weight: 900; color: #e91e63; line-height: 1; }}
+            .notice-box {{ 
+                background: #fdf6e3; 
+                padding: 18px; 
+                border-left: 6px solid #ff9800; 
+                border-radius: 8px; 
+                margin-bottom: 30px; 
+                text-align: left; 
+            }}
+            .details-area {{ text-align: left; margin-bottom: 30px; }}
+            .total-row {{ 
+                text-align: right; 
+                font-weight: 900; 
+                font-size: 1.8em; 
+                margin-top: 20px; 
+                color: #d32f2f; 
+                border-top: 2px solid #333; 
+                padding-top: 15px; 
+            }}
+            .home-btn {{ 
+                display: block; 
+                padding: 18px; 
+                background: #007bff; 
+                color: white !important; 
+                text-decoration: none; 
+                border-radius: 12px; 
+                font-weight: bold; 
+                font-size: 1.2em; 
+                margin-top: auto;
+                box-shadow: 0 4px 10px rgba(0,123,255,0.3);
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card">
+                <div class="success-icon">✅</div>
+                <h1 class="status-title">{t['order_success']}</h1>
+                
+                <div class="seq-box">
+                    <div class="seq-label">取餐單號 / ORDER NO.</div>
+                    <div class="seq-number">#{seq:03d}</div>
+                </div>
+
+                <div class="notice-box">
+                    <div style="font-weight:bold; color:#856404; font-size:1.3em; margin-bottom:5px;">⚠️ {t['pay_at_counter']}</div>
+                    <div style="color:#856404; font-size:1em; line-height:1.4;">{t['kitchen_prep']}</div>
+                </div>
+
+                <div class="details-area">
+                    <h3 style="border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px; color:#444;">🧾 {t['order_details']}</h3>
+                    {items_html}
+                    <div class="total-row">{t['total']}: ${total}</div>
+                </div>
+
+                <p style="color:#999; font-size:0.85em; margin: 20px 0;">下單時間: {time_str}</p>
+                
+                <a href="/?lang={lang}" class="home-btn">回首頁 / Back to Menu</a>
+            </div>
         </div>
-        <p style="color:#666; font-size:0.9em;">時間: {time_str}</p>
-        <div style="background:#fdf6e3; padding:15px; border-left:5px solid #ff9800; border-radius:5px; margin-bottom:20px; text-align:left;">
-            <p style="margin:0; font-weight:bold; color:#856404; font-size:1.2em;">⚠️ {t['pay_at_counter']}</p>
-            <p style="margin:5px 0 0 0; color:#856404;">{t['kitchen_prep']}</p>
-        </div>
-        <div style="text-align:left; margin-top:20px;">
-            <h3 style="border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:10px;">🧾 {t['order_details']}</h3>
-            {items_html}
-            <div style="text-align:right; font-weight:bold; font-size:1.4em; margin-top:15px; color:#d32f2f;">{t['total']}: ${total}</div>
-        </div>
-        <br><a href="/" style="display:block; padding:15px; background:#007bff; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:1.1em;">回首頁 / Back to Menu</a>
-    </div>
+    </body>
+    </html>
     """
 
 # --- 5. 廚房看板 ---
@@ -643,7 +747,7 @@ def check_new_orders():
         except: items_html = f"解析錯誤: {raw_items}"
         tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
         btns = ""
-        if status == 'Pending': btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 完成</button>"
+        if status == 'Pending': btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 付款完成</button>"
         if status != 'Cancelled':
             btns += f"<a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 修改 (中)</a>"
             btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 作廢</button>"
