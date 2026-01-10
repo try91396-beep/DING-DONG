@@ -228,7 +228,7 @@ def language_select():
     """
 
 
-# --- 3. 點餐頁面 (完整修改版) ---
+# --- 3. 點餐頁面 (完整修正括號版) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -251,7 +251,6 @@ def menu():
             total_price = 0
             display_list = []
 
-            # 編輯模式下，確保語系與原訂單一致
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -286,7 +285,6 @@ def menu():
             conn.commit()
             if old_order_id: return "<script>alert('Order Updated'); if(window.opener) window.opener.location.reload(); window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
-
         except Exception as e:
             conn.rollback()
             return f"Order Failed: {e}"
@@ -336,6 +334,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
     edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;">⚠️ 正在編輯 #{edit_oid}</div>' if edit_oid else ''
 
+    # 注意：這裡使用了 f"""，內部的 JS 大括號必須全部雙寫 {{ }}
     return f"""
     <!DOCTYPE html>
     <html><head><title>{t['title']}</title><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
@@ -425,7 +424,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     
     if(PRELOAD && PRELOAD.length > 0) C = PRELOAD;
 
-    // 生成菜單
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
@@ -448,7 +446,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     }});
     document.getElementById('list').innerHTML=h;
 
-    // 分類導覽按鈕
     let navH = "";
     cats.forEach(c => {{ navH += `<div class="cat-btn" onclick="scrollToCat('${{c.id}}', this)">${{c.name}}</div>`; }});
     document.getElementById('cat-nav').innerHTML = navH;
@@ -494,7 +491,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
                 if(selectedOptIndices.includes(index)){{
                     selectedOptIndices = selectedOptIndices.filter(i=>i!=index);
                     addP-=p; d.classList.remove('sel');
-                } else {{
+                }} else {{
                     selectedOptIndices.push(index);
                     addP+=p; d.classList.add('sel');
                 }}
@@ -526,20 +523,25 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             category: cur.category_zh, print_category: cur.print_category 
         }};
 
-        if(editIndex > -1) C[editIndex] = itemData;
-        else C.push(itemData);
+        if(editIndex > -1) {{
+            C[editIndex] = itemData;
+        }} else {{
+            C.push(itemData);
+        }}
 
         document.getElementById('opt-m').style.display='none'; 
         upd();
         if(editIndex > -1) showCart();
     }}
 
-    function upd(){{
-        if(C.length){{
+    function upd() {{
+        if(C.length) {{
             document.getElementById('bar').style.display='flex';
             document.getElementById('tot').innerText = C.reduce((a,b)=>a+b.unit_price*b.qty,0);
             document.getElementById('cnt').innerText = C.reduce((a,b)=>a+b.qty,0);
-        }} else document.getElementById('bar').style.display='none';
+        }} else {{
+            document.getElementById('bar').style.display='none';
+        }}
     }}
 
     function updateCartQty(idx, n){{
