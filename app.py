@@ -703,7 +703,7 @@ def cancel_order(oid):
     c=get_db_connection(); c.cursor().execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,)); c.commit(); c.close()
     return redirect('/kitchen')
 
-# --- 8. 列印路由 (修正長訂單自動分頁問題) ---
+# --- 8. 列印路由 (修正長訂單自動分頁問題，寬度長度全自動) ---
 @app.route('/print_order/<int:oid>')
 def print_order(oid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -756,44 +756,49 @@ def print_order(oid):
     return f"""
     <html><head><meta charset="UTF-8">
     <style>
-        /* 設定紙張：auto 長度能防止強制分頁 */
+        /* 設定紙張：完全由內容決定大小 (auto) */
         @page {{ 
-            size: 58mm auto; 
+            size: auto; 
             margin: 0; 
         }}
-        body {{ 
-            font-family: 'Microsoft JhengHei', sans-serif; 
-            font-size: 14px; 
-            background: #fff; 
-            margin: 0; 
+        
+        html, body {{
+            margin: 0;
             padding: 0;
-            width: 58mm;
-        }} 
+            background: #fff;
+            font-family: 'Microsoft JhengHei', sans-serif;
+            font-size: 14px;
+            width: auto; /* 寬度自動 */
+        }}
+
         .ticket {{ 
-            width: 54mm; 
-            margin: 0 auto; 
-            padding: 2mm; 
+            padding: 4mm;
             box-sizing: border-box;
-            page-break-inside: avoid; /* [重要] 防止單張票據內部被切斷 */
+            page-break-inside: avoid; /* 防止單張票據內部被切斷 */
             overflow: visible;
         }} 
+
         .head {{ text-align: center; }} 
-        .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; }} 
+        .row {{ display: flex; justify-content: space-between; margin-top: 8px; font-weight: bold; gap: 10px; }} 
         .opt {{ font-size: 12px; color: #444; margin-left: 15px; }} 
+
         .break {{ 
-            page-break-after: always; /* 僅在結帳單與工單之間換頁 */
+            page-break-after: always; /* 不同工單之間強制換頁，確保自動切紙觸發 */
         }} 
+
         h1 {{ margin: 5px 0; font-size: 2.5em; }}
         h2 {{ margin: 5px 0; font-size: 1.5em; }}
         hr {{ border: none; border-top: 1px dashed #000; }}
         
         @media print {{ 
-            body {{ background: white; }} 
-            .ticket {{ width: 100%; border: none; }} 
+            body {{ width: auto; }} 
+            .ticket {{ border: none; }}
         }}
     </style></head>
     <body onload='window.print(); setTimeout(function(){{ window.close(); }}, 1200);'>{body}</body></html>
     """
+
+    
 # --- 9. 後台管理 (Excel 匯入/匯出/一鍵清空版) ---
 
 @app.route('/admin/reorder_products', methods=['POST'])
