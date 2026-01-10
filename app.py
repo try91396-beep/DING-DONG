@@ -228,7 +228,7 @@ def language_select():
     """
 
 
-# --- 3. 點餐頁面 (完整修正括號版) ---
+# --- 3. 點餐頁面 (完整修正：編輯模式語言同步與括號問題) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     lang = request.args.get('lang', 'zh')
@@ -251,6 +251,7 @@ def menu():
             total_price = 0
             display_list = []
 
+            # 編輯模式下，維持原訂單語言
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -291,16 +292,20 @@ def menu():
         finally:
             cur.close(); conn.close()
 
+    # --- 進入編輯模式的判斷 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "[]"
+    
     if edit_oid:
         cur.execute("SELECT table_number, content_json, lang FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
         if old_data:
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
+            # 重要：強制將當前語言設為該訂單儲存的語言
             lang = old_data[2] if old_data[2] else lang
+            # 重新載入對應語言的翻譯
             t = t_all.get(lang, t_all['zh'])
 
     cur.execute("""
@@ -332,9 +337,11 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     p_json = json.dumps(products)
     t_json = json.dumps(t)
     old_oid_input = f'<input type="hidden" name="old_order_id" value="{edit_oid}">' if edit_oid else ''
-    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;">⚠️ 正在編輯 #{edit_oid}</div>' if edit_oid else ''
+    
+    # 這裡的編輯提示文字也支援多語言
+    edit_label = "正在編輯" if lang == 'zh' else "Editing"
+    edit_notice = f'<div style="background:#fff3cd;padding:12px;color:#856404;text-align:center;font-weight:bold;">⚠️ {edit_label} #{edit_oid}</div>' if edit_oid else ''
 
-    # 注意：這裡使用了 f"""，內部的 JS 大括號必須全部雙寫 {{ }}
     return f"""
     <!DOCTYPE html>
     <html><head><title>{t['title']}</title><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
@@ -468,8 +475,7 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         addP = 0;
 
         document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
-        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? (T.save_changes || "💾 Save Changes") : T.modal_add_cart;
-        //document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? "💾 儲存修改" : T.modal_add_cart;
+        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? (T.save_changes || "💾 儲存修改") : T.modal_add_cart;
 
         let area = document.getElementById('m-opts'); 
         area.innerHTML = "";
