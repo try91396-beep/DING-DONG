@@ -228,7 +228,7 @@ def language_select():
     """
 
 
-# --- 3. 點餐頁面 (徹底解決返回鍵殘留版) ---
+# --- 3. 點餐頁面 (bfcache 強化版) ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
     # 網頁介面顯示語言
@@ -253,7 +253,6 @@ def menu():
             total_price = 0
             display_list = []
 
-            # 編輯模式：鎖定原語系摘要
             if old_order_id:
                 cur.execute("SELECT lang FROM orders WHERE id=%s", (old_order_id,))
                 orig_res = cur.fetchone()
@@ -284,7 +283,11 @@ def menu():
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
-            if old_order_id: return f"<script>localStorage.removeItem('cart_cache'); alert('Order #{old_order_id} Updated'); if(window.opener) window.opener.location.reload(); window.close();</script>"
+            
+            # 成功提交後，確保舊快取被移除
+            if old_order_id: 
+                return f"<script>localStorage.removeItem('cart_cache'); alert('Order #{old_order_id} Updated'); if(window.opener) window.opener.location.reload(); window.close();</script>"
+            
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
         except Exception as e:
             conn.rollback()
@@ -292,7 +295,6 @@ def menu():
         finally:
             cur.close(); conn.close()
 
-    # --- GET 邏輯 ---
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "null" 
@@ -420,12 +422,12 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
     const P={p_json}, T={t_json}, EDIT_OID="{edit_oid}", PRELOAD_CART={preload_cart}, CUR_LANG="{display_lang}", ORDER_LANG="{order_lang}";
     let C=[], cur=null, selectedOptIndices=[], addP=0, editIndex=-1;
 
-    // --- 購物車快取邏輯 ---
     function saveCache() {{ 
         if(!EDIT_OID) localStorage.setItem('cart_cache', JSON.stringify(C)); 
     }}
 
     function initCart() {{
+        // 如果是編輯模式，從預載入資料讀取；否則從快取讀取
         if(EDIT_OID && PRELOAD_CART) {{
             C = PRELOAD_CART;
         }} else {{
@@ -435,21 +437,16 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
         upd();
     }}
 
-    // --- 【修正重點】防止返回鍵殘留 ---
+    // --- 【修正重點：處理 bfcache】 ---
     window.addEventListener('pageshow', function(event) {{
-        // event.persisted 為 true 表示頁面是從 bfcache (往返快取) 載入的
-        // 或者當 localStorage 為空，但記憶體變數 C 有值時，強制同步
-        if (event.persisted || !localStorage.getItem('cart_cache')) {{
-            if (!EDIT_OID) {{
-                C = [];
-                let cached = localStorage.getItem('cart_cache');
-                if (cached) C = JSON.parse(cached);
-                upd();
-            }}
+        // event.persisted 為 true 代表是點擊「返回」按鈕回來的
+        // 或是檢測到 localStorage 已被清空，但記憶體變數 C 還有值，則強制同步
+        if (event.persisted || (C.length > 0 && !localStorage.getItem('cart_cache') && !EDIT_OID)) {{
+            initCart();
         }}
     }});
 
-    // 渲染清單邏輯 (與原程式相同)
+    // 渲染 UI 部分
     let h="", lastCatKey="", cats=[];
     P.forEach(p=>{{
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
@@ -588,15 +585,16 @@ def render_frontend(products, t, default_table, display_lang, order_lang, preloa
             document.getElementById('lang_final_input').value = ORDER_LANG;
             document.getElementById('tbl_input').value = t;
             document.getElementById('cart_input').value = JSON.stringify(C);
-            // 1. 先清除快取
+            
+            // 提交前徹底清空
             localStorage.removeItem('cart_cache');
-            // 2. 立即將記憶體中的購物車清空，防止返回時殘留
-            C = [];
-            // 3. 提交表單
+            C = []; 
+            
             document.getElementById('order-form').submit();
         }}
     }}
     
+    // 初始載入
     initCart();
     </script></body></html>
     """
