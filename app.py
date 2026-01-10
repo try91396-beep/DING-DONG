@@ -12,7 +12,7 @@ from datetime import timedelta
 
 app = Flask(__name__)
 
-# --- 資料庫連線 ---
+# --- 資料庫連線 --- 
 def get_db_connection():
     db_uri = os.environ.get("DATABASE_URL")
     return psycopg2.connect(db_uri)
