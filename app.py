@@ -244,11 +244,9 @@ def language_select():
 # --- 3. 點餐頁面 ---
 @app.route('/menu', methods=['GET', 'POST'])
 def menu():
-    # 1. 取得當前語系，預設為 'zh'
+    # 優先取得 URL 中的語系，若無則預設為 zh
     lang = request.args.get('lang', 'zh')
-    translations = load_translations()
-    t = translations.get(lang, translations['zh'])
-    
+    t = load_translations().get(lang, load_translations()['zh'])
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -257,13 +255,11 @@ def menu():
             table_number = request.form.get('table_number')
             cart_json = request.form.get('cart_data')
             need_receipt = request.form.get('need_receipt') == 'on'
-            # 從表單隱藏欄位抓回使用者當前的語系
-            final_lang = request.form.get('lang_input', lang)
+            # 關鍵點：從前端隱藏欄位獲取正確的語系，避免 POST 後跳回中文
+            final_lang = request.form.get('lang_input', lang) 
             old_order_id = request.form.get('old_order_id')
 
-            if not cart_json or cart_json == '[]': 
-                return "Empty Cart"
-            
+            if not cart_json or cart_json == '[]': return "Empty Cart"
             cart_items = json.loads(cart_json)
             total_price = 0
             display_list = []
@@ -272,8 +268,7 @@ def menu():
                 price = int(float(item['unit_price']))
                 qty = int(float(item['qty']))
                 total_price += (price * qty)
-                
-                # 根據語系決定顯示名稱
+                # 根據 final_lang 決定顯示在資料庫 items 欄位的名稱
                 name_key = f"name_{final_lang}"
                 n_display = item.get(name_key, item.get('name_zh'))
                 opt_key = f"options_{final_lang}"
@@ -282,8 +277,6 @@ def menu():
                 display_list.append(f"{n_display} {opt_str} x{qty}")
 
             items_str = " + ".join(display_list)
-            
-            # 寫入資料庫
             cur.execute("""
                 INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt)
                 VALUES (%s, %s, %s, %s, (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), %s, %s) 
@@ -291,35 +284,34 @@ def menu():
             """, (table_number, items_str, total_price, final_lang, cart_json, need_receipt))
 
             oid = cur.fetchone()[0]
-            
             if old_order_id:
                 cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s", (old_order_id,))
             
             conn.commit()
             
-            # 如果是修改訂單，關閉視窗；如果是新訂單，導向成功頁面並帶上語系
-            if old_order_id: 
-                return "<script>window.close();</script>"
+            # 如果是修改訂單，關閉視窗；如果是新下單，導向成功頁面並帶上語系參數
+            if old_order_id: return "<script>window.close();</script>"
             return redirect(url_for('order_success', order_id=oid, lang=final_lang))
-            
         except Exception as e:
             conn.rollback()
             return f"Order Failed: {e}"
         finally:
-            cur.close()
-            conn.close()
+            cur.close(); conn.close()
 
-    # GET 請求部分
+    # GET 請求邏輯
     url_table = request.args.get('table', '')
     edit_oid = request.args.get('edit_oid')
     preload_cart = "[]"
-    
     if edit_oid:
-        cur.execute("SELECT table_number, content_json FROM orders WHERE id=%s", (edit_oid,))
+        cur.execute("SELECT table_number, content_json, lang FROM orders WHERE id=%s", (edit_oid,))
         old_data = cur.fetchone()
         if old_data:
             if not url_table: url_table = old_data[0]
             preload_cart = old_data[1]
+            # 若 URL 沒帶語系但有編輯單據，則採用原單據語系
+            if not request.args.get('lang'):
+                lang = old_data[2]
+                t = load_translations().get(lang, load_translations()['zh'])
 
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
@@ -328,8 +320,7 @@ def menu():
         FROM products ORDER BY sort_order ASC, id ASC
     """)
     products = cur.fetchall()
-    cur.close()
-    conn.close()
+    cur.close(); conn.close()
 
     p_list = []
     for p in products:
@@ -484,13 +475,15 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
         editIndex = cartIndex;
         selectedOptIndices = [];
         addP = 0;
+        document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + (cur['name_' + CUR_LANG] || cur.name_zh);
         
-        let d_name = cur['name_' + CUR_LANG] || cur.name_zh;
-        document.getElementById('m-name').innerText = (editIndex > -1 ? "✏️ " : "") + d_name;
+        // 修正：這裡動態判斷顯示文字
+        let saveLabel = "儲存修改";
+        if(CUR_LANG == 'en') saveLabel = "Save Changes";
+        else if(CUR_LANG == 'jp') saveLabel = "変更を保存";
+        else if(CUR_LANG == 'kr') saveLabel = "변경 사항 저장";
         
-        // 修改儲存修改的按鈕文字
-        let saveText = CUR_LANG === 'en' ? 'Save Changes' : (CUR_LANG === 'jp' ? '変更を保存' : (CUR_LANG === 'kr' ? '변경 사항 저장' : '儲存修改'));
-        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? saveText : T.modal_add_cart;
+        document.getElementById('m-confirm-btn').innerText = editIndex > -1 ? saveLabel : T.modal_add_cart;
         
         let area = document.getElementById('m-opts'); 
         area.innerHTML = "";
@@ -502,7 +495,6 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
             let n = parts[0].trim(), p = parts.length>1 ? parseInt(parts[1]) : 0;
             let d = document.createElement('div'); d.className='opt-tag';
             d.innerText = n + (p?` (+$${{p}})`:'');
-            
             if(editIndex > -1 && existingOpts.includes(cur.custom_options_zh[index])) {{
                 selectedOptIndices.push(index); addP += p; d.classList.add('sel');
             }}
@@ -595,8 +587,10 @@ def render_frontend(products, t, default_table, lang, preload_cart, edit_oid):
     function sub(){{
         let t = document.getElementById('visible_table').value;
         if(!t) return alert(T.table_placeholder);
-        // 關鍵：提交前確保隱藏欄位的語系與當前一致
+        
+        // 關鍵：確保隱藏欄位的語系與當前 JS 變數 CUR_LANG 一致
         document.getElementById('lang_final_input').value = CUR_LANG;
+        
         document.getElementById('tbl_input').value = t;
         document.getElementById('cart_input').value = JSON.stringify(C);
         if(confirm(T.confirm_order)) document.getElementById('order-form').submit();
