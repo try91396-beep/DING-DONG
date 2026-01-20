@@ -1266,7 +1266,8 @@ def async_send_report(app_instance):
     with app_instance.app_context():
         try:
             print("正在後台嘗試發送測試郵件...")
-            send_daily_report() # 呼叫您原本定義好的發信函式
+            # 注意：send_daily_report 函式內部必須有程式碼去資料庫 SELECT report_email 和 resend_api_key
+            send_daily_report() 
             print("測試郵件發送程序結束。")
         except Exception as e:
             print(f"測試郵件發送失敗 Error: {e}")
@@ -1344,6 +1345,7 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
+            # 僅儲存設定
             cur.execute("UPDATE settings SET value=%s WHERE key='report_email'", (request.form.get('report_email'),))
             cur.execute("UPDATE settings SET value=%s WHERE key='resend_api_key'", (request.form.get('resend_api_key'),))
             conn.commit()
@@ -1351,10 +1353,21 @@ def admin_panel():
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
             
         elif action == 'test_email':
+            # --- 修正重點：先儲存，再發送 ---
+            # 1. 先將目前表單上的資料寫入資料庫 (防止使用者輸入後忘記按儲存直接按測試)
+            report_email = request.form.get('report_email')
+            resend_api_key = request.form.get('resend_api_key')
+            
+            cur.execute("UPDATE settings SET value=%s WHERE key='report_email'", (report_email,))
+            cur.execute("UPDATE settings SET value=%s WHERE key='resend_api_key'", (resend_api_key,))
+            conn.commit() # 務必 Commit，這樣新的 Thread 讀取 DB 時才會有資料
+            
+            # 2. 啟動背景發信
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
+            
             conn.close()
-            return redirect(url_for('admin_panel', msg="📩 測試郵件已在後台發送"))
+            return redirect(url_for('admin_panel', msg="📩 設定已自動更新，並開始在後台發送測試郵件"))
             
         elif action == 'add_product':
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
@@ -1371,6 +1384,7 @@ def admin_panel():
             conn.close()
             return redirect(url_for('admin_panel', msg="✅ 產品新增成功"))
 
+    # 讀取現有設定與產品
     cur.execute("SELECT key, value FROM settings")
     config = dict(cur.fetchall())
     cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order FROM products ORDER BY sort_order ASC, id DESC")
@@ -1414,26 +1428,21 @@ def admin_panel():
         :root {{ --primary: #9b4dca; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }}
         body {{ background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding-bottom: 50px; }}
         
-        /* 佈局容器 */
         .container {{ max-width: 1000px; margin: 0 auto; padding: 20px; }}
         
-        /* 頂部導航 */
         .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 10px; }}
         .header h2 {{ margin: 0; font-size: 2.4rem; color: var(--primary); font-weight: bold; }}
         .nav-btn {{ background: #606c76; border-color: #606c76; padding: 0 20px; height: 38px; line-height: 38px; font-size: 1.4rem; text-transform: none; }}
         
-        /* 卡片樣式 */
         .card {{ background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #eee; }}
         .card h4 {{ border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 20px; color: #555; font-size: 1.8rem; font-weight: 600; }}
 
-        /* 表單優化 */
         label {{ font-size: 1.3rem; color: #666; margin-bottom: 5px; }}
         input[type="text"], input[type="number"], input[type="email"], input[type="password"], select {{ 
             border: 1px solid #ddd; border-radius: 6px; height: 42px; background: #fff; 
         }}
         input:focus, select:focus {{ border-color: var(--primary); outline: none; }}
         
-        /* 詳細資訊折疊面板 */
         details {{ background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px; margin-top: 15px; transition: 0.2s; }}
         details[open] {{ background: #fff; border-color: #ddd; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
         summary {{ cursor: pointer; font-weight: bold; color: #666; padding: 5px; outline: none; list-style: none; }}
@@ -1442,55 +1451,42 @@ def admin_panel():
         details[open] summary:after {{ content: "-"; }}
         .lang-group {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; padding-top: 15px; }}
 
-        /* 按鈕優化 */
         .btn-full {{ width: 100%; font-size: 1.6rem; height: 45px; }}
         .btn-group {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }}
         .btn-outline {{ background: transparent; color: #606c76; border: 1px solid #bbb; }}
         .btn-danger {{ background: #ff4d4f; border-color: #ff4d4f; color: white; }}
         
-        /* 列表與搜尋 */
         .sticky-search {{ position: sticky; top: 0; z-index: 99; background: var(--card-bg); padding: 15px 0; border-bottom: 1px solid #eee; margin-bottom: 0; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
         thead th {{ border-bottom: 2px solid #eee; color: #888; font-size: 1.3rem; }}
         td {{ padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #f5f5f5; }}
         
-        /* 列表元件 */
         .handle {{ cursor: move; color: #ccc; font-size: 20px; user-select: none; width: 30px; }}
         .handle:hover {{ color: var(--primary); }}
         .prod-name {{ font-weight: bold; font-size: 1.5rem; color: #333; }}
         .prod-cat {{ font-size: 1.2rem; color: #888; }}
         
-        /* 狀態按鈕 */
         .btn-sm {{ padding: 0 10px; height: 28px; line-height: 26px; font-size: 1.2rem; border-radius: 4px; border: 1px solid transparent; cursor: pointer; display: inline-block; }}
         .status-on {{ background: #e6ffed; color: #28a745; border-color: #b7eb8f; }}
         .status-off {{ background: #fff1f0; color: #f5222d; border-color: #ffa39e; }}
         
-        /* 操作圖示 */
         .btn-icon {{ text-decoration: none; font-size: 1.6rem; padding: 5px; margin: 0 2px; transition: 0.2s; }}
         .edit {{ color: #1890ff; }}
         .del {{ color: #ff4d4f; }}
         .btn-icon:hover {{ transform: scale(1.2); }}
 
-        /* 訊息提示 */
         .alert {{ padding: 12px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px; color: #0050b3; text-align: center; margin-bottom: 20px; display: none; }}
 
-        /* RWD 手機版優化 */
         @media (max-width: 600px) {{
             .header {{ flex-direction: column; align-items: stretch; text-align: center; }}
             .nav-btn {{ margin-top: 10px; width: 100%; }}
-            
-            /* 表格變卡片 */
             table, thead, tbody, th, td, tr {{ display: block; }}
             thead tr {{ position: absolute; top: -9999px; left: -9999px; }}
             tr {{ background: #fff; border: 1px solid #eee; border-radius: 8px; margin-bottom: 15px; padding: 15px; position: relative; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }}
-            
             td {{ padding: 5px 0; border: none; display: flex; justify-content: space-between; align-items: center; }}
             td:before {{ content: attr(data-label); font-weight: bold; color: #999; font-size: 1.2rem; margin-right: 15px; }}
-            
             .handle {{ position: absolute; top: 10px; right: 10px; width: auto; font-size: 24px; }}
             .prod-name {{ font-size: 1.6rem; }}
-            
-            /* 隱藏不需要標籤的欄位 */
             td.handle:before, td.search-key:before {{ display: none; }}
             td.search-key {{ display: block; margin-bottom: 10px; padding-right: 30px; }}
             td.actions {{ justify-content: flex-end; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px; }}
@@ -1607,11 +1603,9 @@ def admin_panel():
 
         <div class="card">
             <h4>📋 菜單管理與排序</h4>
-            
             <div class="sticky-search">
                 <input type="text" id="productSearch" placeholder="🔍 輸入關鍵字搜尋產品..." style="margin-bottom:0; width:100%;">
             </div>
-
             <div style="overflow-x: auto;">
                 <table id="menu-table">
                     <thead>
@@ -1629,18 +1623,14 @@ def admin_panel():
                     </tbody>
                 </table>
             </div>
-            
             <hr>
-            
             <h4>📦 資料庫操作</h4>
             <div class="btn-group">
                 <a href="/admin/export_menu" class="button btn-outline">📤 匯出 Excel</a>
-                
                 <form action="/admin/import_menu" method="POST" enctype="multipart/form-data" style="display:inline-flex; gap:5px; align-items:center;">
                     <input type="file" name="menu_file" required style="width:200px; height:38px; padding:5px;">
                     <button type="submit" class="button btn-outline">📥 匯入</button>
                 </form>
-
                 <div style="flex-grow:1; text-align:right;">
                     <a href="/admin/reset_menu" class="button btn-danger" onclick="return confirm('⚠️ 警告：這將刪除所有菜單品項，確定嗎？')">🗑️ 清空菜單</a>
                     <a href="/admin/reset_orders" class="button btn-danger" onclick="return confirm('⚠️ 警告：這將刪除所有訂單紀錄，確定嗎？')">💥 清空訂單</a>
@@ -1651,14 +1641,12 @@ def admin_panel():
     </div>
 
     <script>
-    // 顯示訊息動畫
     const msgDiv = document.getElementById('status-msg');
     if (msgDiv && msgDiv.innerText.trim() !== '') {{
         msgDiv.style.display = 'block';
         setTimeout(() => {{ msgDiv.style.opacity = '0'; }}, 3000);
     }}
 
-    // AJAX 切換狀態
     function toggleProduct(pid, btn) {{
         fetch('/admin/toggle_product/' + pid, {{ method: 'POST' }})
         .then(res => res.json())
@@ -1675,7 +1663,6 @@ def admin_panel():
         }});
     }}
 
-    // 搜尋過濾
     document.getElementById('productSearch').addEventListener('input', function(e) {{
         let filter = e.target.value.toLowerCase();
         document.querySelectorAll('.product-row').forEach(row => {{
@@ -1684,7 +1671,6 @@ def admin_panel():
         }});
     }});
 
-    // 拖曳排序
     Sortable.create(document.getElementById('menu-list'), {{
         handle: '.handle', 
         animation: 150,
