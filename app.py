@@ -1303,7 +1303,7 @@ def send_daily_report():
     # 6. 執行發送
     try:
         params = {
-            "from": sender_email,         # <--- 修改點：使用變數，不再寫死
+            "from": sender_email,         # 使用變數
             "to": [report_email],         # 收件人
             "subject": f"[{today}] 餐廳日結報表測試",
             "html": html_content
@@ -1398,9 +1398,7 @@ def admin_panel():
     
     # 定義一個內部函式來處理設定的更新 (包含 Insert 若不存在)
     def upsert_setting(key, value):
-        # 先嘗試更新
         cur.execute("UPDATE settings SET value=%s WHERE key=%s", (value, key))
-        # 如果沒有更新任何行（代表 key 不存在），則插入
         if cur.rowcount == 0:
             cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s)", (key, value))
 
@@ -1408,9 +1406,9 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
-            # 儲存設定 (包含 Report Email, Sender Email, API Key)
+            # 儲存設定
             upsert_setting('report_email', request.form.get('report_email'))
-            upsert_setting('sender_email', request.form.get('sender_email')) # <--- 新增
+            upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
             
             conn.commit()
@@ -1418,18 +1416,18 @@ def admin_panel():
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
             
         elif action == 'test_email':
-            # --- 邏輯：先強制儲存，再觸發發信 ---
+            # 測試發信 (先儲存，再發信)
             report_email = request.form.get('report_email')
-            sender_email = request.form.get('sender_email') # <--- 新增
+            sender_email = request.form.get('sender_email')
             resend_api_key = request.form.get('resend_api_key')
             
-            # 1. 寫入資料庫
+            # 1. 寫入資料庫 (確保最新設定被保存)
             upsert_setting('report_email', report_email)
-            upsert_setting('sender_email', sender_email) # <--- 新增
+            upsert_setting('sender_email', sender_email)
             upsert_setting('resend_api_key', resend_api_key)
             conn.commit()
             
-            # 2. 啟動背景發信 (傳遞 current_app 給執行緒)
+            # 2. 啟動背景發信
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
             
@@ -1482,6 +1480,9 @@ def admin_panel():
             </td>
         </tr>"""
 
+    # 重點修改處在下方的 HTML form 內：
+    # 1. 移除了 hidden input name='action'
+    # 2. 將 name='action' 放在兩個 button 上
     return f"""
     <!DOCTYPE html>
     <html lang="zh-TW">
@@ -1573,7 +1574,6 @@ def admin_panel():
         <div class="card">
             <h4>⚙️ 系統設定</h4>
             <form method="POST">
-                <input type="hidden" name="action" value="save_settings">
                 <div class="row">
                     <div class="column">
                         <label>日結報表收件人 (To)</label>
@@ -1591,8 +1591,8 @@ def admin_panel():
                     </div>
                 </div>
                 <div class="btn-group">
-                    <button type="submit" class="button">💾 儲存設定</button>
-                    <button type="submit" formaction="/admin?action=test_email" formmethod="POST" name="action" value="test_email" class="button btn-outline">🧪 測試發信</button>
+                    <button type="submit" name="action" value="save_settings" class="button">💾 儲存設定</button>
+                    <button type="submit" name="action" value="test_email" class="button btn-outline">🧪 測試發信</button>
                 </div>
             </form>
         </div>
