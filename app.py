@@ -1276,13 +1276,18 @@ def send_daily_report():
     
     report_email = config.get('report_email')
     resend_api_key = config.get('resend_api_key')
+    # 讀取寄件人設定，若資料庫無此值，則使用預設的測試信箱
+    sender_email = config.get('sender_email')
+    if not sender_email:
+        sender_email = "onboarding@resend.dev"
     
-    # 3. 檢查設定
+    # 3. 檢查設定 (API Key 與 收件人為必要)
     if not report_email or not resend_api_key:
         print("❌ 發信失敗：缺少 Email 或 API Key 設定")
         return
 
     # 4. 設定 Resend
+    import resend # 確保匯入
     resend.api_key = resend_api_key
     
     # 5. 準備內容
@@ -1298,14 +1303,15 @@ def send_daily_report():
     # 6. 執行發送
     try:
         params = {
-            "from": "onboarding@resend.dev",  # <--- 關鍵：寄件人寫死為 Resend 預設測試信箱
-            "to": [report_email],             # <--- 收件人：讀取您在後台填寫的 Email
+            "from": sender_email,         # <--- 修改點：使用變數，不再寫死
+            "to": [report_email],         # 收件人
             "subject": f"[{today}] 餐廳日結報表測試",
             "html": html_content
         }
 
         email = resend.Emails.send(params)
         print(f"✅ 郵件發送成功！ID: {email.get('id')}")
+        print(f"   寄件人: {sender_email} -> 收件人: {report_email}")
     except Exception as e:
         print(f"❌ 郵件發送發生錯誤: {e}")
 
@@ -1390,13 +1396,23 @@ def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
     msg = request.args.get('msg', '') 
     
+    # 定義一個內部函式來處理設定的更新 (包含 Insert 若不存在)
+    def upsert_setting(key, value):
+        # 先嘗試更新
+        cur.execute("UPDATE settings SET value=%s WHERE key=%s", (value, key))
+        # 如果沒有更新任何行（代表 key 不存在），則插入
+        if cur.rowcount == 0:
+            cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s)", (key, value))
+
     if request.method == 'POST':
         action = request.form.get('action')
         
         if action == 'save_settings':
-            # 僅儲存設定
-            cur.execute("UPDATE settings SET value=%s WHERE key='report_email'", (request.form.get('report_email'),))
-            cur.execute("UPDATE settings SET value=%s WHERE key='resend_api_key'", (request.form.get('resend_api_key'),))
+            # 儲存設定 (包含 Report Email, Sender Email, API Key)
+            upsert_setting('report_email', request.form.get('report_email'))
+            upsert_setting('sender_email', request.form.get('sender_email')) # <--- 新增
+            upsert_setting('resend_api_key', request.form.get('resend_api_key'))
+            
             conn.commit()
             conn.close()
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
@@ -1404,11 +1420,13 @@ def admin_panel():
         elif action == 'test_email':
             # --- 邏輯：先強制儲存，再觸發發信 ---
             report_email = request.form.get('report_email')
+            sender_email = request.form.get('sender_email') # <--- 新增
             resend_api_key = request.form.get('resend_api_key')
             
             # 1. 寫入資料庫
-            cur.execute("UPDATE settings SET value=%s WHERE key='report_email'", (report_email,))
-            cur.execute("UPDATE settings SET value=%s WHERE key='resend_api_key'", (resend_api_key,))
+            upsert_setting('report_email', report_email)
+            upsert_setting('sender_email', sender_email) # <--- 新增
+            upsert_setting('resend_api_key', resend_api_key)
             conn.commit()
             
             # 2. 啟動背景發信 (傳遞 current_app 給執行緒)
@@ -1558,9 +1576,15 @@ def admin_panel():
                 <input type="hidden" name="action" value="save_settings">
                 <div class="row">
                     <div class="column">
-                        <label>日結報表 Email (請填寫您的收件信箱)</label>
+                        <label>日結報表收件人 (To)</label>
                         <input type="email" name="report_email" value="{config.get('report_email','')}" placeholder="例如: yourname@gmail.com">
                     </div>
+                    <div class="column">
+                        <label>寄件人 Email (From)</label>
+                        <input type="email" name="sender_email" value="{config.get('sender_email','')}" placeholder="預設: onboarding@resend.dev">
+                    </div>
+                </div>
+                <div class="row">
                     <div class="column">
                         <label>Resend API Key</label>
                         <input type="password" name="resend_api_key" value="{config.get('resend_api_key','')}" placeholder="re_1234...">
