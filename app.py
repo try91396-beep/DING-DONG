@@ -6,7 +6,8 @@ import threading
 import urllib.request
 import urllib.error
 import time  
-import io  
+import io
+import resend
 import threading  # 新增：用於非同步發信，解決延遲問題
 import pandas as pd  
 from flask import Flask, request, jsonify, redirect, url_for, Response, send_file, current_app
@@ -1260,14 +1261,63 @@ def async_send_report(app_instance):
             
 # --- 9. 後台管理核心功能 ---
 
+# [新增/補充] 定義實際發信的邏輯
+def send_daily_report():
+    """從資料庫讀取設定，並透過 Resend 發送郵件"""
+    print(">>> 開始執行 send_daily_report...")
+    
+    # 1. 建立獨立的資料庫連線 (因為是在執行緒中執行)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # 2. 讀取設定
+    cur.execute("SELECT key, value FROM settings")
+    config = dict(cur.fetchall())
+    conn.close() # 讀取完畢即可關閉
+    
+    report_email = config.get('report_email')
+    resend_api_key = config.get('resend_api_key')
+    
+    # 3. 檢查設定
+    if not report_email or not resend_api_key:
+        print("❌ 發信失敗：缺少 Email 或 API Key 設定")
+        return
+
+    # 4. 設定 Resend
+    resend.api_key = resend_api_key
+    
+    # 5. 準備內容
+    today = datetime.now().strftime("%Y-%m-%d")
+    html_content = f"""
+    <h1>📅 {today} 餐廳日結報表</h1>
+    <p>這是一封來自後台的測試郵件。</p>
+    <p>如果您收到此信，代表系統發信功能設定正確！</p>
+    <hr>
+    <p>系統自動發送</p>
+    """
+
+    # 6. 執行發送
+    try:
+        params = {
+            "from": "onboarding@resend.dev",  # <--- 關鍵：寄件人寫死為 Resend 預設測試信箱
+            "to": [report_email],             # <--- 收件人：讀取您在後台填寫的 Email
+            "subject": f"[{today}] 餐廳日結報表測試",
+            "html": html_content
+        }
+
+        email = resend.Emails.send(params)
+        print(f"✅ 郵件發送成功！ID: {email.get('id')}")
+    except Exception as e:
+        print(f"❌ 郵件發送發生錯誤: {e}")
+
+
 # [新增] 這是用來解決背景發信時 Context 遺失問題的包裝函式
 def async_send_report(app_instance):
     """在背景執行緒中建立 App Context 並發送郵件"""
     with app_instance.app_context():
         try:
             print("正在後台嘗試發送測試郵件...")
-            # 注意：send_daily_report 函式內部必須有程式碼去資料庫 SELECT report_email 和 resend_api_key
-            send_daily_report() 
+            send_daily_report() # 呼叫上面定義的函式
             print("測試郵件發送程序結束。")
         except Exception as e:
             print(f"測試郵件發送失敗 Error: {e}")
@@ -1353,21 +1403,21 @@ def admin_panel():
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
             
         elif action == 'test_email':
-            # --- 修正重點：先儲存，再發送 ---
-            # 1. 先將目前表單上的資料寫入資料庫 (防止使用者輸入後忘記按儲存直接按測試)
+            # --- 邏輯：先強制儲存，再觸發發信 ---
             report_email = request.form.get('report_email')
             resend_api_key = request.form.get('resend_api_key')
             
+            # 1. 寫入資料庫
             cur.execute("UPDATE settings SET value=%s WHERE key='report_email'", (report_email,))
             cur.execute("UPDATE settings SET value=%s WHERE key='resend_api_key'", (resend_api_key,))
-            conn.commit() # 務必 Commit，這樣新的 Thread 讀取 DB 時才會有資料
+            conn.commit()
             
-            # 2. 啟動背景發信
+            # 2. 啟動背景發信 (傳遞 current_app 給執行緒)
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
             
             conn.close()
-            return redirect(url_for('admin_panel', msg="📩 設定已自動更新，並開始在後台發送測試郵件"))
+            return redirect(url_for('admin_panel', msg="📩 設定已儲存，並開始在後台發送測試郵件"))
             
         elif action == 'add_product':
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
@@ -1509,12 +1559,12 @@ def admin_panel():
                 <input type="hidden" name="action" value="save_settings">
                 <div class="row">
                     <div class="column">
-                        <label>日結報表 Email</label>
-                        <input type="email" name="report_email" value="{config.get('report_email','')}" placeholder="接收通知的信箱">
+                        <label>日結報表 Email (請填寫您的收件信箱)</label>
+                        <input type="email" name="report_email" value="{config.get('report_email','')}" placeholder="例如: yourname@gmail.com">
                     </div>
                     <div class="column">
                         <label>Resend API Key</label>
-                        <input type="password" name="resend_api_key" value="{config.get('resend_api_key','')}" placeholder="API 金鑰">
+                        <input type="password" name="resend_api_key" value="{config.get('resend_api_key','')}" placeholder="re_1234...">
                     </div>
                 </div>
                 <div class="btn-group">
