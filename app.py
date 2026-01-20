@@ -1433,6 +1433,25 @@ def admin_panel():
             
             conn.close()
             return redirect(url_for('admin_panel', msg="📩 設定已儲存，並開始在後台發送測試郵件"))
+
+        elif action == 'manual_report':
+            # [新增功能] 手動發送報表
+            # 為了保險起見，發送前同樣先儲存當前表單上的設定
+            report_email = request.form.get('report_email')
+            sender_email = request.form.get('sender_email')
+            resend_api_key = request.form.get('resend_api_key')
+            
+            upsert_setting('report_email', report_email)
+            upsert_setting('sender_email', sender_email)
+            upsert_setting('resend_api_key', resend_api_key)
+            conn.commit()
+            
+            # 啟動背景發信
+            app_instance = current_app._get_current_object()
+            threading.Thread(target=async_send_report, args=(app_instance,)).start()
+            
+            conn.close()
+            return redirect(url_for('admin_panel', msg="📤 已觸發手動發送報表程序"))
             
         elif action == 'add_product':
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
@@ -1480,9 +1499,6 @@ def admin_panel():
             </td>
         </tr>"""
 
-    # 重點修改處在下方的 HTML form 內：
-    # 1. 移除了 hidden input name='action'
-    # 2. 將 name='action' 放在兩個 button 上
     return f"""
     <!DOCTYPE html>
     <html lang="zh-TW">
@@ -1593,6 +1609,7 @@ def admin_panel():
                 <div class="btn-group">
                     <button type="submit" name="action" value="save_settings" class="button">💾 儲存設定</button>
                     <button type="submit" name="action" value="test_email" class="button btn-outline">🧪 測試發信</button>
+                    <button type="submit" name="action" value="manual_report" class="button btn-outline" style="border-color: #9b4dca; color: #9b4dca;">📤 手動發送報表</button>
                 </div>
             </form>
         </div>
