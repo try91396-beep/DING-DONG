@@ -2017,24 +2017,34 @@ def edit_product(pid):
     
 
     
-# --- 背景維護工作 (防休眠) ---
+# --- 背景維護工作 (防休眠 + 監控日誌) ---
 def run_maintenance_tasks():
+    print("🚀 背景維護執行緒已啟動 (Maintenance Thread Started)")
+    
     while True:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S") # 取得當前時間
+        
         # 1. 防止 Render 休眠 (Ping 網址)
         try:
-            urllib.request.urlopen("https://ding-dong-tipi.onrender.com")
-        except:
-            pass
+            # 設定 timeout 避免卡住
+            urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
+            print(f"[{now}] ✅ Web Ping 成功 (Render is alive)")
+        except Exception as e:
+            print(f"[{now}] ❌ Web Ping 失敗: {e}")
 
         # 2. 防止 Aiven 資料庫休眠 (Ping 資料庫)
         try:
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute("SELECT 1")
+            cur.execute("SELECT 1") # 最輕量的查詢
             cur.close()
             conn.close()
+            print(f"[{now}] 💓 DB Heartbeat 成功 (Aiven is alive)")
         except Exception as e:
-            print(f"DB Keep-alive error: {e}")
+            print(f"[{now}] ⚠️ DB 連線失敗: {e}")
+
+        # 為了避免 Log 太多太亂，可以把這行分隔線拿掉，看個人喜好
+        print("-" * 30)
 
         # 休息 5 分鐘 (300秒)
         time.sleep(300)
