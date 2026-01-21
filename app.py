@@ -1259,18 +1259,22 @@ def async_send_report(app_instance):
             print(f"❌ [背景] 發信失敗: {e}")
             
 # --- 9. 後台管理核心功能 ---
+import pandas as pd
+import json
+import io
+import threading
+from datetime import datetime, timedelta
+from flask import request, jsonify, redirect, url_for, send_file, current_app
 
 # [新增/補充] 定義實際發信的邏輯 (整合時間範圍查詢與報表生成)
 def send_daily_report():
     """從資料庫讀取設定，計算今日營收，並透過 Resend 發送郵件"""
     print(">>> 開始執行 send_daily_report...")
     
-    # 1. 建立獨立的資料庫連線
     conn = get_db_connection()
     cur = conn.cursor()
     
     try:
-        # 2. 讀取設定
         cur.execute("SELECT key, value FROM settings")
         config = dict(cur.fetchall())
         
@@ -1279,37 +1283,27 @@ def send_daily_report():
         sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
         if not sender_email: sender_email = 'onboarding@resend.dev'
 
-        # 3. 檢查必要設定
         if not api_key or not to_email:
             print("❌ 發信失敗：未設定 Email 或 API Key")
             return
 
-        # 4. 【核心邏輯】時間範圍查詢 (Range Query)
-        # 取得現在的台灣時間
+        # 時間範圍查詢
         utc_now = datetime.utcnow()
         tw_now = utc_now + timedelta(hours=8)
-        
-        # 取得「台灣今天」的 00:00:00 和 23:59:59
         tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
         tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
-
-        # 將這兩個時間點「減 8 小時」轉回 UTC (資料庫存的是 UTC)
         utc_start_query = tw_start_of_day - timedelta(hours=8)
         utc_end_query = tw_end_of_day - timedelta(hours=8)
-
-        # 建立 SQL 篩選條件
         time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
 
-        # 5. 抓取統計數據
-        # 有效訂單
+        # 統計數據
         cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
         v_count, v_total = cur.fetchone()
         
-        # 作廢訂單
         cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
         x_count, x_total = cur.fetchone()
 
-        # 6. 抓取品項明細
+        # 品項明細
         cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
         valid_rows = cur.fetchall()
         
@@ -1328,9 +1322,7 @@ def send_daily_report():
 
         valid_stats = agg_items(valid_rows)
         
-        # 7. 組裝 Email 文字
         today_str = tw_now.strftime('%Y-%m-%d')
-        
         item_detail_text = ""
         if valid_stats:
             item_detail_text = "\n【品項銷量統計】\n"
@@ -1354,9 +1346,7 @@ def send_daily_report():
 資料統計區間：{tw_start_of_day.strftime('%H:%M')} ~ {tw_end_of_day.strftime('%H:%M')}
         """
 
-        # 8. 執行發送
         import urllib.request
-        
         payload = {
             "from": sender_email,
             "to": [to_email],
@@ -1382,14 +1372,10 @@ def send_daily_report():
         cur.close()
         conn.close()
 
-# [新增] 這是用來解決背景發信時 Context 遺失問題的包裝函式
 def async_send_report(app_instance):
-    """在背景執行緒中建立 App Context 並發送郵件"""
     with app_instance.app_context():
         try:
-            print("正在後台嘗試發送報表...")
-            send_daily_report() # 呼叫上面定義的函式
-            print("報表發送程序結束。")
+            send_daily_report()
         except Exception as e:
             print(f"報表發送失敗 Error: {e}")
 
@@ -1422,7 +1408,6 @@ def delete_product(pid):
 def export_menu():
     try:
         conn = get_db_connection()
-        # 讀取完整欄位以便之後匯入
         df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
         conn.close()
         output = io.BytesIO()
@@ -1433,7 +1418,7 @@ def export_menu():
     except Exception as e:
          return redirect(url_for('admin_panel', msg=f"❌ 匯出失敗: {e}"))
 
-# 【修正版】匯入菜單功能 (包含錯誤處理與完整欄位)
+# 【修正版】匯入菜單功能 (加入 image_url)
 @app.route('/admin/import_menu', methods=['POST'])
 def import_menu():
     try:
@@ -1441,11 +1426,7 @@ def import_menu():
         if not file:
             return redirect(url_for('admin_panel', msg="❌ 無檔案：請選擇 Excel 檔案"))
         
-        # 1. 讀取 Excel (強制使用 openpyxl 引擎)
-        # 記得在環境中執行: pip install openpyxl
         df = pd.read_excel(file, engine='openpyxl')
-        
-        # 2. 將 NaN 轉為 None，避免 SQL 錯誤
         df = df.where(pd.notnull(df), None)
         
         conn = get_db_connection()
@@ -1453,13 +1434,9 @@ def import_menu():
         
         insert_count = 0
         
-        # 3. 逐行插入資料 (包含所有擴充欄位)
         for _, p in df.iterrows():
-            # 檢查必要欄位，如果沒有名稱則跳過
-            if not p.get('name'):
-                continue
+            if not p.get('name'): continue
 
-            # 使用安全的方式取得數值 (處理 None 轉為預設值的問題)
             price = p.get('price')
             if price is None: price = 0
             
@@ -1469,14 +1446,16 @@ def import_menu():
             is_available = p.get('is_available')
             if is_available is None: is_available = True
             
+            # SQL 加入 image_url
             cur.execute("""
                 INSERT INTO products (
                     name, price, category, print_category, sort_order, is_available, 
+                    image_url,
                     name_en, name_jp, name_kr, 
                     category_en, category_jp, category_kr,
                     custom_options, custom_options_en, custom_options_jp, custom_options_kr
                 ) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, 
                 (
                     str(p.get('name')), 
@@ -1484,7 +1463,8 @@ def import_menu():
                     p.get('category'), 
                     p.get('print_category','Noodle'), 
                     sort_order, 
-                    bool(is_available), 
+                    bool(is_available),
+                    p.get('image_url'),  # 這裡加入 image_url 的讀取
                     p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
                     p.get('category_en'), p.get('category_jp'), p.get('category_kr'),
                     p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
@@ -1495,13 +1475,12 @@ def import_menu():
         conn.commit()
         cur.close()
         conn.close()
-        return redirect(url_for('admin_panel', msg=f"✅ 成功匯入 {insert_count} 筆菜單項目"))
+        return redirect(url_for('admin_panel', msg=f"✅ 成功匯入 {insert_count} 筆菜單項目 (含圖片連結)"))
         
     except Exception as e:
         print(f"❌ 匯入菜單發生錯誤: {e}")
         import traceback
         traceback.print_exc()
-        # 將錯誤訊息傳回前端顯示
         return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗 (Internal Error): {str(e)}"))
 
 @app.route('/admin/reset_menu')
@@ -1523,7 +1502,6 @@ def admin_panel():
     conn = get_db_connection(); cur = conn.cursor()
     msg = request.args.get('msg', '') 
     
-    # 定義一個內部函式來處理設定的更新 (包含 Insert 若不存在)
     def upsert_setting(key, value):
         cur.execute("UPDATE settings SET value=%s WHERE key=%s", (value, key))
         if cur.rowcount == 0:
@@ -1533,45 +1511,40 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
-            # 儲存設定
             upsert_setting('report_email', request.form.get('report_email'))
             upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
-            
-            conn.commit()
-            conn.close()
+            conn.commit(); conn.close()
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
             
         elif action == 'test_email':
-            # 測試發信 (先儲存，再發信)
             upsert_setting('report_email', request.form.get('report_email'))
             upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
             conn.commit()
-            
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
-            
             conn.close()
             return redirect(url_for('admin_panel', msg="📩 設定已儲存，並開始在後台發送測試報表"))
 
         elif action == 'send_report_now':
-            # [新增] 手動發送報表
             conn.close() 
-            
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
-            
             return redirect(url_for('admin_panel', msg="📊 已觸發手動發送報表，請檢查信箱"))
             
         elif action == 'add_product':
+            # [修正] 手動新增也加入 image_url
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
+                           image_url, 
                            name_en, name_jp, name_kr, 
                            category_en, category_jp, category_kr,
                            custom_options, custom_options_en, custom_options_jp, custom_options_kr) 
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
                        (request.form.get('name'), request.form.get('price'), request.form.get('category'), 
-                        request.form.get('print_category'), request.form.get('name_en'), request.form.get('name_jp'), 
+                        request.form.get('print_category'), 
+                        request.form.get('image_url'), # 讀取表單中的圖片連結
+                        request.form.get('name_en'), request.form.get('name_jp'), 
                         request.form.get('name_kr'), request.form.get('category_en'), request.form.get('category_jp'), 
                         request.form.get('category_kr'), request.form.get('custom_options'),
                         request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr')))
@@ -1582,7 +1555,8 @@ def admin_panel():
     # 讀取現有設定與產品
     cur.execute("SELECT key, value FROM settings")
     config = dict(cur.fetchall())
-    cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order FROM products ORDER BY sort_order ASC, id DESC")
+    # 這裡可以多讀取 image_url 雖然列表目前可能不需要顯示圖片
+    cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order, image_url FROM products ORDER BY sort_order ASC, id DESC")
     prods = cur.fetchall()
     conn.close()
 
@@ -1590,12 +1564,14 @@ def admin_panel():
     for p in prods:
         status_text = "上架中" if p[4] else "已下架"
         status_class = "status-on" if p[4] else "status-off"
+        # 簡單檢查有沒有圖片
+        img_icon = "🖼️" if p[7] else "" 
         
         rows += f"""<tr data-id='{p[0]}' class='product-row'>
             <td class='handle'>☰</td>
             <td data-label="ID">{p[0]}</td>
             <td data-label="品名" class='search-key'>
-                <div class="prod-name">{p[1]}</div>
+                <div class="prod-name">{p[1]} {img_icon}</div>
                 <div class="prod-cat">{p[3]} / {p[5]}</div>
             </td>
             <td data-label="價格"><b>${p[2]}</b></td>
@@ -1622,22 +1598,17 @@ def admin_panel():
     <style>
         :root {{ --primary: #9b4dca; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }}
         body {{ background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding-bottom: 50px; }}
-        
         .container {{ max-width: 1000px; margin: 0 auto; padding: 20px; }}
-        
         .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 10px; }}
         .header h2 {{ margin: 0; font-size: 2.4rem; color: var(--primary); font-weight: bold; }}
         .nav-btn {{ background: #606c76; border-color: #606c76; padding: 0 20px; height: 38px; line-height: 38px; font-size: 1.4rem; text-transform: none; }}
-        
         .card {{ background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #eee; }}
         .card h4 {{ border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 20px; color: #555; font-size: 1.8rem; font-weight: 600; }}
-
         label {{ font-size: 1.3rem; color: #666; margin-bottom: 5px; }}
         input[type="text"], input[type="number"], input[type="email"], input[type="password"], select {{ 
             border: 1px solid #ddd; border-radius: 6px; height: 42px; background: #fff; 
         }}
         input:focus, select:focus {{ border-color: var(--primary); outline: none; }}
-        
         details {{ background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px; margin-top: 15px; transition: 0.2s; }}
         details[open] {{ background: #fff; border-color: #ddd; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
         summary {{ cursor: pointer; font-weight: bold; color: #666; padding: 5px; outline: none; list-style: none; }}
@@ -1645,34 +1616,27 @@ def admin_panel():
         summary:after {{ content: "+"; float: right; font-weight: bold; }}
         details[open] summary:after {{ content: "-"; }}
         .lang-group {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; padding-top: 15px; }}
-
         .btn-full {{ width: 100%; font-size: 1.6rem; height: 45px; }}
         .btn-group {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }}
         .btn-outline {{ background: transparent; color: #606c76; border: 1px solid #bbb; }}
         .btn-danger {{ background: #ff4d4f; border-color: #ff4d4f; color: white; }}
         .btn-primary {{ background: var(--primary); border-color: var(--primary); color: white; }}
-        
         .sticky-search {{ position: sticky; top: 0; z-index: 99; background: var(--card-bg); padding: 15px 0; border-bottom: 1px solid #eee; margin-bottom: 0; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
         thead th {{ border-bottom: 2px solid #eee; color: #888; font-size: 1.3rem; }}
         td {{ padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #f5f5f5; }}
-        
         .handle {{ cursor: move; color: #ccc; font-size: 20px; user-select: none; width: 30px; }}
         .handle:hover {{ color: var(--primary); }}
         .prod-name {{ font-weight: bold; font-size: 1.5rem; color: #333; }}
         .prod-cat {{ font-size: 1.2rem; color: #888; }}
-        
         .btn-sm {{ padding: 0 10px; height: 28px; line-height: 26px; font-size: 1.2rem; border-radius: 4px; border: 1px solid transparent; cursor: pointer; display: inline-block; }}
         .status-on {{ background: #e6ffed; color: #28a745; border-color: #b7eb8f; }}
         .status-off {{ background: #fff1f0; color: #f5222d; border-color: #ffa39e; }}
-        
         .btn-icon {{ text-decoration: none; font-size: 1.6rem; padding: 5px; margin: 0 2px; transition: 0.2s; }}
         .edit {{ color: #1890ff; }}
         .del {{ color: #ff4d4f; }}
         .btn-icon:hover {{ transform: scale(1.2); }}
-
         .alert {{ padding: 12px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px; color: #0050b3; text-align: center; margin-bottom: 20px; display: none; }}
-
         @media (max-width: 600px) {{
             .header {{ flex-direction: column; align-items: stretch; text-align: center; }}
             .nav-btn {{ margin-top: 10px; width: 100%; }}
@@ -1758,6 +1722,13 @@ def admin_panel():
                     <div class="column">
                         <label>前台分類 (中文)</label>
                         <input type="text" name="category" placeholder="例如：主廚推薦">
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="column">
+                        <label>圖片連結 (Image URL)</label>
+                        <input type="text" name="image_url" placeholder="https://example.com/image.jpg">
                     </div>
                 </div>
 
