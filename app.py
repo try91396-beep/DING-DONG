@@ -1354,7 +1354,7 @@ def send_daily_report():
 資料統計區間：{tw_start_of_day.strftime('%H:%M')} ~ {tw_end_of_day.strftime('%H:%M')}
         """
 
-        # 8. 執行發送 (使用 urllib 減少依賴，或使用 resend SDK 均可，此處沿用您提供的 urllib 邏輯)
+        # 8. 執行發送
         import urllib.request
         
         payload = {
@@ -1420,28 +1420,89 @@ def delete_product(pid):
 
 @app.route('/admin/export_menu')
 def export_menu():
-    conn = get_db_connection()
-    df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
-    conn.close()
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    output.seek(0)
-    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="menu_export.xlsx")
+    try:
+        conn = get_db_connection()
+        # 讀取完整欄位以便之後匯入
+        df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
+        conn.close()
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+        return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="menu_export.xlsx")
+    except Exception as e:
+         return redirect(url_for('admin_panel', msg=f"❌ 匯出失敗: {e}"))
 
+# 【修正版】匯入菜單功能 (包含錯誤處理與完整欄位)
 @app.route('/admin/import_menu', methods=['POST'])
 def import_menu():
-    file = request.files.get('menu_file')
-    if not file: return "無檔案", 400
-    df = pd.read_excel(file)
-    df = df.where(pd.notnull(df), None)
-    conn = get_db_connection(); cur = conn.cursor()
-    for _, p in df.iterrows():
-        cur.execute("""INSERT INTO products (name, price, category, print_category, sort_order, is_available, name_en, name_jp, name_kr) 
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
-                    (p.get('name'), p.get('price'), p.get('category'), p.get('print_category','Noodle'), p.get('sort_order',99), p.get('is_available',True), p.get('name_en'), p.get('name_jp'), p.get('name_kr')))
-    conn.commit(); conn.close()
-    return redirect('/admin')
+    try:
+        file = request.files.get('menu_file')
+        if not file:
+            return redirect(url_for('admin_panel', msg="❌ 無檔案：請選擇 Excel 檔案"))
+        
+        # 1. 讀取 Excel (強制使用 openpyxl 引擎)
+        # 記得在環境中執行: pip install openpyxl
+        df = pd.read_excel(file, engine='openpyxl')
+        
+        # 2. 將 NaN 轉為 None，避免 SQL 錯誤
+        df = df.where(pd.notnull(df), None)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        insert_count = 0
+        
+        # 3. 逐行插入資料 (包含所有擴充欄位)
+        for _, p in df.iterrows():
+            # 檢查必要欄位，如果沒有名稱則跳過
+            if not p.get('name'):
+                continue
+
+            # 使用安全的方式取得數值 (處理 None 轉為預設值的問題)
+            price = p.get('price')
+            if price is None: price = 0
+            
+            sort_order = p.get('sort_order')
+            if sort_order is None: sort_order = 99
+            
+            is_available = p.get('is_available')
+            if is_available is None: is_available = True
+            
+            cur.execute("""
+                INSERT INTO products (
+                    name, price, category, print_category, sort_order, is_available, 
+                    name_en, name_jp, name_kr, 
+                    category_en, category_jp, category_kr,
+                    custom_options, custom_options_en, custom_options_jp, custom_options_kr
+                ) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, 
+                (
+                    str(p.get('name')), 
+                    price, 
+                    p.get('category'), 
+                    p.get('print_category','Noodle'), 
+                    sort_order, 
+                    bool(is_available), 
+                    p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
+                    p.get('category_en'), p.get('category_jp'), p.get('category_kr'),
+                    p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
+                )
+            )
+            insert_count += 1
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+        return redirect(url_for('admin_panel', msg=f"✅ 成功匯入 {insert_count} 筆菜單項目"))
+        
+    except Exception as e:
+        print(f"❌ 匯入菜單發生錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+        # 將錯誤訊息傳回前端顯示
+        return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗 (Internal Error): {str(e)}"))
 
 @app.route('/admin/reset_menu')
 def reset_menu():
@@ -1482,16 +1543,12 @@ def admin_panel():
             return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
             
         elif action == 'test_email':
-            # 測試發信 (先儲存，再發信 - 用於測試連線是否正確)
-            # 這裡我們發送一個簡單的測試信，而非正式報表
+            # 測試發信 (先儲存，再發信)
             upsert_setting('report_email', request.form.get('report_email'))
             upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
             conn.commit()
             
-            # 使用 Thread 發送報表 (這裡其實是發送 send_daily_report，也就是會發出報表)
-            # 如果您希望測試按鈕只發簡單測試信，需要另外寫一個函數。
-            # 目前邏輯是測試按鈕也會觸發日結報表，確認一切正常。
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
             
@@ -1499,9 +1556,8 @@ def admin_panel():
             return redirect(url_for('admin_panel', msg="📩 設定已儲存，並開始在後台發送測試報表"))
 
         elif action == 'send_report_now':
-            # [新增] 手動發送報表 (不儲存設定，直接讀取 DB 現有設定發送)
-            # 這樣可以避免使用者在輸入框亂打但沒存檔就按發送
-            conn.close() # 關閉當前連線，讓 Thread 自己去開
+            # [新增] 手動發送報表
+            conn.close() 
             
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance,)).start()
