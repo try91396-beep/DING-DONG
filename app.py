@@ -2017,13 +2017,30 @@ def edit_product(pid):
     
 
     
-# --- 防休眠 ---
-def keep_alive():
+# --- 背景維護工作 (防休眠) ---
+def run_maintenance_tasks():
     while True:
-        try: urllib.request.urlopen("https://ding-dong-tipi.onrender.com")
-        except: pass
-        time.sleep(800)
-threading.Thread(target=keep_alive, daemon=True).start()
+        # 1. 防止 Render 休眠 (Ping 網址)
+        try:
+            urllib.request.urlopen("https://ding-dong-tipi.onrender.com")
+        except:
+            pass
+
+        # 2. 防止 Aiven 資料庫休眠 (Ping 資料庫)
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"DB Keep-alive error: {e}")
+
+        # 休息 5 分鐘 (300秒)
+        time.sleep(300)
+
+# 啟動背景執行緒
+threading.Thread(target=run_maintenance_tasks, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
