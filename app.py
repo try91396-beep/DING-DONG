@@ -1419,15 +1419,16 @@ def async_send_report(app_instance):
         except Exception as e:
             print(f"❌ [背景] 發信失敗: {e}")
             
-# --- 9. 後台管理核心功能 ---
+# --- 9. 後台管理核心功能 (修復版) ---
 
-# [修改] 發信邏輯：支援傳入 manual_config (測試用)，若無則讀 DB (正式用)
-def send_daily_report(manual_config=None):
+# [修改] 發信邏輯：支援傳入 manual_config (測試用) 與 is_test (測試信內容用)
+def send_daily_report(manual_config=None, is_test=False):
     """
     計算今日營收，並透過 Resend 發送郵件。
     :param manual_config: dict (包含 resend_api_key, report_email, sender_email)，若有此參數則不讀取 DB 設定。
+    :param is_test: bool 若為 True，則不計算營收，僅發送測試文字。
     """
-    print(">>> 準備執行報表發送程序...")
+    print(">>> 準備執行郵件發送程序...")
     
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1459,65 +1460,78 @@ def send_daily_report(manual_config=None):
             print("❌ 發信失敗：未設定收件人 Email")
             return
 
-        # 2. 時間範圍查詢 (鎖定台灣時間當天)
-        utc_now = datetime.utcnow()
-        tw_now = utc_now + timedelta(hours=8)
+        # 2. 準備郵件內容
+        today_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
         
-        tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        # 轉換回 UTC 供資料庫查詢
-        utc_start_query = tw_start_of_day - timedelta(hours=8)
-        utc_end_query = tw_end_of_day - timedelta(hours=8)
-        
-        time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
+        if is_test:
+            # --- 測試信模式 ---
+            subject = f"【連線測試】Resend API 設定確認 ({today_str})"
+            email_content = """
+✅ Resend API 連線成功！
 
-        print(f"📅 統計區間 (TW): {tw_start_of_day} ~ {tw_end_of_day}")
-
-        # 3. 統計數據
-        # 有效訂單
-        cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
-        v_res = cur.fetchone()
-        v_count = v_res[0] if v_res and v_res[0] else 0
-        v_total = v_res[1] if v_res and v_res[1] else 0
-        
-        # 作廢訂單
-        cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
-        x_res = cur.fetchone()
-        x_count = x_res[0] if x_res and x_res[0] else 0
-        x_total = x_res[1] if x_res and x_res[1] else 0
-
-        # 品項明細
-        cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
-        valid_rows = cur.fetchall()
-        
-        def agg_items(rows):
-            stats = {}
-            for r in rows:
-                if not r[0]: continue
-                try:
-                    items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
-                    for i in items:
-                        # 優先抓中文名，沒有抓英文名
-                        name = i.get('name_zh', i.get('name', '未知品項'))
-                        qty = int(i.get('qty', 0))
-                        stats[name] = stats.get(name, 0) + qty
-                except: pass
-            return stats
-
-        valid_stats = agg_items(valid_rows)
-        
-        today_str = tw_now.strftime('%Y-%m-%d')
-        item_detail_text = ""
-        if valid_stats:
-            item_detail_text = "\n【品項銷量統計】\n"
-            for name, qty in sorted(valid_stats.items(), key=lambda x: x[1], reverse=True):
-                item_detail_text += f"• {name}: {qty}\n"
+此為測試信件。
+如果您收到這封信，代表您的 API Key 與收件人設定皆正確。
+系統將能夠正常發送每日結算報表。
+"""
+            print("🧪 模式：僅發送測試內容")
         else:
-            item_detail_text = "\n(今日尚無有效銷量)\n"
+            # --- 正式報表模式 ---
+            # 時間範圍查詢 (鎖定台灣時間當天)
+            utc_now = datetime.utcnow()
+            tw_now = utc_now + timedelta(hours=8)
+            
+            tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            # 轉換回 UTC 供資料庫查詢
+            utc_start_query = tw_start_of_day - timedelta(hours=8)
+            utc_end_query = tw_end_of_day - timedelta(hours=8)
+            
+            time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
 
-        # 4. 準備郵件內容
-        email_content = f"""
+            print(f"📅 統計區間 (TW): {tw_start_of_day} ~ {tw_end_of_day}")
+
+            # 統計數據 - 有效訂單
+            cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+            v_res = cur.fetchone()
+            v_count = v_res[0] if v_res and v_res[0] else 0
+            v_total = v_res[1] if v_res and v_res[1] else 0
+            
+            # 統計數據 - 作廢訂單
+            cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
+            x_res = cur.fetchone()
+            x_count = x_res[0] if x_res and x_res[0] else 0
+            x_total = x_res[1] if x_res and x_res[1] else 0
+
+            # 品項明細
+            cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+            valid_rows = cur.fetchall()
+            
+            def agg_items(rows):
+                stats = {}
+                for r in rows:
+                    if not r[0]: continue
+                    try:
+                        items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                        for i in items:
+                            name = i.get('name_zh', i.get('name', '未知品項'))
+                            qty = int(i.get('qty', 0))
+                            stats[name] = stats.get(name, 0) + qty
+                    except: pass
+                return stats
+
+            valid_stats = agg_items(valid_rows)
+            
+            item_detail_text = ""
+            if valid_stats:
+                item_detail_text = "\n【品項銷量統計】\n"
+                for name, qty in sorted(valid_stats.items(), key=lambda x: x[1], reverse=True):
+                    item_detail_text += f"• {name}: {qty}\n"
+            else:
+                item_detail_text = "\n(今日尚無有效銷量)\n"
+
+            subject = f"【日結單】{today_str} 營業統計報告"
+            email_content = f"""
 🍴 餐廳日結報表 ({today_str})
 ---------------------------------
 ✅ 【有效營收】
@@ -1532,11 +1546,11 @@ def send_daily_report(manual_config=None):
 報告產出時間：{tw_now.strftime('%Y-%m-%d %H:%M:%S')} (Taiwan Time)
 """
 
-        # 5. 呼叫 Resend API
+        # 3. 呼叫 Resend API
         payload = {
             "from": sender_email,
             "to": [to_email],
-            "subject": f"【日結單】{today_str} 營業統計報告",
+            "subject": subject,
             "text": email_content
         }
         
@@ -1551,7 +1565,7 @@ def send_daily_report(manual_config=None):
         
         try:
             with urllib.request.urlopen(req, timeout=10) as res:
-                print(f"✅ 報表發送成功！Status Code: {res.status}")
+                print(f"✅ 發送成功！Status Code: {res.status}")
         except urllib.error.HTTPError as e:
             error_body = e.read().decode()
             print(f"❌ Resend API 錯誤: {e.code} - {error_body}")
@@ -1559,17 +1573,63 @@ def send_daily_report(manual_config=None):
             print(f"❌ 連線錯誤: {e}")
 
     except Exception as e:
-        print(f"❌ 報表程式執行錯誤: {e}")
+        print(f"❌ 程式執行錯誤: {e}")
         import traceback
         traceback.print_exc()
     finally:
         cur.close()
         conn.close()
 
-# 非同步執行緒包裝 (支援傳遞手動設定)
-def async_send_report(app_instance, manual_config=None):
+# 非同步執行緒包裝 (支援傳遞手動設定與測試旗標)
+def async_send_report(app_instance, manual_config=None, is_test=False):
     with app_instance.app_context():
-        send_daily_report(manual_config)
+        send_daily_report(manual_config, is_test)
+
+# --- 新增/修復的路由 ---
+
+@app.route('/admin/toggle_product/<int:pid>', methods=['POST'])
+def toggle_product(pid):
+    """修復：上架/下架切換功能"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # 先查詢目前狀態
+    cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
+    row = cur.fetchone()
+    if row:
+        new_status = not row[0] # 切換 True/False
+        cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_status, pid))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'is_available': new_status})
+    conn.close()
+    return jsonify({'status': 'error', 'message': 'Product not found'}), 404
+
+@app.route('/admin/delete_product/<int:pid>')
+def delete_product(pid):
+    """修復：刪除產品路由 (解決 404 問題)"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM products WHERE id = %s", (pid,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for('admin_panel', msg=f"🗑️ 產品 ID:{pid} 已刪除"))
+
+@app.route('/admin/reorder_products', methods=['POST'])
+def reorder_products():
+    """補全：處理前端 SortableJS 的排序請求"""
+    data = request.json
+    order_list = data.get('order', [])
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # 根據前端傳來的 ID 順序，依序更新 sort_order
+    for index, pid in enumerate(order_list):
+        cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (index, pid))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success'})
+
+# --- 主後台路由 ---
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
@@ -1596,26 +1656,25 @@ def admin_panel():
             
         elif action == 'test_email':
             # 僅測試 (不儲存)
-            # 邏輯：從 request.form 抓取當前輸入的值，直接傳給發信功能進行測試
-            # 這樣可以讓使用者測試「還沒儲存」的新 Key 是否有效
+            # 邏輯：傳入 is_test=True
             temp_config = {
                 'report_email': request.form.get('report_email'),
                 'sender_email': request.form.get('sender_email'),
                 'resend_api_key': request.form.get('resend_api_key')
             }
-            conn.close() # 關閉資料庫連線 (因為不需要寫入)
+            conn.close() 
             
-            # 啟動背景發信，傳入 temp_config
+            # 啟動背景發信，傳入 temp_config 和 is_test=True
             app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance, temp_config)).start()
+            threading.Thread(target=async_send_report, args=(app_instance, temp_config, True)).start()
             
-            return redirect(url_for('admin_panel', msg="🧪 測試郵件發送中 (使用當前輸入值，未寫入 DB)"))
+            return redirect(url_for('admin_panel', msg="🧪 測試郵件已發送 (內容為測試文字)"))
 
         elif action == 'send_report_now':
             conn.close() 
-            # 手動發送 (使用資料庫內已儲存的設定 -> 傳入 None)
+            # 手動發送 (使用資料庫內已儲存的設定 -> 傳入 None, is_test=False)
             app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance, None)).start()
+            threading.Thread(target=async_send_report, args=(app_instance, None, False)).start()
             return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送 (使用 DB 已儲存設定)"))
             
         elif action == 'add_product':
@@ -1921,7 +1980,8 @@ def admin_panel():
                     btn.className = 'btn-sm status-off';
                 }}
             }}
-        }});
+        }})
+        .catch(err => console.error('Error:', err));
     }}
 
     document.getElementById('productSearch').addEventListener('input', function(e) {{
@@ -1949,6 +2009,11 @@ def admin_panel():
     </body>
     </html>
     """
+
+@app.route('/')
+def index():
+    return "系統運作中。<a href='/admin'>進入後台</a>"
+
     
 # --- 編輯產品頁面 (強制欄位順序版) ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
