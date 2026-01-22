@@ -1213,31 +1213,60 @@ def daily_report():
     void_rows = cur.fetchall()
     conn.close()
 
-    # 4. 統計品項邏輯 (維持不變)
+    # 4. 統計品項邏輯 (修改：增加金額計算)
     def agg_items(rows):
+        # 結構改為： { '品名': {'qty': 數量, 'total': 總金額} }
         stats = {}
         for r in rows:
             if not r[0]: continue
             try:
-                items = json.loads(r[0]) if isinstance(r[0], str) else r[0] # 增加型別判斷相容性
+                # 相容性處理：判斷是字串還是已經是 list
+                items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                
                 for i in items:
                     name = i.get('name_zh', i.get('name', '未知'))
                     qty = int(i.get('qty', 0))
-                    stats[name] = stats.get(name, 0) + qty
+                    price = int(i.get('price', 0)) # 取得單價
+                    subtotal = qty * price         # 計算小計
+                    
+                    if name not in stats:
+                        stats[name] = {'qty': 0, 'total': 0}
+                    
+                    stats[name]['qty'] += qty
+                    stats[name]['total'] += subtotal
             except: pass
         return stats
 
     valid_stats, void_stats = agg_items(valid_rows), agg_items(void_rows)
 
-    # 5. 渲染表格 HTML (維持不變)
+    # 5. 渲染表格 HTML (修改：增加金額欄位)
     def render_table(stats_dict):
         if not stats_dict: return "<p style='text-align:center; color:#888;'>無資料</p>"
-        h = "<table style='width:100%; border-collapse:collapse; font-size:14px; margin-top:5px;'><tr style='border-bottom:1px solid #000;'><th style='text-align:left;'>品項</th><th style='text-align:right;'>數量</th></tr>"
-        for name, qty in sorted(stats_dict.items(), key=lambda x: x[1], reverse=True): 
-            h += f"<tr><td style='padding:4px 0;'>{name}</td><td style='text-align:right;'>{qty}</td></tr>"
+        
+        # 表頭增加「金額」
+        h = """
+        <table style='width:100%; border-collapse:collapse; font-size:14px; margin-top:5px;'>
+            <tr style='border-bottom:1px solid #000;'>
+                <th style='text-align:left; width:50%;'>品項</th>
+                <th style='text-align:right; width:20%;'>數量</th>
+                <th style='text-align:right; width:30%;'>金額</th>
+            </tr>
+        """
+        
+        # 依照「數量」排序 (若要依金額排序，可改為 key=lambda x: x[1]['total'])
+        sorted_items = sorted(stats_dict.items(), key=lambda x: x[1]['qty'], reverse=True)
+        
+        for name, data in sorted_items: 
+            h += f"""
+            <tr>
+                <td style='padding:4px 0;'>{name}</td>
+                <td style='text-align:right;'>{data['qty']}</td>
+                <td style='text-align:right;'>${data['total']}</td>
+            </tr>
+            """
         return h + "</table>"
 
-    # 6. 回傳完整 HTML (新增日期選擇器)
+    # 6. 回傳完整 HTML (介面部分維持不變)
     return f"""
     <!DOCTYPE html>
     <html>
@@ -1419,7 +1448,7 @@ def async_send_report(app_instance):
         except Exception as e:
             print(f"❌ [背景] 發信失敗: {e}")
             
-# --- 9. 後台管理核心功能 (修復版) ---
+# --- 9. 後台管理核心功能 (修復版 - 含品項營收統計) ---
 
 # [修改] 發信邏輯：支援傳入 manual_config (測試用) 與 is_test (測試信內容用)
 def send_daily_report(manual_config=None, is_test=False):
@@ -1507,7 +1536,9 @@ def send_daily_report(manual_config=None, is_test=False):
             cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             valid_rows = cur.fetchall()
             
+            # --- 修改重點：統計邏輯增加金額計算 ---
             def agg_items(rows):
+                # 結構: { '品名': {'qty': 數量, 'subtotal': 總金額} }
                 stats = {}
                 for r in rows:
                     if not r[0]: continue
@@ -1516,7 +1547,15 @@ def send_daily_report(manual_config=None, is_test=False):
                         for i in items:
                             name = i.get('name_zh', i.get('name', '未知品項'))
                             qty = int(i.get('qty', 0))
-                            stats[name] = stats.get(name, 0) + qty
+                            # 嘗試取得單價，若無則預設 0
+                            price = int(i.get('price', 0))
+                            item_total = qty * price
+                            
+                            if name not in stats:
+                                stats[name] = {'qty': 0, 'subtotal': 0}
+                            
+                            stats[name]['qty'] += qty
+                            stats[name]['subtotal'] += item_total
                     except: pass
                 return stats
 
@@ -1525,8 +1564,12 @@ def send_daily_report(manual_config=None, is_test=False):
             item_detail_text = ""
             if valid_stats:
                 item_detail_text = "\n【品項銷量統計】\n"
-                for name, qty in sorted(valid_stats.items(), key=lambda x: x[1], reverse=True):
-                    item_detail_text += f"• {name}: {qty}\n"
+                # 依據數量排序 (若要依金額排序可改 key=lambda x: x[1]['subtotal'])
+                sorted_items = sorted(valid_stats.items(), key=lambda x: x[1]['qty'], reverse=True)
+                
+                for name, data in sorted_items:
+                    # 格式： • 牛肉麵: 10 份 ($1500)
+                    item_detail_text += f"• {name}: {data['qty']} 份 (${data['subtotal']})\n"
             else:
                 item_detail_text = "\n(今日尚無有效銷量)\n"
 
