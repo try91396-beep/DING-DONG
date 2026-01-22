@@ -1420,49 +1420,72 @@ def async_send_report(app_instance):
             print(f"❌ [背景] 發信失敗: {e}")
             
 # --- 9. 後台管理核心功能 ---
-import pandas as pd
-import json
-import io
-import threading
-from datetime import datetime, timedelta
-from flask import request, jsonify, redirect, url_for, send_file, current_app
 
-# [新增/補充] 定義實際發信的邏輯 (整合時間範圍查詢與報表生成)
-def send_daily_report():
-    """從資料庫讀取設定，計算今日營收，並透過 Resend 發送郵件"""
-    print(">>> 開始執行 send_daily_report...")
+# [修改] 發信邏輯：支援傳入 manual_config (測試用)，若無則讀 DB (正式用)
+def send_daily_report(manual_config=None):
+    """
+    計算今日營收，並透過 Resend 發送郵件。
+    :param manual_config: dict (包含 resend_api_key, report_email, sender_email)，若有此參數則不讀取 DB 設定。
+    """
+    print(">>> 準備執行報表發送程序...")
     
     conn = get_db_connection()
     cur = conn.cursor()
     
     try:
-        cur.execute("SELECT key, value FROM settings")
-        config = dict(cur.fetchall())
-        
-        api_key = config.get('resend_api_key', '').strip()
-        to_email = config.get('report_email', '').strip()
-        sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
-        if not sender_email: sender_email = 'onboarding@resend.dev'
+        # 1. 決定設定來源 (手動測試 或 資料庫)
+        if manual_config:
+            print("🔧 使用手動輸入的設定進行測試 (不讀取 DB 設定)")
+            api_key = manual_config.get('resend_api_key', '').strip()
+            to_email = manual_config.get('report_email', '').strip()
+            sender_email = manual_config.get('sender_email', '').strip()
+        else:
+            print("📂 讀取資料庫設定進行發送")
+            cur.execute("SELECT key, value FROM settings")
+            config = dict(cur.fetchall())
+            api_key = config.get('resend_api_key', '').strip()
+            to_email = config.get('report_email', '').strip()
+            sender_email = config.get('sender_email', '').strip()
 
-        if not api_key or not to_email:
-            print("❌ 發信失敗：未設定 Email 或 API Key")
+        # 預設寄件人
+        if not sender_email: 
+            sender_email = 'onboarding@resend.dev'
+
+        # 檢查必要參數
+        if not api_key:
+            print("❌ 發信失敗：未設定 Resend API Key")
+            return
+        if not to_email:
+            print("❌ 發信失敗：未設定收件人 Email")
             return
 
-        # 時間範圍查詢
+        # 2. 時間範圍查詢 (鎖定台灣時間當天)
         utc_now = datetime.utcnow()
         tw_now = utc_now + timedelta(hours=8)
+        
         tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
         tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # 轉換回 UTC 供資料庫查詢
         utc_start_query = tw_start_of_day - timedelta(hours=8)
         utc_end_query = tw_end_of_day - timedelta(hours=8)
+        
         time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
 
-        # 統計數據
+        print(f"📅 統計區間 (TW): {tw_start_of_day} ~ {tw_end_of_day}")
+
+        # 3. 統計數據
+        # 有效訂單
         cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
-        v_count, v_total = cur.fetchone()
+        v_res = cur.fetchone()
+        v_count = v_res[0] if v_res and v_res[0] else 0
+        v_total = v_res[1] if v_res and v_res[1] else 0
         
+        # 作廢訂單
         cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
-        x_count, x_total = cur.fetchone()
+        x_res = cur.fetchone()
+        x_count = x_res[0] if x_res and x_res[0] else 0
+        x_total = x_res[1] if x_res and x_res[1] else 0
 
         # 品項明細
         cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
@@ -1475,7 +1498,8 @@ def send_daily_report():
                 try:
                     items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
                     for i in items:
-                        name = i.get('name_zh', i.get('name', '未知'))
+                        # 優先抓中文名，沒有抓英文名
+                        name = i.get('name_zh', i.get('name', '未知品項'))
                         qty = int(i.get('qty', 0))
                         stats[name] = stats.get(name, 0) + qty
                 except: pass
@@ -1492,28 +1516,31 @@ def send_daily_report():
         else:
             item_detail_text = "\n(今日尚無有效銷量)\n"
 
+        # 4. 準備郵件內容
         email_content = f"""
 🍴 餐廳日結報表 ({today_str})
 ---------------------------------
 ✅ 【有效營收】
-單量：{v_count or 0} 筆
-總額：${v_total or 0}{item_detail_text}
+單量：{v_count} 筆
+總額：${v_total}
+{item_detail_text}
 ---------------------------------
 ❌ 【作廢統計】
-單量：{x_count or 0} 筆
-總額：${x_total or 0}
+單量：{x_count} 筆
+總額：${x_total}
 ---------------------------------
 報告產出時間：{tw_now.strftime('%Y-%m-%d %H:%M:%S')} (Taiwan Time)
-資料統計區間：{tw_start_of_day.strftime('%H:%M')} ~ {tw_end_of_day.strftime('%H:%M')}
-        """
+"""
 
-        import urllib.request
+        # 5. 呼叫 Resend API
         payload = {
             "from": sender_email,
             "to": [to_email],
             "subject": f"【日結單】{today_str} 營業統計報告",
             "text": email_content
         }
+        
+        print(f"📤 正在發送郵件給: {to_email} ...")
         
         req = urllib.request.Request(
             "https://api.resend.com/emails", 
@@ -1522,23 +1549,27 @@ def send_daily_report():
             method='POST'
         )
         
-        with urllib.request.urlopen(req) as res:
-            print(f"✅ 報表發送成功！Status: {res.status}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as res:
+                print(f"✅ 報表發送成功！Status Code: {res.status}")
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode()
+            print(f"❌ Resend API 錯誤: {e.code} - {error_body}")
+        except Exception as e:
+            print(f"❌ 連線錯誤: {e}")
 
     except Exception as e:
-        print(f"❌ 報表發送發生錯誤: {e}")
+        print(f"❌ 報表程式執行錯誤: {e}")
         import traceback
         traceback.print_exc()
     finally:
         cur.close()
         conn.close()
 
-def async_send_report(app_instance):
+# 非同步執行緒包裝 (支援傳遞手動設定)
+def async_send_report(app_instance, manual_config=None):
     with app_instance.app_context():
-        try:
-            send_daily_report()
-        except Exception as e:
-            print(f"報表發送失敗 Error: {e}")
+        send_daily_report(manual_config)
 
 @app.route('/admin/reorder_products', methods=['POST'])
 def reorder_products():
@@ -1579,7 +1610,6 @@ def export_menu():
     except Exception as e:
          return redirect(url_for('admin_panel', msg=f"❌ 匯出失敗: {e}"))
 
-# 【修正版】匯入菜單功能 (加入 image_url)
 @app.route('/admin/import_menu', methods=['POST'])
 def import_menu():
     try:
@@ -1607,7 +1637,6 @@ def import_menu():
             is_available = p.get('is_available')
             if is_available is None: is_available = True
             
-            # SQL 加入 image_url
             cur.execute("""
                 INSERT INTO products (
                     name, price, category, print_category, sort_order, is_available, 
@@ -1625,7 +1654,7 @@ def import_menu():
                     p.get('print_category','Noodle'), 
                     sort_order, 
                     bool(is_available),
-                    p.get('image_url'),  # 這裡加入 image_url 的讀取
+                    p.get('image_url'),
                     p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
                     p.get('category_en'), p.get('category_jp'), p.get('category_kr'),
                     p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
@@ -1642,7 +1671,7 @@ def import_menu():
         print(f"❌ 匯入菜單發生錯誤: {e}")
         import traceback
         traceback.print_exc()
-        return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗 (Internal Error): {str(e)}"))
+        return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗: {str(e)}"))
 
 @app.route('/admin/reset_menu')
 def reset_menu():
@@ -1672,30 +1701,38 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
-            upsert_setting('report_email', request.form.get('report_email'))
-            upsert_setting('sender_email', request.form.get('sender_email'))
-            upsert_setting('resend_api_key', request.form.get('resend_api_key'))
-            conn.commit(); conn.close()
-            return redirect(url_for('admin_panel', msg="✅ 設定儲存成功"))
-            
-        elif action == 'test_email':
+            # 只儲存，不發信
             upsert_setting('report_email', request.form.get('report_email'))
             upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
             conn.commit()
-            app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance,)).start()
             conn.close()
-            return redirect(url_for('admin_panel', msg="📩 設定已儲存，並開始在後台發送測試報表"))
+            return redirect(url_for('admin_panel', msg="✅ 設定已儲存"))
+            
+        elif action == 'test_email':
+            # 僅測試 (不儲存)
+            # 抓取表單當前的值
+            temp_config = {
+                'report_email': request.form.get('report_email'),
+                'sender_email': request.form.get('sender_email'),
+                'resend_api_key': request.form.get('resend_api_key')
+            }
+            conn.close() # 關閉資料庫連線 (因為不需要寫入)
+            
+            # 啟動背景發信，傳入 temp_config
+            app_instance = current_app._get_current_object()
+            threading.Thread(target=async_send_report, args=(app_instance, temp_config)).start()
+            
+            return redirect(url_for('admin_panel', msg="🧪 測試郵件發送中 (未儲存設定，請檢查信箱)"))
 
         elif action == 'send_report_now':
             conn.close() 
+            # 手動發送 (使用資料庫內已儲存的設定 -> 不傳 manual_config)
             app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance,)).start()
-            return redirect(url_for('admin_panel', msg="📊 已觸發手動發送報表，請檢查信箱"))
+            threading.Thread(target=async_send_report, args=(app_instance, None)).start()
+            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送 (使用已儲存設定)"))
             
         elif action == 'add_product':
-            # [修正] 手動新增也加入 image_url
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
                            image_url, 
                            name_en, name_jp, name_kr, 
@@ -1704,7 +1741,7 @@ def admin_panel():
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
                        (request.form.get('name'), request.form.get('price'), request.form.get('category'), 
                         request.form.get('print_category'), 
-                        request.form.get('image_url'), # 讀取表單中的圖片連結
+                        request.form.get('image_url'),
                         request.form.get('name_en'), request.form.get('name_jp'), 
                         request.form.get('name_kr'), request.form.get('category_en'), request.form.get('category_jp'), 
                         request.form.get('category_kr'), request.form.get('custom_options'),
@@ -1713,10 +1750,10 @@ def admin_panel():
             conn.close()
             return redirect(url_for('admin_panel', msg="✅ 產品新增成功"))
 
-    # 讀取現有設定與產品
+    # 讀取資料 (GET 請求)
     cur.execute("SELECT key, value FROM settings")
     config = dict(cur.fetchall())
-    # 這裡可以多讀取 image_url 雖然列表目前可能不需要顯示圖片
+    
     cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order, image_url FROM products ORDER BY sort_order ASC, id DESC")
     prods = cur.fetchall()
     conn.close()
@@ -1725,7 +1762,6 @@ def admin_panel():
     for p in prods:
         status_text = "上架中" if p[4] else "已下架"
         status_class = "status-on" if p[4] else "status-off"
-        # 簡單檢查有沒有圖片
         img_icon = "🖼️" if p[7] else "" 
         
         rows += f"""<tr data-id='{p[0]}' class='product-row'>
@@ -1845,13 +1881,13 @@ def admin_panel():
                 </div>
                 <div class="btn-group">
                     <button type="submit" name="action" value="save_settings" class="button">💾 儲存設定</button>
-                    <button type="submit" name="action" value="test_email" class="button btn-outline">🧪 儲存並測試</button>
+                    <button type="submit" name="action" value="test_email" class="button btn-outline">🧪 僅測試 (不儲存)</button>
                 </div>
             </form>
             <hr>
             <form method="POST">
                  <div style="display:flex; justify-content:flex-end;">
-                    <button type="submit" name="action" value="send_report_now" class="button btn-primary" onclick="return confirm('確定要立刻發送今日營收報表到設定的信箱嗎？')">📊 手動發送今日報表</button>
+                    <button type="submit" name="action" value="send_report_now" class="button btn-primary" onclick="return confirm('確定要立刻發送今日營收報表(使用已儲存的設定)嗎？')">📊 手動發送今日報表</button>
                  </div>
             </form>
         </div>
@@ -1899,7 +1935,8 @@ def admin_panel():
                         <div>
                             <label>🇺🇸 English Name</label>
                             <input type="text" name="name_en">
-                            <input type="text" name="category_en" placeholder="Category EN">
+                            <input type="text" 
+name="category_en" placeholder="Category EN">
                         </div>
                         <div>
                             <label>🇯🇵 日本語 名称</label>
@@ -2031,7 +2068,6 @@ def admin_panel():
 @app.route('/')
 def index():
     return "系統運作中。<a href='/admin'>進入後台</a>"
-
 
 # --- 編輯產品頁面 (強制欄位順序版) ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
