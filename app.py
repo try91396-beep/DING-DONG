@@ -863,47 +863,171 @@ def kitchen_panel():
     return """
     <!DOCTYPE html>
     <html lang="zh-TW">
-    <head><meta charset="UTF-8"><title>👨‍🍳 廚房出單看板</title>
-    <style>
-        body { background: #1a1a1a; color: #eee; font-family: "Microsoft JhengHei", sans-serif; padding: 0; margin: 0; }
-        .header-container { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; background: #222; border-bottom: 3px solid #ff9800; }
-        h1 { color: #ff9800; margin: 0; font-size: 28px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; padding: 25px; }
-        .card { background: #2d2d2d; border-radius: 12px; padding: 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); border-top: 10px solid #ff9800; position: relative; transition: transform 0.2s; }
-        .card.completed { border-top-color: #28a745; opacity: 0.6; }
-        .card.cancelled { border-top-color: #dc3545; opacity: 0.5; text-decoration: line-through; }
-        .tag { position: absolute; top: 12px; right: 15px; font-weight: bold; font-size: 1.1em; }
-        .items { background: #383838; padding: 18px; border-radius: 8px; margin: 15px 0; font-size: 1.3em; line-height: 1.6; border: 1px solid #444; }
-        .btn { display: inline-block; padding: 12px 18px; border-radius: 8px; text-decoration: none; color: white; margin-right: 8px; font-size: 1em; border: none; cursor: pointer; font-weight: bold; }
-        .btn-report { background: #6f42c1; } .btn-complete { background: #28a745; } .btn-print { background: #17a2b8; } .btn-void { background: #822; } .btn-edit { background: #555; }
-        #audio-banner { background: #d32f2f; color: white; text-align: center; padding: 10px; font-weight: bold; cursor: pointer; }
-        .nav-btn { background: #6c757d; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; font-weight: bold; margin-right: 10px; }
-    </style></head><body>
-    <div id="audio-banner" onclick="enableAudio()">🔔 點擊此處啟動「新訂單語音」與「自動列印」功能</div>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>👨‍🍳 廚房出單看板</title>
+        <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+        <style>
+            :root {
+                --bg-color: #121212;
+                --card-bg: #1e1e1e;
+                --text-main: #e0e0e0;
+                --accent-orange: #ff9800;
+                --accent-green: #4caf50;
+                --accent-red: #f44336;
+                --accent-blue: #2196f3;
+            }
+            body { background: var(--bg-color); color: var(--text-main); font-family: 'Noto Sans TC', sans-serif; margin: 0; padding-bottom: 50px; }
+            
+            /* 頂部導航列 */
+            .header-container { 
+                display: flex; justify-content: space-between; align-items: center; 
+                padding: 10px 20px; background: #252526; border-bottom: 2px solid #333;
+                position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            }
+            h1 { color: var(--accent-orange); margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
+            .header-btns { display: flex; gap: 10px; }
+            
+            /* 網格佈局 */
+            .grid { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
+                gap: 20px; padding: 20px; 
+            }
+
+            /* 卡片設計 (擬真票據風格) */
+            .card { 
+                background: var(--card-bg); border-radius: 8px; overflow: hidden;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.5); 
+                display: flex; flex-direction: column;
+                border-top: 5px solid var(--accent-orange);
+                transition: transform 0.2s, opacity 0.3s;
+                position: relative;
+            }
+            
+            /* 狀態樣式變體 */
+            .card.completed { border-top-color: var(--accent-green); background: #1b261b; opacity: 0.6; filter: grayscale(0.3); }
+            .card.cancelled { border-top-color: var(--accent-red); background: #261b1b; opacity: 0.5; }
+            .card.cancelled .items { text-decoration: line-through; opacity: 0.7; }
+
+            /* 卡片頭部 */
+            .card-header {
+                padding: 15px; background: rgba(255,255,255,0.03);
+                display: flex; justify-content: space-between; align-items: center;
+                border-bottom: 2px dashed #444;
+            }
+            .seq-num { font-size: 2rem; font-family: 'Roboto Mono', monospace; font-weight: bold; color: var(--accent-orange); }
+            .table-num { font-size: 1.4rem; background: #333; padding: 4px 12px; border-radius: 4px; font-weight: bold; }
+            .time-stamp { font-size: 0.85rem; color: #888; margin-top: 4px; }
+
+            /* 餐點清單 */
+            .items { padding: 15px; flex-grow: 1; font-size: 1.2rem; line-height: 1.5; }
+            .item-row { margin-bottom: 12px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+            .item-row:last-child { border-bottom: none; }
+            .item-name { font-weight: bold; display: flex; justify-content: space-between; }
+            .item-qty { color: var(--accent-orange); font-family: 'Roboto Mono'; font-size: 1.3rem; margin-left: 10px; }
+            .item-opts { font-size: 0.95rem; color: #aaa; margin-top: 4px; padding-left: 10px; border-left: 2px solid #555; }
+
+            /* 按鈕區 */
+            .actions { padding: 10px; background: rgba(0,0,0,0.2); display: flex; flex-direction: column; gap: 8px; }
+            .btn-group { display: flex; gap: 8px; }
+            .btn { 
+                border: none; border-radius: 6px; padding: 10px; 
+                color: white; font-weight: bold; cursor: pointer; text-decoration: none;
+                text-align: center; display: flex; justify-content: center; align-items: center;
+                transition: filter 0.2s; font-size: 1rem;
+            }
+            .btn:hover { filter: brightness(1.1); }
+            .btn:active { transform: scale(0.98); }
+
+            /* 按鈕顏色 */
+            .btn-main { background: var(--accent-green); font-size: 1.2rem; padding: 15px; width: 100%; box-sizing: border-box; }
+            .btn-print { background: var(--accent-blue); flex: 1; }
+            .btn-edit { background: #607d8b; flex: 1; }
+            .btn-void { background: #d32f2f; width: 40px; } /* 小小的危險按鈕 */
+            .nav-btn { background: #444; color: #fff; padding: 8px 15px; border-radius: 4px; text-decoration: none; font-size: 0.9rem; }
+
+            /* 音效橫幅 */
+            #audio-banner { 
+                background: var(--accent-red); color: white; text-align: center; 
+                padding: 12px; font-weight: bold; cursor: pointer; 
+                position: sticky; top: 60px; z-index: 99;
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.8; } 100% { opacity: 1; } }
+        </style>
+    </head>
+    <body>
+    
     <div class="header-container">
-        <h1>👨‍🍳 廚房出單看板</h1>
-        <div>
-            <a href="/admin" class="nav-btn">⚙️ 前往後台</a>
-            <a href="/kitchen/report" class="btn btn-report">📊 當日營收報表</a>
+        <h1>👨‍🍳 廚房出單 <span id="clock" style="font-size:0.8em; color:#888; margin-left:10px;"></span></h1>
+        <div class="header-btns">
+            <a href="/admin" class="nav-btn">⚙️ 後台</a>
+            <a href="/kitchen/report" class="nav-btn" style="background:#673ab7;">📊 報表</a>
         </div>
     </div>
-    <div id="order-grid" class="grid">正在同步訂單數據...</div>
-    <audio id="notice-sound" preload="auto"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>
+
+    <div id="audio-banner" onclick="enableAudio()">🔇 點擊此處開啟「新訂單語音通知」</div>
+    
+    <div id="order-grid" class="grid">
+        <div style="grid-column:1/-1; text-align:center; padding:50px; color:#666;">
+            載入中...
+        </div>
+    </div>
+
+    <audio id="notice-sound" preload="auto">
+        <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+    </audio>
+
     <script>
         let lastMaxSeq = 0, isFirstLoad = true, audioUnlocked = false;
-        function enableAudio() { audioUnlocked = true; document.getElementById('audio-banner').style.display = 'none'; const audio = document.getElementById('notice-sound'); audio.play().then(() => { audio.pause(); audio.currentTime = 0; }); alert("功能已啟動！"); }
-        function action(url) { fetch(url).then(() => { refreshOrders(); }); }
-        function refreshOrders() {
-            fetch('/check_new_orders?current_seq=' + lastMaxSeq).then(res => res.json()).then(data => {
-                if (data.html) document.getElementById('order-grid').innerHTML = data.html;
-                if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
-                    if (audioUnlocked) { document.getElementById('notice-sound').play(); data.new_ids.forEach(id => { window.open('/print_order/' + id, '_blank'); }); }
-                }
-                lastMaxSeq = data.max_seq; isFirstLoad = false;
-            });
+
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString('zh-TW', {hour12:false, hour:'2-digit', minute:'2-digit'});
         }
-        setInterval(refreshOrders, 5000); refreshOrders();
-    </script></body></html>
+        setInterval(updateClock, 1000); updateClock();
+
+        function enableAudio() { 
+            audioUnlocked = true; 
+            document.getElementById('audio-banner').style.display = 'none'; 
+            const audio = document.getElementById('notice-sound'); 
+            audio.play().then(() => { audio.pause(); audio.currentTime = 0; }); 
+        }
+
+        function action(url) { 
+            fetch(url).then(() => { refreshOrders(); }); 
+        }
+
+        function refreshOrders() {
+            fetch('/check_new_orders?current_seq=' + lastMaxSeq)
+            .then(res => res.json())
+            .then(data => {
+                if (data.html) document.getElementById('order-grid').innerHTML = data.html;
+                
+                if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                    if (audioUnlocked) { 
+                        const audio = document.getElementById('notice-sound');
+                        audio.currentTime = 0; 
+                        audio.play(); 
+                        data.new_ids.forEach(id => { 
+                            // 只有在瀏覽器沒阻擋彈出視窗時才有用，通常建議接實體出單機
+                            // window.open('/print_order/' + id, '_blank'); 
+                        }); 
+                    }
+                }
+                lastMaxSeq = data.max_seq; 
+                isFirstLoad = false;
+            })
+            .catch(err => console.error("Polling error:", err));
+        }
+        
+        setInterval(refreshOrders, 5000); 
+        refreshOrders();
+    </script>
+    </body>
+    </html>
     """
 
 # --- 5. 廚房看板 API (精準鎖定當日) ---
@@ -911,24 +1035,19 @@ def kitchen_panel():
 def check_new_orders():
     current_max = request.args.get('current_seq', 0, type=int)
     
-    # 1. 計算台灣時間的「今天」對應的 UTC 時間範圍
-    # 這樣可以無視資料庫主機位置，精準只抓取台灣這一天內的訂單
+    # 1. 時間範圍計算 (維持原本邏輯)
     utc_now = datetime.utcnow()
     tw_now = utc_now + timedelta(hours=8)
-    
     tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
     tw_end = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
-    # 轉回 UTC 供資料庫查詢 (減8小時)
     utc_start_query = tw_start - timedelta(hours=8)
     utc_end_query = tw_end - timedelta(hours=8)
-    
-    # 建立時間篩選字串
     time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
 
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     
-    # 2. 抓取訂單 (套用時間篩選)
+    # 2. 抓取訂單
     cur.execute(f"""
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders WHERE {time_filter} 
@@ -936,11 +1055,11 @@ def check_new_orders():
     """)
     orders = cur.fetchall()
     
-    # 3. 抓取最大序號 (套用時間篩選)
+    # 3. 抓取最大序號
     cur.execute(f"SELECT MAX(daily_seq) FROM orders WHERE {time_filter}")
     max_seq_val = cur.fetchone()[0] or 0
     
-    # 4. 判斷是否有新訂單 (套用時間篩選)
+    # 4. 判斷新訂單
     new_order_ids = []
     if current_max > 0:
         cur.execute(f"SELECT id FROM orders WHERE daily_seq > %s AND {time_filter}", (current_max,))
@@ -948,55 +1067,97 @@ def check_new_orders():
         
     conn.close()
 
-    # 5. 生成 HTML
+    # 5. 生成 HTML (優化版)
     html_content = ""
     if not orders: 
-        html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>目前無新訂單</div>"
+        html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>🍽️ 目前沒有訂單，廚房休息中</div>"
     
     for o in orders:
         oid, table, raw_items, total, status, created, order_lang, seq_num, c_json = o
-        cls, seq = status.lower(), f"{seq_num:03d}"
         
-        # 顯示時間轉為台灣時間
+        # 狀態處理
+        status_cls = status.lower()
+        seq_str = f"#{seq_num:03d}"
+        
+        # 時間顯示
         tw_time = created + timedelta(hours=8)
-        time_str = tw_time.strftime('%H:%M:%S')
+        time_str = tw_time.strftime('%H:%M')
         
+        # 標籤顯示文字
+        status_label = "待出餐"
+        if status == 'Completed': status_label = "已完成"
+        elif status == 'Cancelled': status_label = "已作廢"
+
+        # 解析餐點內容 (HTML 結構優化)
         items_html = ""
         try:
             if c_json:
                 cart = json.loads(c_json)
                 for item in cart:
-                    n = item.get('name_zh', item.get('name', '商品'))
-                    ops = item.get('options_zh', item.get('options', []))
-                    ops_str = f"<br><small style='color:#aaa'>└ {', '.join(ops)}</small>" if ops else ""
-                    items_html += f"<div>● {n} <span style='color:#ff9800'>x{item['qty']}</span> {ops_str}</div>"
+                    name = item.get('name_zh', item.get('name', '商品'))
+                    qty = item.get('qty', 1)
+                    # 處理選項
+                    options = item.get('options_zh', item.get('options', []))
+                    opts_html = ""
+                    if options:
+                        opts_str = " / ".join(options)
+                        opts_html = f"<div class='item-opts'>└ {opts_str}</div>"
+                    
+                    items_html += f"""
+                    <div class='item-row'>
+                        <div class='item-name'>
+                            <span>{name}</span>
+                            <span class='item-qty'>x{qty}</span>
+                        </div>
+                        {opts_html}
+                    </div>
+                    """
             else: 
-                items_html = raw_items.replace("+", "<br>● ")
+                # 舊格式相容
+                clean_items = raw_items.replace("+", "<br>").replace("undefined", "")
+                items_html = f"<div class='item-row'>{clean_items}</div>"
         except: 
-            items_html = f"解析錯誤: {raw_items}"
+            items_html = f"<div style='color:red'>資料解析錯誤</div>"
             
-        tag = "已完成" if status == 'Completed' else "已作廢" if status == 'Cancelled' else "● 新訂單"
+        # 按鈕區塊 (邏輯優化)
+        buttons_html = ""
         
-        btns = ""
+        # 只有「待處理」才顯示「完成」大按鈕
         if status == 'Pending': 
-            btns += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-complete'>✔️ 付款完成</button>"
-        
-        if status != 'Cancelled':
-            btns += f"<a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 單據修改</a>"
-            btns += f"<button onclick='if(confirm(\"確定作廢？\")) action(\"/order/cancel/{oid}\")' class='btn btn-void'>🗑️ 單據作廢</button>"
-        
-        btns += f"<a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 列印 ({order_lang})</a>"
-        
-        html_content += f"""
-        <div class="card {cls}">
-            <div class="tag" style="color:{'#28a745' if status=='Completed' else '#ff9800'}">{tag}</div>
-            <div style="font-size:0.9em; color:#888;">{time_str} (TPE) | 原始語系: <b>{order_lang}</b></div>
-            <div style="margin: 10px 0;">
-                <span style="font-size:2.5em; color:#ff9800; font-weight:bold; margin-right:10px;">#{seq}</span>
-                <span style="font-size:1.8em; background:#444; padding:2px 12px; border-radius:6px;">桌: {table}</span>
+            buttons_html += f"""
+            <button onclick='action("/kitchen/complete/{oid}")' class='btn btn-main'>
+                ✅ 出餐 / 付款
+            </button>
+            <div class="btn-group">
+                <a href='/print_order/{oid}' target='_blank' class='btn btn-print'>🖨️ 補印</a>
+                <a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn btn-edit'>✏️ 修改</a>
+                <button onclick='if(confirm("⚠️ 確定要作廢 #{seq_num} 號單嗎？")) action("/order/cancel/{oid}")' class='btn btn-void' title="作廢">🗑️</button>
             </div>
-            <div class="items">{items_html}</div>
-            <div style="border-top: 1px solid #444; padding-top: 15px;">{btns}</div>
+            """
+        else:
+            # 已完成或作廢，只顯示補印
+            buttons_html += f"""
+            <div class="btn-group">
+                <a href='/print_order/{oid}' target='_blank' class='btn btn-print' style="width:100%">🖨️ 補印單據</a>
+            </div>
+            """
+        
+        # 組合卡片 HTML
+        html_content += f"""
+        <div class="card {status_cls}">
+            <div class="card-header">
+                <div>
+                    <div class="seq-num">{seq_str}</div>
+                    <div class="time-stamp">{time_str} ({order_lang})</div>
+                </div>
+                <div class="table-num">桌號 {table}</div>
+            </div>
+            <div class="items">
+                {items_html}
+            </div>
+            <div class="actions">
+                {buttons_html}
+            </div>
         </div>"""
         
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
