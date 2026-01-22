@@ -1535,14 +1535,13 @@ def async_send_report(app_instance):
         except Exception as e:
             print(f"❌ [背景] 發信失敗: {e}")
             
-# --- 9. 後台管理核心功能 (修復版 - 含品項營收統計) ---
+# --- 9. 後台管理核心功能 (修復版 - 含品項營收統計與 SSL 修復) ---
 
 # [修改] 發信邏輯：支援傳入 manual_config (測試用) 與 is_test (測試信內容用)
 def send_daily_report(manual_config=None, is_test=False):
     """
     計算今日營收，並透過 Resend 發送郵件。
-    :param manual_config: dict (包含 resend_api_key, report_email, sender_email)，若有此參數則不讀取 DB 設定。
-    :param is_test: bool 若為 True，則不計算營收，僅發送測試文字。
+    包含 SSL Context 修復，解決 urllib 卡住問題。
     """
     print(">>> 準備執行郵件發送程序...")
     
@@ -1577,7 +1576,10 @@ def send_daily_report(manual_config=None, is_test=False):
             return
 
         # 2. 準備郵件內容
-        today_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
+        # 鎖定台灣時間
+        utc_now = datetime.utcnow()
+        tw_now = utc_now + timedelta(hours=8)
+        today_str = tw_now.strftime('%Y-%m-%d')
         
         if is_test:
             # --- 測試信模式 ---
@@ -1593,9 +1595,6 @@ def send_daily_report(manual_config=None, is_test=False):
         else:
             # --- 正式報表模式 ---
             # 時間範圍查詢 (鎖定台灣時間當天)
-            utc_now = datetime.utcnow()
-            tw_now = utc_now + timedelta(hours=8)
-            
             tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
             tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
             
@@ -1623,7 +1622,7 @@ def send_daily_report(manual_config=None, is_test=False):
             cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             valid_rows = cur.fetchall()
             
-            # --- 修改重點：統計邏輯增加金額計算 ---
+            # 統計邏輯
             def agg_items(rows):
                 # 結構: { '品名': {'qty': 數量, 'subtotal': 總金額} }
                 stats = {}
@@ -1631,11 +1630,20 @@ def send_daily_report(manual_config=None, is_test=False):
                     if not r[0]: continue
                     try:
                         items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                        if isinstance(items, dict): items = [items] # 防禦性編碼
+
                         for i in items:
                             name = i.get('name_zh', i.get('name', '未知品項'))
-                            qty = int(i.get('qty', 0))
-                            # 嘗試取得單價，若無則預設 0
-                            price = int(i.get('price', 0))
+                            try:
+                                qty = int(float(i.get('qty', 0)))
+                            except: qty = 0
+                            
+                            # 嘗試取得金額 (相容 price, unit_price, cost)
+                            raw_price = i.get('price') or i.get('unit_price') or i.get('amount') or 0
+                            try:
+                                price = int(float(raw_price))
+                            except: price = 0
+                                
                             item_total = qty * price
                             
                             if name not in stats:
@@ -1643,7 +1651,9 @@ def send_daily_report(manual_config=None, is_test=False):
                             
                             stats[name]['qty'] += qty
                             stats[name]['subtotal'] += item_total
-                    except: pass
+                    except Exception as ex: 
+                        print(f"解析錯誤: {ex}")
+                        pass
                 return stats
 
             valid_stats = agg_items(valid_rows)
@@ -1651,7 +1661,7 @@ def send_daily_report(manual_config=None, is_test=False):
             item_detail_text = ""
             if valid_stats:
                 item_detail_text = "\n【品項銷量統計】\n"
-                # 依據數量排序 (若要依金額排序可改 key=lambda x: x[1]['subtotal'])
+                # 依據數量排序
                 sorted_items = sorted(valid_stats.items(), key=lambda x: x[1]['qty'], reverse=True)
                 
                 for name, data in sorted_items:
@@ -1686,6 +1696,11 @@ def send_daily_report(manual_config=None, is_test=False):
         
         print(f"📤 正在發送郵件給: {to_email} ...")
         
+        # [修復重點] 建立 SSL Context 並略過驗證，防止 urllib 卡住
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
         req = urllib.request.Request(
             "https://api.resend.com/emails", 
             data=json.dumps(payload).encode('utf-8'),
@@ -1694,8 +1709,10 @@ def send_daily_report(manual_config=None, is_test=False):
         )
         
         try:
-            with urllib.request.urlopen(req, timeout=10) as res:
+            # 加入 context=ctx 和 timeout=20
+            with urllib.request.urlopen(req, timeout=20, context=ctx) as res:
                 print(f"✅ 發送成功！Status Code: {res.status}")
+                return True
         except urllib.error.HTTPError as e:
             error_body = e.read().decode()
             print(f"❌ Resend API 錯誤: {e.code} - {error_body}")
@@ -1722,7 +1739,6 @@ def toggle_product(pid):
     """修復：上架/下架切換功能"""
     conn = get_db_connection()
     cur = conn.cursor()
-    # 先查詢目前狀態
     cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
     row = cur.fetchone()
     if row:
@@ -1736,7 +1752,7 @@ def toggle_product(pid):
 
 @app.route('/admin/delete_product/<int:pid>')
 def delete_product(pid):
-    """修復：刪除產品路由 (解決 404 問題)"""
+    """修復：刪除產品路由"""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM products WHERE id = %s", (pid,))
@@ -1749,10 +1765,8 @@ def reorder_products():
     """補全：處理前端 SortableJS 的排序請求"""
     data = request.json
     order_list = data.get('order', [])
-    
     conn = get_db_connection()
     cur = conn.cursor()
-    # 根據前端傳來的 ID 順序，依序更新 sort_order
     for index, pid in enumerate(order_list):
         cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (index, pid))
     conn.commit()
@@ -1776,7 +1790,6 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
-            # 只儲存，不發信
             upsert_setting('report_email', request.form.get('report_email'))
             upsert_setting('sender_email', request.form.get('sender_email'))
             upsert_setting('resend_api_key', request.form.get('resend_api_key'))
@@ -1786,7 +1799,6 @@ def admin_panel():
             
         elif action == 'test_email':
             # 僅測試 (不儲存)
-            # 邏輯：傳入 is_test=True
             temp_config = {
                 'report_email': request.form.get('report_email'),
                 'sender_email': request.form.get('sender_email'),
@@ -1794,18 +1806,18 @@ def admin_panel():
             }
             conn.close() 
             
-            # 啟動背景發信，傳入 temp_config 和 is_test=True
+            # 啟動背景發信
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance, temp_config, True)).start()
             
-            return redirect(url_for('admin_panel', msg="🧪 測試郵件已發送 (內容為測試文字)"))
+            return redirect(url_for('admin_panel', msg="🧪 測試郵件已發送 (請查看終端機與信箱)"))
 
         elif action == 'send_report_now':
             conn.close() 
-            # 手動發送 (使用資料庫內已儲存的設定 -> 傳入 None, is_test=False)
+            # 手動發送 (使用資料庫設定)
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance, None, False)).start()
-            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送 (使用 DB 已儲存設定)"))
+            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送"))
             
         elif action == 'add_product':
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
