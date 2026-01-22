@@ -7,6 +7,7 @@ import urllib.error
 import time  
 import io
 import resend
+import ssl
 import threading  # 新增：用於非同步發信，解決延遲問題
 import pandas as pd  
 from flask import Flask, request, jsonify, redirect, url_for, Response, send_file, current_app
