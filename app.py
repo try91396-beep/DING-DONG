@@ -1175,9 +1175,8 @@ def daily_report():
         target_date_str = tw_now.strftime('%Y-%m-%d')
     
     # 2. 轉換為 UTC 時間範圍 (用於 SQL 查詢)
-    # 邏輯：選定日期的 TW 00:00 ~ 23:59 -> 轉為 UTC
     try:
-        # 將字串轉為 datetime 物件 (假設時間為 00:00:00)
+        # 將字串轉為 datetime 物件
         target_date_obj = datetime.strptime(target_date_str, '%Y-%m-%d')
         
         # 台灣當天的開始與結束
@@ -1194,10 +1193,10 @@ def daily_report():
     except ValueError:
         return "日期格式錯誤，請使用 YYYY-MM-DD"
 
-    # 3. 執行資料庫查詢 (使用 time_filter)
+    # 3. 執行資料庫查詢
     conn = get_db_connection(); cur = conn.cursor()
     
-    # 查詢有效單
+    # 查詢有效單 (總單量與總營業額)
     cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
     valid_count, valid_total = cur.fetchone()
     
@@ -1205,7 +1204,7 @@ def daily_report():
     cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
     void_count, void_total = cur.fetchone()
     
-    # 查詢明細
+    # 查詢明細 (JSON 內容)
     cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
     valid_rows = cur.fetchall()
     
@@ -1213,60 +1212,76 @@ def daily_report():
     void_rows = cur.fetchall()
     conn.close()
 
-    # 4. 統計品項邏輯 (修改：增加金額計算)
+    # 4. 統計品項邏輯 (修正：更安全的金額計算)
     def agg_items(rows):
-        # 結構改為： { '品名': {'qty': 數量, 'total': 總金額} }
+        # 結構： { '品名': {'qty': 數量, 'total_amt': 總金額} }
         stats = {}
         for r in rows:
             if not r[0]: continue
             try:
-                # 相容性處理：判斷是字串還是已經是 list
+                # 解析 JSON (相容字串或列表格式)
                 items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
                 
                 for i in items:
                     name = i.get('name_zh', i.get('name', '未知'))
-                    qty = int(i.get('qty', 0))
-                    price = int(i.get('price', 0)) # 取得單價
-                    subtotal = qty * price         # 計算小計
                     
+                    # 安全轉換數量
+                    try:
+                        qty = int(float(i.get('qty', 0)))
+                    except:
+                        qty = 0
+
+                    # 安全轉換價格 (先轉 float 再轉 int，防止 "150.0" 報錯)
+                    try:
+                        unit_price = int(float(i.get('price', 0)))
+                    except:
+                        unit_price = 0
+                    
+                    # 計算該品項小計 (數量 * 單價)
+                    line_total = qty * unit_price 
+
                     if name not in stats:
-                        stats[name] = {'qty': 0, 'total': 0}
+                        stats[name] = {'qty': 0, 'total_amt': 0}
                     
                     stats[name]['qty'] += qty
-                    stats[name]['total'] += subtotal
-            except: pass
+                    stats[name]['total_amt'] += line_total
+            except Exception as e:
+                # 建議在開發時 print(e) 來除錯，正式環境可忽略
+                pass
         return stats
 
     valid_stats, void_stats = agg_items(valid_rows), agg_items(void_rows)
 
-    # 5. 渲染表格 HTML (修改：增加金額欄位)
+    # 5. 渲染表格 HTML (修正：顯示金額欄位)
     def render_table(stats_dict):
         if not stats_dict: return "<p style='text-align:center; color:#888;'>無資料</p>"
         
-        # 表頭增加「金額」
         h = """
         <table style='width:100%; border-collapse:collapse; font-size:14px; margin-top:5px;'>
-            <tr style='border-bottom:1px solid #000;'>
-                <th style='text-align:left; width:50%;'>品項</th>
-                <th style='text-align:right; width:20%;'>數量</th>
-                <th style='text-align:right; width:30%;'>金額</th>
+            <tr style='border-bottom:1px solid #000; background-color: #f9f9f9;'>
+                <th style='text-align:left; width:50%; padding: 4px;'>品項</th>
+                <th style='text-align:right; width:20%; padding: 4px;'>數量</th>
+                <th style='text-align:right; width:30%; padding: 4px;'>小計金額</th>
             </tr>
         """
         
-        # 依照「數量」排序 (若要依金額排序，可改為 key=lambda x: x[1]['total'])
+        # 依照數量排序
         sorted_items = sorted(stats_dict.items(), key=lambda x: x[1]['qty'], reverse=True)
         
         for name, data in sorted_items: 
+            # 加入千分位逗號 (例如 1,000)
+            fmt_amt = "{:,}".format(data['total_amt'])
+            
             h += f"""
-            <tr>
-                <td style='padding:4px 0;'>{name}</td>
-                <td style='text-align:right;'>{data['qty']}</td>
-                <td style='text-align:right;'>${data['total']}</td>
+            <tr style='border-bottom: 1px dotted #ccc;'>
+                <td style='padding:6px 4px;'>{name}</td>
+                <td style='text-align:right; padding:6px 4px;'>{data['qty']}</td>
+                <td style='text-align:right; padding:6px 4px;'>${fmt_amt}</td>
             </tr>
             """
         return h + "</table>"
 
-    # 6. 回傳完整 HTML (介面部分維持不變)
+    # 6. 回傳完整 HTML
     return f"""
     <!DOCTYPE html>
     <html>
@@ -1275,12 +1290,11 @@ def daily_report():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>日結報表_{target_date_str}</title>
         <style>
-            body {{ font-family: sans-serif; background: #eee; padding: 20px; display: flex; flex-direction: column; align-items: center; }} 
+            body {{ font-family: 'Microsoft JhengHei', sans-serif; background: #eee; padding: 20px; display: flex; flex-direction: column; align-items: center; }} 
             .ticket {{ background: white; width: 58mm; padding: 15px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-bottom: 20px; }} 
             h2, h3 {{ text-align: center; margin: 10px 0; }} 
             hr {{ border: 0; border-top: 1px dashed #000; margin: 10px 0; }} 
-            .summary-box {{ margin-bottom: 15px; font-size: 15px; }} 
-            .summary-box b {{ font-size: 18px; color: green; }} 
+            .summary-box {{ margin-bottom: 15px; font-size: 15px; background: #fdfdfd; padding: 10px; border: 1px solid #eee; }} 
             
             /* 控制列印與介面區域 */
             .controls {{ margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }}
@@ -1298,13 +1312,13 @@ def daily_report():
     <body>
         <div class="controls no-print">
             <form action="/kitchen/report" method="get" style="display:flex; align-items:center; gap:10px;">
-                <label>📅 選擇日期：</label>
+                <label>📅 日期：</label>
                 <input type="date" name="date" class="date-picker" value="{target_date_str}" onchange="this.form.submit()">
             </form>
             
             <div class="btn-group">
-                <button onclick="window.print()" class="btn" style="background:#28a745;">🖨️ 列印報表</button>
-                <a href="/kitchen" class="btn" style="background:#007bff;">🔙 回廚房看板</a>
+                <button onclick="window.print()" class="btn" style="background:#28a745;">🖨️ 列印</button>
+                <a href="/kitchen" class="btn" style="background:#007bff;">🔙 返回</a>
             </div>
         </div>
 
@@ -1312,21 +1326,29 @@ def daily_report():
             <h2>日結報表</h2>
             <p style="text-align:center; font-size:12px;">營業日: {target_date_str}</p>
             <hr>
+            
             <div class="summary-box">
-                <b>✅ 有效營收</b><br>
-                單量: {valid_count or 0} 筆<br>
-                總額: <b>${valid_total or 0}</b>
+                <b>✅ 營收統計</b><br>
+                總單量: {valid_count or 0} 筆<br>
+                總金額: <b style="font-size:18px; color:green;">${valid_total or 0}</b>
             </div>
+            
+            <div style="margin-bottom: 5px; font-weight:bold; font-size:14px;">[銷售明細]</div>
             {render_table(valid_stats)}
+            
             <hr>
-            <div class="summary-box" style="color:#822;">
+            
+            <div class="summary-box" style="color:#a00; border-color:#fadbd8; background:#fdf8f8;">
                 <b>❌ 作廢統計</b><br>
                 單量: {void_count or 0} 筆<br>
-                總額: ${void_total or 0}
+                金額: ${void_total or 0}
             </div>
             {render_table(void_stats)}
+            
             <hr>
-            <p style="text-align:center; font-size:10px; color:#888;">列印時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+            <p style="text-align:center; font-size:10px; color:#888;">
+                製表時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+            </p>
         </div>
     </body>
     </html>
