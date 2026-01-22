@@ -1571,125 +1571,10 @@ def async_send_report(app_instance, manual_config=None):
     with app_instance.app_context():
         send_daily_report(manual_config)
 
-@app.route('/admin/reorder_products', methods=['POST'])
-def reorder_products():
-    data = request.get_json()
-    conn = get_db_connection(); cur = conn.cursor()
-    for index, pid in enumerate(data.get('order', [])):
-        cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (index + 1, pid))
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({'status': 'success'})
-
-@app.route('/admin/toggle_product/<int:pid>', methods=['POST'])
-def toggle_product(pid):
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("UPDATE products SET is_available = NOT is_available WHERE id = %s", (pid,))
-    cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
-    new_status = cur.fetchone()[0]
-    conn.commit(); conn.close()
-    return jsonify({'status': 'success', 'is_available': new_status})
-
-@app.route('/admin/delete_product/<int:pid>')
-def delete_product(pid):
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("DELETE FROM products WHERE id = %s", (pid,))
-    conn.commit(); conn.close()
-    return redirect('/admin')
-
-@app.route('/admin/export_menu')
-def export_menu():
-    try:
-        conn = get_db_connection()
-        df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
-        conn.close()
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        output.seek(0)
-        return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="menu_export.xlsx")
-    except Exception as e:
-         return redirect(url_for('admin_panel', msg=f"❌ 匯出失敗: {e}"))
-
-@app.route('/admin/import_menu', methods=['POST'])
-def import_menu():
-    try:
-        file = request.files.get('menu_file')
-        if not file:
-            return redirect(url_for('admin_panel', msg="❌ 無檔案：請選擇 Excel 檔案"))
-        
-        df = pd.read_excel(file, engine='openpyxl')
-        df = df.where(pd.notnull(df), None)
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        insert_count = 0
-        
-        for _, p in df.iterrows():
-            if not p.get('name'): continue
-
-            price = p.get('price')
-            if price is None: price = 0
-            
-            sort_order = p.get('sort_order')
-            if sort_order is None: sort_order = 99
-            
-            is_available = p.get('is_available')
-            if is_available is None: is_available = True
-            
-            cur.execute("""
-                INSERT INTO products (
-                    name, price, category, print_category, sort_order, is_available, 
-                    image_url,
-                    name_en, name_jp, name_kr, 
-                    category_en, category_jp, category_kr,
-                    custom_options, custom_options_en, custom_options_jp, custom_options_kr
-                ) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, 
-                (
-                    str(p.get('name')), 
-                    price, 
-                    p.get('category'), 
-                    p.get('print_category','Noodle'), 
-                    sort_order, 
-                    bool(is_available),
-                    p.get('image_url'),
-                    p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
-                    p.get('category_en'), p.get('category_jp'), p.get('category_kr'),
-                    p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
-                )
-            )
-            insert_count += 1
-            
-        conn.commit()
-        cur.close()
-        conn.close()
-        return redirect(url_for('admin_panel', msg=f"✅ 成功匯入 {insert_count} 筆菜單項目 (含圖片連結)"))
-        
-    except Exception as e:
-        print(f"❌ 匯入菜單發生錯誤: {e}")
-        import traceback
-        traceback.print_exc()
-        return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗: {str(e)}"))
-
-@app.route('/admin/reset_menu')
-def reset_menu():
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
-    return redirect('/admin')
-
-@app.route('/admin/reset_orders')
-def reset_orders():
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
-    return redirect('/admin')
-
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     msg = request.args.get('msg', '') 
     
     def upsert_setting(key, value):
@@ -1711,7 +1596,8 @@ def admin_panel():
             
         elif action == 'test_email':
             # 僅測試 (不儲存)
-            # 抓取表單當前的值
+            # 邏輯：從 request.form 抓取當前輸入的值，直接傳給發信功能進行測試
+            # 這樣可以讓使用者測試「還沒儲存」的新 Key 是否有效
             temp_config = {
                 'report_email': request.form.get('report_email'),
                 'sender_email': request.form.get('sender_email'),
@@ -1723,14 +1609,14 @@ def admin_panel():
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance, temp_config)).start()
             
-            return redirect(url_for('admin_panel', msg="🧪 測試郵件發送中 (未儲存設定，請檢查信箱)"))
+            return redirect(url_for('admin_panel', msg="🧪 測試郵件發送中 (使用當前輸入值，未寫入 DB)"))
 
         elif action == 'send_report_now':
             conn.close() 
-            # 手動發送 (使用資料庫內已儲存的設定 -> 不傳 manual_config)
+            # 手動發送 (使用資料庫內已儲存的設定 -> 傳入 None)
             app_instance = current_app._get_current_object()
             threading.Thread(target=async_send_report, args=(app_instance, None)).start()
-            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送 (使用已儲存設定)"))
+            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送 (使用 DB 已儲存設定)"))
             
         elif action == 'add_product':
             cur.execute("""INSERT INTO products (name, price, category, print_category, 
@@ -1935,8 +1821,7 @@ def admin_panel():
                         <div>
                             <label>🇺🇸 English Name</label>
                             <input type="text" name="name_en">
-                            <input type="text" 
-name="category_en" placeholder="Category EN">
+                            <input type="text" name="category_en" placeholder="Category EN">
                         </div>
                         <div>
                             <label>🇯🇵 日本語 名称</label>
@@ -2064,11 +1949,7 @@ name="category_en" placeholder="Category EN">
     </body>
     </html>
     """
-
-@app.route('/')
-def index():
-    return "系統運作中。<a href='/admin'>進入後台</a>"
-
+    
 # --- 編輯產品頁面 (強制欄位順序版) ---
 @app.route('/admin/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
