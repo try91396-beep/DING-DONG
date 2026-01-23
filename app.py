@@ -1579,21 +1579,14 @@ def async_send_report(app_instance):
         except Exception as e:
             print(f"❌ [背景] 發信失敗: {e}")
             
-# --- 9. 後台管理核心功能 (修復版 - 含品項營收統計與 SSL 修復) ---
+# --- 9. 後台管理核心功能 ---
 
-# [修改] 發信邏輯：支援傳入 manual_config (測試用) 與 is_test (測試信內容用)
+# 發信邏輯：支援傳入 manual_config (測試用) 與 is_test (測試信內容用)
 def send_daily_report(manual_config=None, is_test=False):
-    """
-    計算今日營收，並透過 Resend 發送郵件。
-    包含 SSL Context 修復，解決 urllib 卡住問題。
-    """
     print(">>> 準備執行郵件發送程序...")
-    
     conn = get_db_connection()
     cur = conn.cursor()
-    
     try:
-        # 1. 決定設定來源 (手動測試 或 資料庫)
         if manual_config:
             print("🔧 使用手動輸入的設定進行測試 (不讀取 DB 設定)")
             api_key = manual_config.get('resend_api_key', '').strip()
@@ -1607,11 +1600,7 @@ def send_daily_report(manual_config=None, is_test=False):
             to_email = config.get('report_email', '').strip()
             sender_email = config.get('sender_email', '').strip()
 
-        # 預設寄件人
-        if not sender_email: 
-            sender_email = 'onboarding@resend.dev'
-
-        # 檢查必要參數
+        if not sender_email: sender_email = 'onboarding@resend.dev'
         if not api_key:
             print("❌ 發信失敗：未設定 Resend API Key")
             return
@@ -1619,100 +1608,57 @@ def send_daily_report(manual_config=None, is_test=False):
             print("❌ 發信失敗：未設定收件人 Email")
             return
 
-        # 2. 準備郵件內容
-        # 鎖定台灣時間
+        # 準備郵件內容
         utc_now = datetime.utcnow()
         tw_now = utc_now + timedelta(hours=8)
         today_str = tw_now.strftime('%Y-%m-%d')
         
         if is_test:
-            # --- 測試信模式 ---
             subject = f"【連線測試】Resend API 設定確認 ({today_str})"
-            email_content = """
-✅ Resend API 連線成功！
-
-此為測試信件。
-如果您收到這封信，代表您的 API Key 與收件人設定皆正確。
-系統將能夠正常發送每日結算報表。
-"""
+            email_content = "✅ Resend API 連線成功！\n此為測試信件。"
             print("🧪 模式：僅發送測試內容")
         else:
-            # --- 正式報表模式 ---
-            # 時間範圍查詢 (鎖定台灣時間當天)
-            tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
-            
-            # 轉換回 UTC 供資料庫查詢
-            utc_start_query = tw_start_of_day - timedelta(hours=8)
-            utc_end_query = tw_end_of_day - timedelta(hours=8)
-            
-            time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
+            tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            tw_end = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            utc_start = tw_start - timedelta(hours=8)
+            utc_end = tw_end - timedelta(hours=8)
+            time_filter = f"created_at >= '{utc_start}' AND created_at <= '{utc_end}'"
 
-            print(f"📅 統計區間 (TW): {tw_start_of_day} ~ {tw_end_of_day}")
-
-            # 統計數據 - 有效訂單
             cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             v_res = cur.fetchone()
-            v_count = v_res[0] if v_res and v_res[0] else 0
-            v_total = v_res[1] if v_res and v_res[1] else 0
+            v_count, v_total = (v_res[0] or 0), (v_res[1] or 0)
             
-            # 統計數據 - 作廢訂單
             cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
             x_res = cur.fetchone()
-            x_count = x_res[0] if x_res and x_res[0] else 0
-            x_total = x_res[1] if x_res and x_res[1] else 0
+            x_count, x_total = (x_res[0] or 0), (x_res[1] or 0)
 
-            # 品項明細
             cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             valid_rows = cur.fetchall()
             
-            # 統計邏輯
-            def agg_items(rows):
-                # 結構: { '品名': {'qty': 數量, 'subtotal': 總金額} }
+            item_detail_text = ""
+            if valid_rows:
                 stats = {}
-                for r in rows:
+                for r in valid_rows:
                     if not r[0]: continue
                     try:
                         items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
-                        if isinstance(items, dict): items = [items] # 防禦性編碼
-
+                        if isinstance(items, dict): items = [items]
                         for i in items:
-                            name = i.get('name_zh', i.get('name', '未知品項'))
-                            try:
-                                qty = int(float(i.get('qty', 0)))
+                            name = i.get('name_zh', i.get('name', '未知'))
+                            try: qty = int(float(i.get('qty', 0)))
                             except: qty = 0
-                            
-                            # 嘗試取得金額 (相容 price, unit_price, cost)
-                            raw_price = i.get('price') or i.get('unit_price') or i.get('amount') or 0
-                            try:
-                                price = int(float(raw_price))
+                            try: price = int(float(i.get('price', 0) or i.get('unit_price', 0) or 0))
                             except: price = 0
-                                
-                            item_total = qty * price
                             
-                            if name not in stats:
-                                stats[name] = {'qty': 0, 'subtotal': 0}
-                            
+                            if name not in stats: stats[name] = {'qty': 0, 'subtotal': 0}
                             stats[name]['qty'] += qty
-                            stats[name]['subtotal'] += item_total
-                    except Exception as ex: 
-                        print(f"解析錯誤: {ex}")
-                        pass
-                return stats
-
-            valid_stats = agg_items(valid_rows)
-            
-            item_detail_text = ""
-            if valid_stats:
-                item_detail_text = "\n【品項銷量統計】\n"
-                # 依據數量排序
-                sorted_items = sorted(valid_stats.items(), key=lambda x: x[1]['qty'], reverse=True)
+                            stats[name]['subtotal'] += (qty * price)
+                    except: pass
                 
-                for name, data in sorted_items:
-                    # 格式： • 牛肉麵: 10 份 ($1500)
-                    item_detail_text += f"• {name}: {data['qty']} 份 (${data['subtotal']})\n"
-            else:
-                item_detail_text = "\n(今日尚無有效銷量)\n"
+                if stats:
+                    item_detail_text = "\n【品項銷量統計】\n"
+                    for name, data in sorted(stats.items(), key=lambda x: x[1]['qty'], reverse=True):
+                        item_detail_text += f"• {name}: {data['qty']} 份 (${data['subtotal']})\n"
 
             subject = f"【日結單】{today_str} 營業統計報告"
             email_content = f"""
@@ -1727,10 +1673,9 @@ def send_daily_report(manual_config=None, is_test=False):
 單量：{x_count} 筆
 總額：${x_total}
 ---------------------------------
-報告產出時間：{tw_now.strftime('%Y-%m-%d %H:%M:%S')} (Taiwan Time)
+報告產出時間：{tw_now.strftime('%Y-%m-%d %H:%M:%S')} (TW)
 """
 
-        # 3. 呼叫 Resend API
         payload = {
             "from": sender_email,
             "to": [to_email],
@@ -1738,9 +1683,6 @@ def send_daily_report(manual_config=None, is_test=False):
             "text": email_content
         }
         
-        print(f"📤 正在發送郵件給: {to_email} ...")
-        
-        # [修復重點] 建立 SSL Context 並略過驗證，防止 urllib 卡住
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -1751,450 +1693,270 @@ def send_daily_report(manual_config=None, is_test=False):
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, 
             method='POST'
         )
-        
-        try:
-            # 加入 context=ctx 和 timeout=20
-            with urllib.request.urlopen(req, timeout=20, context=ctx) as res:
-                print(f"✅ 發送成功！Status Code: {res.status}")
-                return True
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode()
-            print(f"❌ Resend API 錯誤: {e.code} - {error_body}")
-        except Exception as e:
-            print(f"❌ 連線錯誤: {e}")
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as res:
+            print(f"✅ 發送成功！Status Code: {res.status}")
 
     except Exception as e:
-        print(f"❌ 程式執行錯誤: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ 發送錯誤: {e}")
     finally:
         cur.close()
         conn.close()
 
-# 非同步執行緒包裝 (支援傳遞手動設定與測試旗標)
 def async_send_report(app_instance, manual_config=None, is_test=False):
     with app_instance.app_context():
         send_daily_report(manual_config, is_test)
 
-# --- 新增/修復的路由 ---
+# --- 補回缺失的路由 (匯出/匯入/重置) ---
+
+@app.route('/admin/export_menu')
+def export_menu():
+    """匯出菜單為 Excel"""
+    try:
+        conn = get_db_connection()
+        df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
+        conn.close()
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+        
+        return send_file(
+            output, 
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            as_attachment=True, 
+            download_name="menu_export.xlsx"
+        )
+    except Exception as e:
+         return redirect(url_for('admin_panel', msg=f"❌ 匯出失敗: {e}"))
+
+@app.route('/admin/import_menu', methods=['POST'])
+def import_menu():
+    """匯入 Excel 菜單"""
+    try:
+        file = request.files.get('menu_file')
+        if not file: return redirect(url_for('admin_panel', msg="❌ 無檔案"))
+        
+        df = pd.read_excel(file, engine='openpyxl')
+        df = df.where(pd.notnull(df), None)
+        conn = get_db_connection(); cur = conn.cursor()
+        
+        cnt = 0
+        for _, p in df.iterrows():
+            if not p.get('name'): continue
+            cur.execute("""
+                INSERT INTO products (
+                    name, price, category, print_category, sort_order, is_available, image_url,
+                    name_en, name_jp, name_kr, category_en, category_jp, category_kr,
+                    custom_options, custom_options_en, custom_options_jp, custom_options_kr
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                str(p.get('name')), p.get('price', 0), p.get('category'), p.get('print_category','Noodle'), 
+                p.get('sort_order', 99), bool(p.get('is_available', True)), p.get('image_url'),
+                p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
+                p.get('category_en'), p.get('category_jp'), p.get('category_kr'),
+                p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
+            ))
+            cnt += 1
+        conn.commit(); cur.close(); conn.close()
+        return redirect(url_for('admin_panel', msg=f"✅ 匯入 {cnt} 筆成功"))
+    except Exception as e:
+        return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗: {e}"))
+
+@app.route('/admin/reset_menu')
+def reset_menu():
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
+    conn.commit(); conn.close()
+    return redirect('/admin')
+
+@app.route('/admin/reset_orders')
+def reset_orders():
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
+    conn.commit(); conn.close()
+    return redirect('/admin')
+
+# --- 現有的 Admin API ---
 
 @app.route('/admin/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
-    """修復：上架/下架切換功能"""
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
     row = cur.fetchone()
     if row:
-        new_status = not row[0] # 切換 True/False
-        cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_status, pid))
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success', 'is_available': new_status})
+        new_s = not row[0]
+        cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
+        conn.commit(); conn.close()
+        return jsonify({'status': 'success', 'is_available': new_s})
     conn.close()
-    return jsonify({'status': 'error', 'message': 'Product not found'}), 404
+    return jsonify({'status': 'error'}), 404
 
 @app.route('/admin/delete_product/<int:pid>')
 def delete_product(pid):
-    """修復：刪除產品路由"""
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     cur.execute("DELETE FROM products WHERE id = %s", (pid,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return redirect(url_for('admin_panel', msg=f"🗑️ 產品 ID:{pid} 已刪除"))
 
 @app.route('/admin/reorder_products', methods=['POST'])
 def reorder_products():
-    """補全：處理前端 SortableJS 的排序請求"""
     data = request.json
-    order_list = data.get('order', [])
-    conn = get_db_connection()
-    cur = conn.cursor()
-    for index, pid in enumerate(order_list):
-        cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (index, pid))
-    conn.commit()
-    conn.close()
+    conn = get_db_connection(); cur = conn.cursor()
+    for idx, pid in enumerate(data.get('order', [])):
+        cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (idx, pid))
+    conn.commit(); conn.close()
     return jsonify({'status': 'success'})
 
-# --- 主後台路由 ---
+# --- Admin Panel ---
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     msg = request.args.get('msg', '') 
     
-    def upsert_setting(key, value):
-        cur.execute("UPDATE settings SET value=%s WHERE key=%s", (value, key))
-        if cur.rowcount == 0:
-            cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s)", (key, value))
-
     if request.method == 'POST':
         action = request.form.get('action')
-        
         if action == 'save_settings':
-            upsert_setting('report_email', request.form.get('report_email'))
-            upsert_setting('sender_email', request.form.get('sender_email'))
-            upsert_setting('resend_api_key', request.form.get('resend_api_key'))
-            conn.commit()
-            conn.close()
+            cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('report_email', request.form.get('report_email')))
+            cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('sender_email', request.form.get('sender_email')))
+            cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('resend_api_key', request.form.get('resend_api_key')))
+            conn.commit(); conn.close()
             return redirect(url_for('admin_panel', msg="✅ 設定已儲存"))
-            
         elif action == 'test_email':
-            # 僅測試 (不儲存)
             temp_config = {
                 'report_email': request.form.get('report_email'),
                 'sender_email': request.form.get('sender_email'),
                 'resend_api_key': request.form.get('resend_api_key')
             }
-            conn.close() 
-            
-            # 啟動背景發信
-            app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance, temp_config, True)).start()
-            
-            return redirect(url_for('admin_panel', msg="🧪 測試郵件已發送 (請查看終端機與信箱)"))
-
-        elif action == 'send_report_now':
-            conn.close() 
-            # 手動發送 (使用資料庫設定)
-            app_instance = current_app._get_current_object()
-            threading.Thread(target=async_send_report, args=(app_instance, None, False)).start()
-            return redirect(url_for('admin_panel', msg="📊 已觸發手動報表發送"))
-            
-        elif action == 'add_product':
-            cur.execute("""INSERT INTO products (name, price, category, print_category, 
-                           image_url, 
-                           name_en, name_jp, name_kr, 
-                           category_en, category_jp, category_kr,
-                           custom_options, custom_options_en, custom_options_jp, custom_options_kr) 
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
-                       (request.form.get('name'), request.form.get('price'), request.form.get('category'), 
-                        request.form.get('print_category'), 
-                        request.form.get('image_url'),
-                        request.form.get('name_en'), request.form.get('name_jp'), 
-                        request.form.get('name_kr'), request.form.get('category_en'), request.form.get('category_jp'), 
-                        request.form.get('category_kr'), request.form.get('custom_options'),
-                        request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr')))
-            conn.commit()
             conn.close()
-            return redirect(url_for('admin_panel', msg="✅ 產品新增成功"))
+            threading.Thread(target=async_send_report, args=(current_app._get_current_object(), temp_config, True)).start()
+            return redirect(url_for('admin_panel', msg="🧪 測試信發送中"))
+        elif action == 'send_report_now':
+            conn.close()
+            threading.Thread(target=async_send_report, args=(current_app._get_current_object(), None, False)).start()
+            return redirect(url_for('admin_panel', msg="📊 報表發送中"))
+        elif action == 'add_product':
+            cur.execute("""INSERT INTO products (name, price, category, print_category, image_url, name_en, name_jp, name_kr, category_en, category_jp, category_kr, custom_options, custom_options_en, custom_options_jp, custom_options_kr) 
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
+                       (request.form.get('name'), request.form.get('price'), request.form.get('category'), request.form.get('print_category'), request.form.get('image_url'),
+                        request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'), request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
+                        request.form.get('custom_options'), request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr')))
+            conn.commit(); conn.close()
+            return redirect(url_for('admin_panel', msg="✅ 新增成功"))
 
-    # 讀取資料 (GET 請求)
     cur.execute("SELECT key, value FROM settings")
     config = dict(cur.fetchall())
-    
     cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order, image_url FROM products ORDER BY sort_order ASC, id DESC")
     prods = cur.fetchall()
     conn.close()
 
     rows = ""
     for p in prods:
-        status_text = "上架中" if p[4] else "已下架"
-        status_class = "status-on" if p[4] else "status-off"
-        img_icon = "🖼️" if p[7] else "" 
-        
+        status_cls = "status-on" if p[4] else "status-off"
+        status_txt = "上架中" if p[4] else "已下架"
+        img_icon = "🖼️" if p[7] else ""
         rows += f"""<tr data-id='{p[0]}' class='product-row'>
-            <td class='handle'>☰</td>
-            <td data-label="ID">{p[0]}</td>
-            <td data-label="品名" class='search-key'>
-                <div class="prod-name">{p[1]} {img_icon}</div>
-                <div class="prod-cat">{p[3]} / {p[5]}</div>
-            </td>
+            <td class='handle'>☰</td><td data-label="ID">{p[0]}</td>
+            <td data-label="品名" class='search-key'><div class="prod-name">{p[1]} {img_icon}</div><div class="prod-cat">{p[3]} / {p[5]}</div></td>
             <td data-label="價格"><b>${p[2]}</b></td>
-            <td data-label="狀態">
-                <button onclick='toggleProduct({p[0]}, this)' id='status-{p[0]}' class='btn-sm {status_class}'>
-                    {status_text}
-                </button>
-            </td>
+            <td data-label="狀態"><button onclick='toggleProduct({p[0]}, this)' class='btn-sm {status_cls}'>{status_txt}</button></td>
             <td data-label="操作" class="actions">
-                <a href='/admin/edit_product/{p[0]}' class="btn-icon edit" title="編輯">✎</a>
-                <a href='/admin/delete_product/{p[0]}' class="btn-icon del" title="刪除" onclick='return confirm("確定要刪除 ID:{p[0]} 嗎？")'>✖</a>
-            </td>
-        </tr>"""
+                <a href='/admin/edit_product/{p[0]}' class="btn-icon edit">✎</a>
+                <a href='/admin/delete_product/{p[0]}' class="btn-icon del" onclick='return confirm("確定刪除?")'>✖</a>
+            </td></tr>"""
 
     return f"""
     <!DOCTYPE html>
     <html lang="zh-TW">
-    <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>餐廳管理後台</title>
+    <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>後台</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.14.0/Sortable.min.js"></script>
     <style>
-        :root {{ --primary: #9b4dca; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }}
-        body {{ background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding-bottom: 50px; }}
+        :root {{ --primary: #9b4dca; }}
+        body {{ background: #f4f5f7; padding-bottom: 50px; }}
         .container {{ max-width: 1000px; margin: 0 auto; padding: 20px; }}
-        .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 10px; }}
-        .header h2 {{ margin: 0; font-size: 2.4rem; color: var(--primary); font-weight: bold; }}
-        .nav-btn {{ background: #606c76; border-color: #606c76; padding: 0 20px; height: 38px; line-height: 38px; font-size: 1.4rem; text-transform: none; }}
-        .card {{ background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #eee; }}
-        .card h4 {{ border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 20px; color: #555; font-size: 1.8rem; font-weight: 600; }}
-        label {{ font-size: 1.3rem; color: #666; margin-bottom: 5px; }}
-        input[type="text"], input[type="number"], input[type="email"], input[type="password"], select {{ 
-            border: 1px solid #ddd; border-radius: 6px; height: 42px; background: #fff; 
-        }}
-        input:focus, select:focus {{ border-color: var(--primary); outline: none; }}
-        details {{ background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px; margin-top: 15px; transition: 0.2s; }}
-        details[open] {{ background: #fff; border-color: #ddd; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
-        summary {{ cursor: pointer; font-weight: bold; color: #666; padding: 5px; outline: none; list-style: none; }}
-        summary::-webkit-details-marker {{ display: none; }}
-        summary:after {{ content: "+"; float: right; font-weight: bold; }}
-        details[open] summary:after {{ content: "-"; }}
-        .lang-group {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; padding-top: 15px; }}
-        .btn-full {{ width: 100%; font-size: 1.6rem; height: 45px; }}
-        .btn-group {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }}
-        .btn-outline {{ background: transparent; color: #606c76; border: 1px solid #bbb; }}
-        .btn-danger {{ background: #ff4d4f; border-color: #ff4d4f; color: white; }}
-        .btn-primary {{ background: var(--primary); border-color: var(--primary); color: white; }}
-        .sticky-search {{ position: sticky; top: 0; z-index: 99; background: var(--card-bg); padding: 15px 0; border-bottom: 1px solid #eee; margin-bottom: 0; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-        thead th {{ border-bottom: 2px solid #eee; color: #888; font-size: 1.3rem; }}
-        td {{ padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #f5f5f5; }}
-        .handle {{ cursor: move; color: #ccc; font-size: 20px; user-select: none; width: 30px; }}
-        .handle:hover {{ color: var(--primary); }}
-        .prod-name {{ font-weight: bold; font-size: 1.5rem; color: #333; }}
-        .prod-cat {{ font-size: 1.2rem; color: #888; }}
-        .btn-sm {{ padding: 0 10px; height: 28px; line-height: 26px; font-size: 1.2rem; border-radius: 4px; border: 1px solid transparent; cursor: pointer; display: inline-block; }}
+        .card {{ background: #fff; border-radius: 12px; padding: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; }}
+        .btn-full {{ width: 100%; }} .btn-sm {{ padding: 0 10px; height: 28px; line-height: 26px; }}
         .status-on {{ background: #e6ffed; color: #28a745; border-color: #b7eb8f; }}
         .status-off {{ background: #fff1f0; color: #f5222d; border-color: #ffa39e; }}
-        .btn-icon {{ text-decoration: none; font-size: 1.6rem; padding: 5px; margin: 0 2px; transition: 0.2s; }}
-        .edit {{ color: #1890ff; }}
-        .del {{ color: #ff4d4f; }}
-        .btn-icon:hover {{ transform: scale(1.2); }}
-        .alert {{ padding: 12px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px; color: #0050b3; text-align: center; margin-bottom: 20px; display: none; }}
-        @media (max-width: 600px) {{
-            .header {{ flex-direction: column; align-items: stretch; text-align: center; }}
-            .nav-btn {{ margin-top: 10px; width: 100%; }}
-            table, thead, tbody, th, td, tr {{ display: block; }}
-            thead tr {{ position: absolute; top: -9999px; left: -9999px; }}
-            tr {{ background: #fff; border: 1px solid #eee; border-radius: 8px; margin-bottom: 15px; padding: 15px; position: relative; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }}
-            td {{ padding: 5px 0; border: none; display: flex; justify-content: space-between; align-items: center; }}
-            td:before {{ content: attr(data-label); font-weight: bold; color: #999; font-size: 1.2rem; margin-right: 15px; }}
-            .handle {{ position: absolute; top: 10px; right: 10px; width: auto; font-size: 24px; }}
-            .prod-name {{ font-size: 1.6rem; }}
-            td.handle:before, td.search-key:before {{ display: none; }}
-            td.search-key {{ display: block; margin-bottom: 10px; padding-right: 30px; }}
-            td.actions {{ justify-content: flex-end; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px; }}
+        .alert {{ padding: 12px; background: #e6f7ff; color: #0050b3; display: none; margin-bottom: 20px; border-radius: 6px; }}
+        table {{ width: 100%; margin-top: 10px; }}
+        @media (max-width: 600px) {{ 
+            table, thead, tbody, th, td, tr {{ display: block; }} thead tr {{ position: absolute; top: -9999px; }}
+            tr {{ margin-bottom: 15px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+            td {{ border: none; position: relative; padding-left: 0; }}
         }}
     </style>
-    </head>
-    <body>
-
+    </head><body>
     <div class="container">
-        <div class="header">
-            <h2>🍴 餐廳後台管理</h2>
-            <a href="/kitchen" class="button nav-btn">👨‍🍳 前往廚房看板</a>
-        </div>
-        
+        <h2>🍴 餐廳後台</h2><a href="/kitchen" class="button">👨‍🍳 廚房看板</a>
         <div id="status-msg" class="alert">{msg}</div>
-
         <div class="card">
-            <h4>⚙️ 系統設定</h4>
+            <h4>⚙️ 設定</h4>
             <form method="POST">
-                <div class="row">
-                    <div class="column">
-                        <label>日結報表收件人 (To)</label>
-                        <input type="email" name="report_email" value="{config.get('report_email','')}" placeholder="例如: yourname@gmail.com">
-                    </div>
-                    <div class="column">
-                        <label>寄件人 Email (From)</label>
-                        <input type="email" name="sender_email" value="{config.get('sender_email','')}" placeholder="預設: onboarding@resend.dev">
-                    </div>
-                </div>
-                <div class="row">
-                    <div class="column">
-                        <label>Resend API Key</label>
-                        <input type="password" name="resend_api_key" value="{config.get('resend_api_key','')}" placeholder="re_1234...">
-                    </div>
-                </div>
-                <div class="btn-group">
-                    <button type="submit" name="action" value="save_settings" class="button">💾 儲存設定</button>
-                    <button type="submit" name="action" value="test_email" class="button btn-outline">🧪 僅測試 (不儲存)</button>
-                </div>
+                <input type="email" name="report_email" value="{config.get('report_email','')}" placeholder="To Email">
+                <input type="email" name="sender_email" value="{config.get('sender_email','')}" placeholder="From Email">
+                <input type="password" name="resend_api_key" value="{config.get('resend_api_key','')}" placeholder="API Key">
+                <button type="submit" name="action" value="save_settings">💾 儲存</button>
+                <button type="submit" name="action" value="test_email" class="button button-outline">🧪 測試</button>
             </form>
             <hr>
-            <form method="POST">
-                 <div style="display:flex; justify-content:flex-end;">
-                    <button type="submit" name="action" value="send_report_now" class="button btn-primary" onclick="return confirm('確定要立刻發送今日營收報表(使用已儲存的設定)嗎？')">📊 手動發送今日報表</button>
-                 </div>
-            </form>
+            <form method="POST"><button type="submit" name="action" value="send_report_now">📊 發送報表</button></form>
         </div>
-
         <div class="card">
-            <h4>➕ 新增產品項目</h4>
+            <h4>➕ 新增產品</h4>
             <form method="POST">
                 <input type="hidden" name="action" value="add_product">
-                
-                <div class="row">
-                    <div class="column column-60">
-                        <label>產品名稱 (中文)</label>
-                        <input type="text" name="name" required placeholder="例如：牛肉麵">
-                    </div>
-                    <div class="column column-20">
-                        <label>價格</label>
-                        <input type="number" name="price" required placeholder="150">
-                    </div>
-                    <div class="column column-20">
-                        <label>出單區</label>
-                        <select name="print_category">
-                            <option value="Noodle">🍜 麵台</option>
-                            <option value="Soup">🍲 湯台</option>
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="row">
-                    <div class="column">
-                        <label>前台分類 (中文)</label>
-                        <input type="text" name="category" placeholder="例如：主廚推薦">
-                    </div>
-                </div>
-
-                <div class="row">
-                    <div class="column">
-                        <label>圖片連結 (Image URL)</label>
-                        <input type="text" name="image_url" placeholder="https://example.com/image.jpg">
-                    </div>
-                </div>
-
-                <details>
-                    <summary>🌐 多國語言設定 (點擊展開)</summary>
-                    <div class="lang-group">
-                        <div>
-                            <label>🇺🇸 English Name</label>
-                            <input type="text" name="name_en">
-                            <input type="text" name="category_en" placeholder="Category EN">
-                        </div>
-                        <div>
-                            <label>🇯🇵 日本語 名称</label>
-                            <input type="text" name="name_jp">
-                            <input type="text" name="category_jp" placeholder="カテゴリ JP">
-                        </div>
-                        <div>
-                            <label>🇰🇷 한국어 이름</label>
-                            <input type="text" name="name_kr">
-                            <input type="text" name="category_kr" placeholder="카테고리 KR">
-                        </div>
-                    </div>
+                <div class="row"><div class="column"><input type="text" name="name" required placeholder="名稱"></div><div class="column"><input type="number" name="price" required placeholder="價格"></div></div>
+                <input type="text" name="category" placeholder="分類">
+                <input type="text" name="image_url" placeholder="圖片網址">
+                <details><summary>多國語言 / 選項</summary>
+                    <input type="text" name="name_en" placeholder="Name EN"><input type="text" name="name_jp" placeholder="Name JP">
+                    <input type="text" name="custom_options" placeholder="選項 (如: 加辣)">
                 </details>
-
-                <details>
-                    <summary>🔧 客製化選項 (點擊展開)</summary>
-                    <div class="lang-group">
-                        <div>
-                            <label>中文選項 (逗號分隔)</label>
-                            <input type="text" name="custom_options" placeholder="如: 加麵,不蔥">
-                        </div>
-                        <div>
-                            <label>🇺🇸 Options</label>
-                            <input type="text" name="custom_options_en">
-                        </div>
-                        <div>
-                            <label>🇯🇵 オプション</label>
-                            <input type="text" name="custom_options_jp">
-                        </div>
-                        <div>
-                            <label>🇰🇷 옵션</label>
-                            <input type="text" name="custom_options_kr">
-                        </div>
-                    </div>
-                </details>
-
-                <button type="submit" class="button btn-full" style="margin-top:20px;">🚀 新增產品</button>
+                <button type="submit" class="button btn-full">🚀 新增</button>
             </form>
         </div>
-
         <div class="card">
-            <h4>📋 菜單管理與排序</h4>
-            <div class="sticky-search">
-                <input type="text" id="productSearch" placeholder="🔍 輸入關鍵字搜尋產品..." style="margin-bottom:0; width:100%;">
-            </div>
-            <div style="overflow-x: auto;">
-                <table id="menu-table">
-                    <thead>
-                        <tr>
-                            <th style="width:50px;">排序</th>
-                            <th style="width:50px;">ID</th>
-                            <th>品項資訊</th>
-                            <th>價格</th>
-                            <th>狀態</th>
-                            <th style="text-align:right;">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="menu-list">
-                        {rows}
-                    </tbody>
-                </table>
-            </div>
+            <h4>📋 菜單管理</h4>
+            <input type="text" id="productSearch" placeholder="搜尋...">
+            <table>
+                <thead><tr><th width="50">排序</th><th width="50">ID</th><th>品項</th><th>價格</th><th>狀態</th><th>操作</th></tr></thead>
+                <tbody id="menu-list">{rows}</tbody>
+            </table>
             <hr>
-            <h4>📦 資料庫操作</h4>
-            <div class="btn-group">
-                <a href="/admin/export_menu" class="button btn-outline">📤 匯出 Excel</a>
-                <form action="/admin/import_menu" method="POST" enctype="multipart/form-data" style="display:inline-flex; gap:5px; align-items:center;">
-                    <input type="file" name="menu_file" required style="width:200px; height:38px; padding:5px;">
-                    <button type="submit" class="button btn-outline">📥 匯入</button>
-                </form>
-                <div style="flex-grow:1; text-align:right;">
-                    <a href="/admin/reset_menu" class="button btn-danger" onclick="return confirm('⚠️ 警告：這將刪除所有菜單品項，確定嗎？')">🗑️ 清空菜單</a>
-                    <a href="/admin/reset_orders" class="button btn-danger" onclick="return confirm('⚠️ 警告：這將刪除所有訂單紀錄，確定嗎？')">💥 清空訂單</a>
-                </div>
+            <a href="/admin/export_menu" class="button button-outline">📤 匯出</a>
+            <form action="/admin/import_menu" method="POST" enctype="multipart/form-data" style="display:inline;">
+                <input type="file" name="menu_file" required> <button class="button button-outline">📥 匯入</button>
+            </form>
+            <div style="float:right;">
+                <a href="/admin/reset_menu" class="button" style="background:red;" onclick="return confirm('確定清空菜單?')">🗑️ 清菜單</a>
+                <a href="/admin/reset_orders" class="button" style="background:red;" onclick="return confirm('確定清空訂單?')">💥 清訂單</a>
             </div>
         </div>
-
     </div>
-
     <script>
-    const msgDiv = document.getElementById('status-msg');
-    if (msgDiv && msgDiv.innerText.trim() !== '') {{
-        msgDiv.style.display = 'block';
-        setTimeout(() => {{ msgDiv.style.opacity = '0'; }}, 3000);
-    }}
-
-    function toggleProduct(pid, btn) {{
-        fetch('/admin/toggle_product/' + pid, {{ method: 'POST' }})
-        .then(res => res.json())
-        .then(data => {{
-            if(data.status === 'success') {{
-                if(data.is_available) {{
-                    btn.innerText = '上架中';
-                    btn.className = 'btn-sm status-on';
-                }} else {{
-                    btn.innerText = '已下架';
-                    btn.className = 'btn-sm status-off';
-                }}
-            }}
-        }})
-        .catch(err => console.error('Error:', err));
-    }}
-
-    document.getElementById('productSearch').addEventListener('input', function(e) {{
-        let filter = e.target.value.toLowerCase();
-        document.querySelectorAll('.product-row').forEach(row => {{
-            let text = row.querySelector('.search-key').innerText.toLowerCase();
-            row.style.display = text.includes(filter) ? "" : "none";
-        }});
-    }});
-
-    Sortable.create(document.getElementById('menu-list'), {{
-        handle: '.handle', 
-        animation: 150,
-        ghostClass: 'blue-background-class',
-        onEnd: function() {{
-            let order = Array.from(document.querySelectorAll('#menu-list tr')).map(r => r.getAttribute('data-id'));
-            fetch('/admin/reorder_products', {{
-                method: 'POST', 
-                headers: {{'Content-Type':'application/json'}}, 
-                body: JSON.stringify({{order: order}})
+        const msg = document.getElementById('status-msg');
+        if(msg.innerText) {{ msg.style.display='block'; setTimeout(()=>msg.style.display='none',3000); }}
+        
+        function toggleProduct(pid, btn) {{
+            fetch('/admin/toggle_product/'+pid, {{method:'POST'}}).then(r=>r.json()).then(d=>{{
+                if(d.status==='success') {{ btn.className = d.is_available?'btn-sm status-on':'btn-sm status-off'; btn.innerText = d.is_available?'上架中':'已下架'; }}
             }});
         }}
-    }});
-    </script>
-    </body>
-    </html>
-    """
+        document.getElementById('productSearch').addEventListener('input', e=>{{
+            let v = e.target.value.toLowerCase();
+            document.querySelectorAll('.product-row').forEach(r=>r.style.display=r.innerText.toLowerCase().includes(v)?'':'none');
+        }});
+        Sortable.create(document.getElementById('menu-list'), {{
+            handle: '.handle', onEnd: function() {{
+                let order = Array.from(document.querySelectorAll('#menu-list tr')).map(r=>r.getAttribute('data-id'));
+                fetch('/admin/reorder_products', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{order:order}})}});
+            }}
+        }});
+    </script></body></html>
+    ""
 
 @app.route('/')
 def index():
