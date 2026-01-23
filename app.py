@@ -1601,7 +1601,8 @@ def send_daily_report(manual_config=None, is_test=False):
         else:
             print("📂 讀取資料庫設定進行發送")
             cur.execute("SELECT key, value FROM settings")
-            config = dict(cur.fetchall())
+            rows = cur.fetchall()
+            config = dict(rows) if rows else {}
             api_key = config.get('resend_api_key', '').strip()
             to_email = config.get('report_email', '').strip()
             sender_email = config.get('sender_email', '').strip()
@@ -1632,11 +1633,13 @@ def send_daily_report(manual_config=None, is_test=False):
 
             cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             v_res = cur.fetchone()
-            v_count, v_total = (v_res[0] or 0), (v_res[1] or 0)
+            v_count = v_res[0] if v_res and v_res[0] else 0
+            v_total = v_res[1] if v_res and v_res[1] else 0
             
             cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
             x_res = cur.fetchone()
-            x_count, x_total = (x_res[0] or 0), (x_res[1] or 0)
+            x_count = x_res[0] if x_res and x_res[0] else 0
+            x_total = x_res[1] if x_res and x_res[1] else 0
 
             cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
             valid_rows = cur.fetchall()
@@ -1712,17 +1715,19 @@ def async_send_report(app_instance, manual_config=None, is_test=False):
     with app_instance.app_context():
         send_daily_report(manual_config, is_test)
 
-# --- 補回缺失的路由 (匯出/匯入/重置) ---
+# --- 路由功能 (匯出/匯入/重置/產品管理) ---
 
 @app.route('/admin/export_menu')
 def export_menu():
     """匯出菜單為 Excel"""
     try:
         conn = get_db_connection()
+        # 使用 pandas 读取 SQL
         df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
         conn.close()
         
         output = io.BytesIO()
+        # 需要 openpyxl 庫
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
         output.seek(0)
@@ -1744,12 +1749,15 @@ def import_menu():
         if not file: return redirect(url_for('admin_panel', msg="❌ 無檔案"))
         
         df = pd.read_excel(file, engine='openpyxl')
+        # 將 NaN 轉為 None 以便 SQL 處理
         df = df.where(pd.notnull(df), None)
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         
         cnt = 0
         for _, p in df.iterrows():
             if not p.get('name'): continue
+            # 這裡就是關鍵的 INSERT 語法，必須包在 execute 字串內
             cur.execute("""
                 INSERT INTO products (
                     name, price, category, print_category, sort_order, is_available, image_url,
@@ -1764,70 +1772,150 @@ def import_menu():
                 p.get('custom_options'), p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr')
             ))
             cnt += 1
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return redirect(url_for('admin_panel', msg=f"✅ 匯入 {cnt} 筆成功"))
     except Exception as e:
         return redirect(url_for('admin_panel', msg=f"❌ 匯入失敗: {e}"))
 
 @app.route('/admin/reset_menu')
 def reset_menu():
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return redirect('/admin')
 
 @app.route('/admin/reset_orders')
 def reset_orders():
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return redirect('/admin')
-
-# --- 現有的 Admin API ---
 
 @app.route('/admin/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
     row = cur.fetchone()
     if row:
         new_s = not row[0]
+        # 注意：這裡的 SQL 必須在引號內
         cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         return jsonify({'status': 'success', 'is_available': new_s})
     conn.close()
     return jsonify({'status': 'error'}), 404
 
 @app.route('/admin/delete_product/<int:pid>')
 def delete_product(pid):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("DELETE FROM products WHERE id = %s", (pid,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return redirect(url_for('admin_panel', msg=f"🗑️ 產品 ID:{pid} 已刪除"))
 
 @app.route('/admin/reorder_products', methods=['POST'])
 def reorder_products():
     data = request.json
-    conn = get_db_connection(); cur = conn.cursor()
-    for idx, pid in enumerate(data.get('order', [])):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    order_list = data.get('order', [])
+    for idx, pid in enumerate(order_list):
+        # 注意：這裡的 SQL 必須在引號內
         cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (idx, pid))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({'status': 'success'})
 
-# --- Admin Panel ---
+@app.route('/admin/edit_product/<int:pid>', methods=['GET', 'POST'])
+def edit_product(pid):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    if request.method == 'POST':
+        cur.execute("""
+            UPDATE products SET 
+            name=%s, price=%s, category=%s, print_category=%s, image_url=%s,
+            name_en=%s, name_jp=%s, name_kr=%s,
+            category_en=%s, category_jp=%s, category_kr=%s,
+            custom_options=%s, custom_options_en=%s, custom_options_jp=%s, custom_options_kr=%s
+            WHERE id=%s
+        """, (
+            request.form.get('name'), request.form.get('price'), request.form.get('category'), 
+            request.form.get('print_category'), request.form.get('image_url'),
+            request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
+            request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
+            request.form.get('custom_options'), request.form.get('custom_options_en'), 
+            request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
+            pid
+        ))
+        conn.commit()
+        conn.close()
+        return redirect(url_for('admin_panel', msg="✅ 產品已更新"))
+
+    cur.execute("SELECT * FROM products WHERE id = %s", (pid,))
+    # 使用 DictCursor 比較方便，這裡手動轉 dict
+    columns = [desc[0] for desc in cur.description]
+    row = cur.fetchone()
+    conn.close()
+    
+    if not row: return "Product not found"
+    p = dict(zip(columns, row))
+    
+    # 簡單的編輯表單 HTML
+    return f"""
+    <!DOCTYPE html>
+    <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <style>.container {{ max-width: 800px; padding: 20px; }}</style></head>
+    <body><div class="container">
+        <h3>✏️ 編輯產品: {p.get('name')}</h3>
+        <form method="POST">
+            <div class="row"><div class="column"><label>名稱</label><input type="text" name="name" value="{p.get('name','')}"></div>
+            <div class="column"><label>價格</label><input type="number" name="price" value="{p.get('price','')}"></div></div>
+            <div class="row"><div class="column"><label>分類</label><input type="text" name="category" value="{p.get('category','')}"></div>
+            <div class="column"><label>出單區</label><select name="print_category">
+                <option value="Noodle" {'selected' if p.get('print_category')=='Noodle' else ''}>🍜 麵台</option>
+                <option value="Soup" {'selected' if p.get('print_category')=='Soup' else ''}>🍲 湯台</option>
+            </select></div></div>
+            <label>圖片網址</label><input type="text" name="image_url" value="{p.get('image_url','') or ''}">
+            
+            <details open><summary>多國語言與選項</summary>
+                <div class="row"><div class="column"><input type="text" name="name_en" value="{p.get('name_en','') or ''}" placeholder="Name EN"></div>
+                <div class="column"><input type="text" name="name_jp" value="{p.get('name_jp','') or ''}" placeholder="Name JP"></div></div>
+                <label>選項 (中文)</label><input type="text" name="custom_options" value="{p.get('custom_options','') or ''}">
+            </details>
+            <br>
+            <button type="submit">💾 儲存更新</button> <a href="/admin" class="button button-outline">取消</a>
+        </form>
+    </div></body></html>
+    """
+
+# --- Admin Panel 主頁面 ---
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     msg = request.args.get('msg', '') 
     
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'save_settings':
+            # 使用 Upsert (PostgreSQL 特有語法: ON CONFLICT)
             cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('report_email', request.form.get('report_email')))
             cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('sender_email', request.form.get('sender_email')))
             cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('resend_api_key', request.form.get('resend_api_key')))
-            conn.commit(); conn.close()
+            conn.commit()
+            conn.close()
             return redirect(url_for('admin_panel', msg="✅ 設定已儲存"))
         elif action == 'test_email':
             temp_config = {
@@ -1848,7 +1936,8 @@ def admin_panel():
                        (request.form.get('name'), request.form.get('price'), request.form.get('category'), request.form.get('print_category'), request.form.get('image_url'),
                         request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'), request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
                         request.form.get('custom_options'), request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr')))
-            conn.commit(); conn.close()
+            conn.commit()
+            conn.close()
             return redirect(url_for('admin_panel', msg="✅ 新增成功"))
 
     cur.execute("SELECT key, value FROM settings")
@@ -1962,7 +2051,7 @@ def admin_panel():
             }}
         }});
     </script></body></html>
-    ""
+    """
 
 @app.route('/')
 def index():
