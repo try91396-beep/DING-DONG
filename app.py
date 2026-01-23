@@ -949,13 +949,14 @@ def kitchen_panel():
             .btn-void { background: #d32f2f; width: 40px; } /* 小小的危險按鈕 */
             .nav-btn { background: #444; color: #fff; padding: 8px 15px; border-radius: 4px; text-decoration: none; font-size: 0.9rem; }
 
-            /* 音效橫幅 */
-            #audio-banner { 
-                background: var(--accent-red); color: white; text-align: center; 
+            /* 音效與狀態橫幅 */
+            #status-banner { 
+                background: #333; color: white; text-align: center; 
                 padding: 12px; font-weight: bold; cursor: pointer; 
                 position: sticky; top: 60px; z-index: 99;
-                animation: pulse 2s infinite;
+                display: flex; justify-content: center; align-items: center; gap: 10px;
             }
+            .pulse { animation: pulse 2s infinite; }
             @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.8; } 100% { opacity: 1; } }
         </style>
     </head>
@@ -969,7 +970,9 @@ def kitchen_panel():
         </div>
     </div>
 
-    <div id="audio-banner" onclick="enableAudio()">🔇 點擊此處開啟「新訂單語音通知」</div>
+    <div id="status-banner" class="pulse" onclick="enableAudio()" style="background: var(--accent-red);">
+        🔊 點擊此處啟用「自動列印」與「音效通知」
+    </div>
     
     <div id="order-grid" class="grid">
         <div style="grid-column:1/-1; text-align:center; padding:50px; color:#666;">
@@ -982,7 +985,13 @@ def kitchen_panel():
     </audio>
 
     <script>
-        let lastMaxSeq = 0, isFirstLoad = true, audioUnlocked = false;
+        let lastMaxSeq = 0;
+        let isFirstLoad = true;
+        let audioUnlocked = false;
+        
+        // --- 列印排隊系統 ---
+        let printQueue = [];
+        let isPrinting = false;
 
         function updateClock() {
             const now = new Date();
@@ -992,38 +1001,83 @@ def kitchen_panel():
 
         function enableAudio() { 
             audioUnlocked = true; 
-            document.getElementById('audio-banner').style.display = 'none'; 
+            const banner = document.getElementById('status-banner');
+            banner.style.background = '#4caf50'; // 轉為綠色
+            banner.innerText = '✅ 自動列印與音效已啟用';
+            banner.classList.remove('pulse');
+            
+            // 嘗試播放一次聲音以解鎖瀏覽器限制
             const audio = document.getElementById('notice-sound'); 
-            audio.play().then(() => { audio.pause(); audio.currentTime = 0; }); 
+            audio.play().then(() => { 
+                audio.pause(); 
+                audio.currentTime = 0; 
+            }).catch(e => console.log("Audio permission still needed"));
         }
 
         function action(url) { 
             fetch(url).then(() => { refreshOrders(); }); 
         }
 
+        // --- 核心：列印佇列處理 ---
+        function processPrintQueue() {
+            if (isPrinting || printQueue.length === 0) return; // 如果正在印或沒東西印，就停止
+
+            isPrinting = true;
+            const orderId = printQueue.shift(); // 取出第一個 ID
+
+            console.log("🖨️ 正在列印訂單 ID:", orderId);
+            
+            // 開啟列印視窗
+            const printWin = window.open('/print_order/' + orderId, '_blank');
+
+            // 給予 3 秒的緩衝時間，再印下一張 (避免瀏覽器攔截彈出視窗)
+            setTimeout(() => {
+                isPrinting = false;
+                processPrintQueue(); // 遞迴呼叫，處理下一張
+            }, 3000); 
+        }
+
         function refreshOrders() {
             fetch('/check_new_orders?current_seq=' + lastMaxSeq)
             .then(res => res.json())
             .then(data => {
+                // 更新畫面 HTML
                 if (data.html) document.getElementById('order-grid').innerHTML = data.html;
                 
+                // 處理新訂單 (排除第一次載入)
                 if (!isFirstLoad && data.new_ids && data.new_ids.length > 0) {
+                    
                     if (audioUnlocked) { 
+                        // 1. 播放音效
                         const audio = document.getElementById('notice-sound');
                         audio.currentTime = 0; 
-                        audio.play(); 
-                        data.new_ids.forEach(id => { 
-                            // 只有在瀏覽器沒阻擋彈出視窗時才有用，通常建議接實體出單機
-                            // window.open('/print_order/' + id, '_blank'); 
-                        }); 
+                        audio.play().catch(e => console.log("Audio play failed", e)); 
+
+                        // 2. 將新訂單加入列印排程
+                        console.log("📥 收到新訂單:", data.new_ids);
+                        data.new_ids.forEach(id => {
+                            // 避免重複加入 (防呆)
+                            if(!printQueue.includes(id)) {
+                                printQueue.push(id);
+                            }
+                        });
+
+                        // 3. 啟動列印處理器
+                        processPrintQueue();
+                    } else {
+                        console.log("⚠️ 收到新訂單但尚未啟用音效/列印權限");
                     }
                 }
-                lastMaxSeq = data.max_seq; 
+                
+                if (data.max_seq > 0) {
+                    lastMaxSeq = data.max_seq; 
+                }
                 isFirstLoad = false;
             })
             .catch(err => console.error("Polling error:", err));
         }
         
+        // 每 5 秒檢查一次
         setInterval(refreshOrders, 5000); 
         refreshOrders();
     </script>
@@ -1036,7 +1090,7 @@ def kitchen_panel():
 def check_new_orders():
     current_max = request.args.get('current_seq', 0, type=int)
     
-    # 1. 時間範圍計算 (維持原本邏輯)
+    # 1. 時間範圍計算 (鎖定台灣時間當日)
     utc_now = datetime.utcnow()
     tw_now = utc_now + timedelta(hours=8)
     tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1056,19 +1110,21 @@ def check_new_orders():
     """)
     orders = cur.fetchall()
     
-    # 3. 抓取最大序號
+    # 3. 抓取當日最大序號 (用於判斷是否有新單)
     cur.execute(f"SELECT MAX(daily_seq) FROM orders WHERE {time_filter}")
-    max_seq_val = cur.fetchone()[0] or 0
+    res_max = cur.fetchone()
+    max_seq_val = res_max[0] if res_max and res_max[0] else 0
     
-    # 4. 判斷新訂單
+    # 4. 判斷哪些是「新進」的訂單 ID
     new_order_ids = []
     if current_max > 0:
-        cur.execute(f"SELECT id FROM orders WHERE daily_seq > %s AND {time_filter}", (current_max,))
+        # 如果前端傳來的 current_max 是 10，而現在 max 是 12，則抓出 11, 12
+        cur.execute(f"SELECT id FROM orders WHERE daily_seq > %s AND {time_filter} ORDER BY daily_seq ASC", (current_max,))
         new_order_ids = [r[0] for r in cur.fetchall()]
         
     conn.close()
 
-    # 5. 生成 HTML (優化版)
+    # 5. 生成 HTML
     html_content = ""
     if not orders: 
         html_content = "<div style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#666;'>🍽️ 目前沒有訂單，廚房休息中</div>"
@@ -1076,20 +1132,13 @@ def check_new_orders():
     for o in orders:
         oid, table, raw_items, total, status, created, order_lang, seq_num, c_json = o
         
-        # 狀態處理
         status_cls = status.lower()
         seq_str = f"#{seq_num:03d}"
         
-        # 時間顯示
         tw_time = created + timedelta(hours=8)
         time_str = tw_time.strftime('%H:%M')
         
-        # 標籤顯示文字
-        status_label = "待出餐"
-        if status == 'Completed': status_label = "已完成"
-        elif status == 'Cancelled': status_label = "已作廢"
-
-        # 解析餐點內容 (HTML 結構優化)
+        # 解析餐點內容
         items_html = ""
         try:
             if c_json:
@@ -1097,7 +1146,6 @@ def check_new_orders():
                 for item in cart:
                     name = item.get('name_zh', item.get('name', '商品'))
                     qty = item.get('qty', 1)
-                    # 處理選項
                     options = item.get('options_zh', item.get('options', []))
                     opts_html = ""
                     if options:
@@ -1114,16 +1162,13 @@ def check_new_orders():
                     </div>
                     """
             else: 
-                # 舊格式相容
                 clean_items = raw_items.replace("+", "<br>").replace("undefined", "")
                 items_html = f"<div class='item-row'>{clean_items}</div>"
         except: 
             items_html = f"<div style='color:red'>資料解析錯誤</div>"
             
-        # 按鈕區塊 (邏輯優化)
+        # 按鈕區塊
         buttons_html = ""
-        
-        # 只有「待處理」才顯示「完成」大按鈕
         if status == 'Pending': 
             buttons_html += f"""
             <button onclick='action("/kitchen/complete/{oid}")' class='btn btn-main'>
@@ -1136,14 +1181,12 @@ def check_new_orders():
             </div>
             """
         else:
-            # 已完成或作廢，只顯示補印
             buttons_html += f"""
             <div class="btn-group">
                 <a href='/print_order/{oid}' target='_blank' class='btn btn-print' style="width:100%">🖨️ 補印單據</a>
             </div>
             """
         
-        # 組合卡片 HTML
         html_content += f"""
         <div class="card {status_cls}">
             <div class="card-header">
