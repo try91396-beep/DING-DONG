@@ -110,7 +110,7 @@ def run_maintenance_tasks():
         # 防止 Render 休眠
         try:
             # 替換成你實際的 Render 網址
-            urllib.request.urlopen("https://qr-mbdv.onrender.com", timeout=10)
+            urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
             print(f"[{now}] ✅ Web Ping 成功")
         except Exception as e:
             print(f"[{now}] ❌ Web Ping 失敗: {e}")
