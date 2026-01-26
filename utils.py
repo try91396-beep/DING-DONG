@@ -1,135 +1,145 @@
 import json
 import urllib.request
+import urllib.error
 import threading
 import time
+import ssl
+import traceback
 from datetime import datetime, timedelta
 from database import get_db_connection
 
-# --- 1. Email 報告發送邏輯 ---
-def send_daily_report():
+# --- 1. Email 報告發送核心 ---
+def send_daily_report(manual_config=None, is_test=False):
+    """
+    發送日結報告。
+    :param manual_config: dict, 若提供則使用此設定 (後台測試用)，否則讀取 DB。
+    :param is_test: bool, 若為 True 則只發送測試內容。
+    """
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT key, value FROM settings")
-        config = dict(cur.fetchall())
+        # 決定設定來源
+        if manual_config:
+            config = manual_config
+        else:
+            cur.execute("SELECT key, value FROM settings")
+            config = dict(cur.fetchall())
+
         api_key = config.get('resend_api_key', '').strip()
         to_email = config.get('report_email', '').strip()
-        if not api_key or not to_email: 
-            print("❌ 未設定 Email 或 API Key，取消發送報表")
-            return
+        sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
 
-        # 計算台灣時間與 UTC 時間範圍
+        if not api_key or not to_email:
+            print("❌ 未設定 Email 或 API Key，取消發送")
+            return "❌ 設定不完整"
+
+        # 準備時間與內容
         utc_now = datetime.utcnow()
         tw_now = utc_now + timedelta(hours=8)
-        tw_start_of_day = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        tw_end_of_day = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
-
-        utc_start_query = tw_start_of_day - timedelta(hours=8)
-        utc_end_query = tw_end_of_day - timedelta(hours=8)
-        time_filter = f"created_at >= '{utc_start_query}' AND created_at <= '{utc_end_query}'"
-
-        # 抓取統計數據
-        cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
-        v_count, v_total = cur.fetchone()
-        
-        cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
-        x_count, x_total = cur.fetchone()
-
-        # 抓取並統計品項
-        cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
-        valid_rows = cur.fetchall()
-        
-        stats = {}
-        for r in valid_rows:
-            if not r[0]: continue
-            try:
-                items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
-                for i in items:
-                    name = i.get('name_zh', i.get('name', '未知'))
-                    qty = int(i.get('qty', 0))
-                    stats[name] = stats.get(name, 0) + qty
-            except: pass
-
         today_str = tw_now.strftime('%Y-%m-%d')
-        item_detail_text = "\n【品項銷量統計】\n" + "\n".join([f"• {k}: {v}" for k, v in stats.items()]) if stats else "\n(今日尚無有效銷量)\n"
 
-        email_content = f"""
-🍴 餐廳日結報表 ({today_str})
----------------------------------
-✅ 【有效營收】
-單量：{v_count or 0} 筆
-總額：${v_total or 0}
-{item_detail_text}
----------------------------------
-❌ 【作廢統計】
-單量：{x_count or 0} 筆
-總額：${x_total or 0}
----------------------------------
-報告產出時間：{tw_now.strftime('%Y-%m-%d %H:%M:%S')} (Taiwan Time)
+        if is_test:
+            subject = f"【測試】Resend API 設定確認 ({today_str})"
+            email_content = "✅ Resend API 連線成功！\n此為測試信件。"
+        else:
+            # 抓取正式數據
+            tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            tw_end = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            utc_start = tw_start - timedelta(hours=8)
+            utc_end = tw_end - timedelta(hours=8)
+            time_filter = f"created_at >= '{utc_start}' AND created_at <= '{utc_end}'"
+
+            # 統計數據
+            cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+            v_res = cur.fetchone()
+            v_count, v_total = (v_res[0] or 0), (v_res[1] or 0)
+
+            cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
+            x_res = cur.fetchone()
+            x_count, x_total = (x_res[0] or 0), (x_res[1] or 0)
+
+            # 品項統計
+            cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+            rows = cur.fetchall()
+            stats = {}
+            for r in rows:
+                if not r[0]: continue
+                try:
+                    items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                    if isinstance(items, dict): items = [items]
+                    for i in items:
+                        name = i.get('name_zh', i.get('name', '未知'))
+                        qty = int(i.get('qty', 0))
+                        stats[name] = stats.get(name, 0) + qty
+                except: pass
+            
+            item_text = "\n".join([f"• {k}: {v}" for k, v in stats.items()]) if stats else "(無銷量)"
+
+            subject = f"【日結單】{today_str} 營業報告"
+            email_content = f"""
+🍴 餐廳日結 ({today_str})
+------------------------
+✅ 有效: {v_count} 筆 (${v_total})
+{item_text}
+------------------------
+❌ 作廢: {x_count} 筆 (${x_total})
 """
-        # 發送請求至 Resend API
+
+        # 發送請求 (SSL Fix)
         payload = {
-            "from": config.get('sender_email', 'onboarding@resend.dev').strip(),
+            "from": sender_email,
             "to": [to_email],
-            "subject": f"【日結單】{today_str} 營業統計報告",
+            "subject": subject,
             "text": email_content
         }
         
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
         req = urllib.request.Request(
-            "https://api.resend.com/emails", 
+            "https://api.resend.com/emails",
             data=json.dumps(payload).encode('utf-8'),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, 
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             method='POST'
         )
-        with urllib.request.urlopen(req) as res:
-            print(f"[{tw_now}] ✅ 日結報表已發送至 {to_email}")
-            
-    except Exception as e:
-        print(f"❌ 報表發送失敗: {e}")
-    finally: 
-        cur.close(); conn.close()
+        
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
+            print(f"✅ Email 發送成功: {res.status}")
+            return "✅ 發送成功"
 
-# --- 2. 自動排程 (發信) ---
+    except Exception as e:
+        traceback.print_exc()
+        print(f"❌ Email 發送失敗: {e}")
+        return f"❌ 發送失敗: {str(e)}"
+    finally:
+        cur.close()
+        conn.close()
+
+# --- 2. 排程與背景任務 ---
 def scheduler_loop():
-    print("⏰ 排程執行緒已啟動 (Scheduler Started)")
+    print("⏰ 排程執行緒已啟動")
     last_sent_time = ""
     while True:
-        now_tw = datetime.utcnow() + timedelta(hours=8)
-        current_time = now_tw.strftime("%H:%M")
-        # 設定發信時間點
-        if current_time in ["13:00", "18:00", "20:30"] and current_time != last_sent_time:
-            send_daily_report()
-            last_sent_time = current_time
-        time.sleep(30)
-
-# --- 3. 背景維護工作 (防休眠) ---
-def run_maintenance_tasks():
-    print("🚀 背景維護執行緒已啟動 (Maintenance Started)")
-    while True:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 防止 Render 休眠
         try:
-            # 替換成你實際的 Render 網址
-            urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
-            print(f"[{now}] ✅ Web Ping 成功")
-        except Exception as e:
-            print(f"[{now}] ❌ Web Ping 失敗: {e}")
+            now_tw = datetime.utcnow() + timedelta(hours=8)
+            current_time = now_tw.strftime("%H:%M")
+            # 設定自動發信時間
+            if current_time in ["22:00"] and current_time != last_sent_time:
+                print(f"⏰ 時間到 ({current_time})，執行自動發信...")
+                send_daily_report()
+                last_sent_time = current_time
+            
+            # 防休眠 Ping (每 10 分鐘)
+            if now_tw.minute % 10 == 0 and now_tw.second < 10:
+                 # 請替換成您的 Render 網址
+                urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
+                
+        except Exception:
+            pass # 忽略連線錯誤，避免 thread 停止
+        time.sleep(10)
 
-        # 防止資料庫休眠 (Aiven Heartbeat)
-        try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.close(); conn.close()
-            print(f"[{now}] 💓 DB Heartbeat 成功")
-        except Exception as e:
-            print(f"[{now}] ❌ DB Heartbeat 失敗: {e}")
-
-        time.sleep(600)  # 每 10 分鐘執行一次
-
-# --- 4. 啟動所有背景任務 ---
 def start_background_tasks():
-    """在 app.py 中呼叫此函式即可啟動所有背景任務"""
-    # 使用 daemon=True 確保主程式關閉時，執行緒也會跟著關閉
-    threading.Thread(target=scheduler_loop, daemon=True).start()
-    threading.Thread(target=run_maintenance_tasks, daemon=True).start()
+    # 啟動守護執行緒 (Daemon Thread)，隨主程式結束
+    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t.start()
