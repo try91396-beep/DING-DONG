@@ -1,9 +1,18 @@
 from flask import Blueprint, render_template, request, jsonify
 import json
+# import logging  <-- [移除] 不再需要 logging 模組
 from datetime import datetime, timedelta
 from database import get_db_connection
 
+# [移除] logging.basicConfig 設定
+# 現在直接使用 print 輸出到 Console
+
 kitchen_bp = Blueprint('kitchen', __name__)
+
+# --- 輔助函式：取得當前台灣時間字串 (用於 Log) ---
+def get_current_time_str():
+    # 取得現在時間 (UTC+8) 並格式化
+    return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 # --- 輔助函式：計算台灣時間範圍 ---
 def get_tw_time_range(target_date_str=None, end_date_str=None):
@@ -81,8 +90,15 @@ def check_new_orders():
     # 條件：前端已知序號 > 0 (非首次載入) 且 資料庫序號 > 前端已知序號
     new_order_ids = []
     if current_max > 0 and max_seq_val > current_max:
-        cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at >= %s", (current_max, utc_start))
-        new_order_ids = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT id, daily_seq FROM orders WHERE daily_seq > %s AND created_at >= %s", (current_max, utc_start))
+        new_orders_data = cur.fetchall()
+        new_order_ids = [r[0] for r in new_orders_data]
+
+        # [修改] 改用 print 輸出 Log
+        if new_order_ids:
+            seq_list = [f"#{r[1]}" for r in new_orders_data]
+            now = get_current_time_str()
+            print(f"[{now}] 🔔 偵測到新訂單，準備觸發列印: {', '.join(seq_list)} (IDs: {new_order_ids})")
     
     conn.close()
 
@@ -170,6 +186,9 @@ def print_order(oid):
     
     if not order:
         conn.close()
+        # [修改] 改用 print 輸出 Warning
+        now = get_current_time_str()
+        print(f"[{now}] ⚠️ 列印失敗：找不到訂單 ID {oid}")
         return "訂單不存在", 404
     
     table_num, total_price, seq, content_json, created_at, status = order
@@ -177,6 +196,10 @@ def print_order(oid):
     
     # 時間調整
     time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+
+    # [修改] 改用 print 輸出 Log
+    now = get_current_time_str()
+    print(f"[{now}] 🖨️ 列印生成 | 序號: #{seq:03d} | 桌號: {table_num} | 模式: {print_type} | ID: {oid}")
 
     # 取得產品分類對照表
     cur.execute("SELECT name, print_category FROM products")
@@ -284,13 +307,23 @@ def print_order(oid):
 def complete_order(oid):
     c=get_db_connection(); cur=c.cursor()
     cur.execute("UPDATE orders SET status='Completed' WHERE id=%s",(oid,))
-    c.commit(); c.close(); return "OK"
+    c.commit(); c.close(); 
+    
+    # [修改] 改用 print 輸出 Log
+    now = get_current_time_str()
+    print(f"[{now}] ✅ 訂單完成: ID {oid}")
+    return "OK"
 
 @kitchen_bp.route('/cancel/<int:oid>')
 def cancel_order(oid):
     c=get_db_connection(); cur=c.cursor()
     cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,))
-    c.commit(); c.close(); return "OK"
+    c.commit(); c.close(); 
+    
+    # [修改] 改用 print 輸出 Log
+    now = get_current_time_str()
+    print(f"[{now}] 🗑️ 訂單作廢: ID {oid}")
+    return "OK"
 
 
 # --- 5. 日結報表與銷售排名 ---
