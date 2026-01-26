@@ -257,7 +257,6 @@ def sales_ranking():
                 stats[name] = stats.get(name, 0) + qty
         except: continue
         
-    # 這裡將 total_qty 改為 count 以符合前端需求
     sorted_data = [{"name": k, "count": v} for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True)]
     return jsonify(sorted_data)
 
@@ -288,10 +287,18 @@ def daily_report():
                 items = json.loads(r[0])
                 for i in items:
                     name = i.get('name_zh', i.get('name', '商品'))
-                    qty = int(float(i.get('qty', 0)))
-                    price = int(float(i.get('price', 0)))
+                    
+                    # 修正：若 qty 欄位不存在，預設應為 1 (原為 0 會導致金額為 0)
+                    qty_val = i.get('qty')
+                    qty = int(float(qty_val)) if qty_val is not None else 1
+                    
+                    # 修正：確保 price 欄位讀取正確
+                    price_val = i.get('price')
+                    price = int(float(price_val)) if price_val is not None else 0
+                    
                     if name not in res: res[name] = {'qty':0, 'amt':0}
-                    res[name]['qty'] += qty; res[name]['amt'] += (qty * price)
+                    res[name]['qty'] += qty
+                    res[name]['amt'] += (qty * price)
             except: continue
         return res
 
