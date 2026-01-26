@@ -130,72 +130,199 @@ def check_new_orders():
         
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 
-# --- 3. 補印功能 (整合分區列印) ---
+# --- 3. 補印功能 (整合分區列印 - 80mm 加大字體版) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     print_type = request.args.get('type', 'all')
-    conn = get_db_connection(); cur = conn.cursor()
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT table_number, total_price, daily_seq, content_json, created_at, status FROM orders WHERE id=%s", (oid,))
     order = cur.fetchone()
+    
     if not order:
-        conn.close(); return "訂單不存在", 404
+        conn.close()
+        return "訂單不存在", 404
     
     table_num, total_price, seq, content_json, created_at, status = order
     items = json.loads(content_json) if content_json else []
+    
+    # 時間調整
     time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
+    # 取得產品分類對照表
     cur.execute("SELECT name, print_category FROM products")
     product_map = {row[0]: row[1] for row in cur.fetchall()}
     conn.close()
 
+    # 分類邏輯
     noodle_items, soup_items, other_items = [], [], []
     for item in items:
         p_name = item.get('name_zh') or item.get('name')
-        p_cat = product_map.get(p_name, 'Noodle')
+        p_cat = product_map.get(p_name, 'Noodle') # 預設為麵區
+        
         if p_cat == 'Noodle': noodle_items.append(item)
         elif p_cat == 'Soup': soup_items.append(item)
         else: other_items.append(item)
 
+    # --- CSS 樣式設定 (針對 80mm 優化) ---
     style = """
     <style>
-        body { font-family: 'Microsoft JhengHei', sans-serif; width: 58mm; margin: 0; padding: 2mm; }
-        .ticket { border-bottom: 2px dashed #000; padding: 10px 0; page-break-after: always; position: relative; }
-        .void-watermark { position: absolute; top: 40%; left: 10%; font-size: 40px; color: rgba(255,0,0,0.3); transform: rotate(-30deg); border: 4px solid rgba(255,0,0,0.3); padding: 5px; z-index: 100; pointer-events: none; }
-        .head { text-align: center; }
-        .head h1 { font-size: 40px; margin: 5px 0; }
-        .head h2 { font-size: 18px; margin: 0; background: #333; color: #fff; padding: 2px; }
-        .info { font-size: 14px; font-weight: bold; margin-bottom: 5px; }
-        .item { display: flex; justify-content: space-between; font-size: 17px; font-weight: bold; margin: 4px 0; }
-        .opt { font-size: 13px; color: #666; padding-left: 10px; margin-bottom: 5px; border-left: 2px solid #ccc; }
-        .total { text-align: right; font-size: 18px; font-weight: bold; margin-top: 10px; border-top: 1px solid #000; }
+        body { 
+            font-family: 'Microsoft JhengHei', sans-serif; 
+            width: 76mm; /* 80mm 紙張的安全列印寬度 */
+            margin: 0; 
+            padding: 2px; 
+            color: #000;
+        }
+        .ticket { 
+            border-bottom: 3px dashed #000; 
+            padding: 10px 0; 
+            page-break-after: always; 
+            position: relative; 
+        }
+        .void-watermark { 
+            position: absolute; top: 30%; left: 5%; 
+            font-size: 50px; color: rgba(0,0,0,0.2); 
+            transform: rotate(-30deg); border: 5px solid rgba(0,0,0,0.2); 
+            padding: 10px; z-index: 100; pointer-events: none; 
+            font-weight: 900;
+        }
+        .head { text-align: center; margin-bottom: 10px; }
+        .head h2 { 
+            font-size: 22px; 
+            margin: 0; 
+            background: #000; 
+            color: #fff; 
+            padding: 5px; 
+            border-radius: 4px;
+        }
+        .head h1 { 
+            font-size: 48px; /* 單號超大 */
+            margin: 5px 0; 
+            line-height: 1;
+        }
+        
+        /* 桌號區塊優化 */
+        .info-box {
+            border-bottom: 3px solid #000;
+            padding-bottom: 5px;
+            margin-bottom: 10px;
+        }
+        .table-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        .table-label { font-size: 20px; font-weight: bold; }
+        .table-val { 
+            font-size: 36px; /* 桌號加大 */
+            font-weight: 900; 
+        }
+        .time-row {
+            font-size: 14px;
+            text-align: right;
+            margin-top: 2px;
+        }
+
+        /* 品項樣式 */
+        .item-row { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: flex-start;
+            margin-top: 10px;
+            line-height: 1.2;
+        }
+        .item-name {
+            font-size: 24px; /* 品項加大 */
+            font-weight: 900;
+            width: 85%;
+        }
+        .item-qty {
+            font-size: 24px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        /* 客製化選項樣式 */
+        .opt { 
+            font-size: 18px; /* 客製化加大 */
+            font-weight: bold; 
+            color: #000; /* 改為純黑，避免熱感應印不清楚 */
+            padding-left: 15px; 
+            margin-top: 2px;
+            margin-bottom: 5px; 
+        }
+
+        .total { 
+            text-align: right; 
+            font-size: 24px; 
+            font-weight: 900; 
+            margin-top: 15px; 
+            padding-top: 10px;
+            border-top: 2px solid #000; 
+        }
     </style>
     """
 
     def generate_html(title, item_list, is_receipt=False):
         if not item_list: return ""
+        
         void_mark = "<div class='void-watermark'>作廢單</div>" if status == 'Cancelled' else ""
+        
+        # 標題與單號
         h = f"<div class='ticket'>{void_mark}<div class='head'><h2>{title}</h2><h1>#{seq:03d}</h1></div>"
-        h += f"<div class='info'>桌號: {table_num}<br>時間: {time_str}</div><hr style='border:0; border-top:1px solid #000;'>"
+        
+        # 桌號與時間區塊
+        h += f"""
+        <div class='info-box'>
+            <div class='table-row'>
+                <span class='table-label'>桌號 Table</span>
+                <span class='table-val'>{table_num}</span>
+            </div>
+            <div class='time-row'>{time_str}</div>
+        </div>
+        """
+        
+        # 品項列表
         for i in item_list:
-            name = i.get('name_zh') or i.get('name'); qty = i.get('qty', 1)
+            name = i.get('name_zh') or i.get('name')
+            qty = i.get('qty', 1)
             opts = i.get('options_zh') or i.get('options', [])
-            h += f"<div class='item'><span>{name}</span><span>x{qty}</span></div>"
-            if opts: h += f"<div class='opt'>└ {', '.join(opts)}</div>"
-        if is_receipt: h += f"<div class='total'>總計: ${int(total_price)}</div>"
+            
+            h += f"""
+            <div class='item-row'>
+                <span class='item-name'>{name}</span>
+                <span class='item-qty'>x{qty}</span>
+            </div>
+            """
+            
+            if opts:
+                # 每個選項換行顯示，比較清楚，或者用逗號分隔
+                opt_str = ', '.join(opts)
+                h += f"<div class='opt'>└ {opt_str}</div>"
+        
+        # 結帳單才顯示總金額
+        if is_receipt: 
+            h += f"<div class='total'>總計 Total: ${int(total_price)}</div>"
+            
         return h + "</div>"
 
     content = ""
-    if print_type == 'receipt': content = generate_html("結帳單 (Receipt)", items, is_receipt=True)
+    
+    if print_type == 'receipt': 
+        content = generate_html("結帳單 Receipt", items, is_receipt=True)
     elif print_type == 'kitchen':
-        content += generate_html("廚房單 - 面區", noodle_items)
+        content += generate_html("廚房單 - 麵區", noodle_items)
         content += generate_html("廚房單 - 湯區", soup_items)
         content += generate_html("廚房單 - 其他", other_items)
     else: # all
-        content = generate_html("結帳單 (Receipt)", items, is_receipt=True)
-        content += generate_html("廚房單 - 面區", noodle_items)
+        content = generate_html("結帳單 Receipt", items, is_receipt=True)
+        content += generate_html("廚房單 - 麵區", noodle_items)
         content += generate_html("廚房單 - 湯區", soup_items)
         content += generate_html("廚房單 - 其他", other_items)
 
+    # 加上自動列印與關閉視窗的 JS
     return f"<html><head>{style}</head><body onload='window.print();setTimeout(()=>window.close(),500);'>{content}</body></html>"
 
 # --- 4. 狀態變更 ---
@@ -344,3 +471,4 @@ def daily_report():
         </div>
     </body></html>
     """
+
