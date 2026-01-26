@@ -10,56 +10,10 @@ from flask import Blueprint, render_template, request, redirect, url_for, jsonif
 
 # 從資料庫模組匯入連線函式
 from database import get_db_connection 
-# 從 utils 匯入完整的日結報表功能
-from utils import send_daily_report as send_full_report
+# 從 utils 匯入 send_daily_report，統一由這裡處理發信 (包含測試與日結)
+from utils import send_daily_report
 
 admin_bp = Blueprint('admin', __name__)
-
-# --- 郵件發送功能 (整合 Utils 與 測試功能) ---
-def send_test_email(manual_config=None):
-    """
-    僅用於測試 API Key 連線設定是否正確。
-    真正的日結報表邏輯已移至 utils.py。
-    """
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        if manual_config:
-            config = manual_config
-        else:
-            cur.execute("SELECT key, value FROM settings")
-            config = dict(cur.fetchall())
-
-        api_key = config.get('resend_api_key', '').strip()
-        to_email = config.get('report_email', '').strip()
-        sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
-
-        if not api_key or not to_email:
-            return "❌ 未設定 Email 或 API Key"
-
-        tw_now = datetime.utcnow() + timedelta(hours=8)
-        today_str = tw_now.strftime('%Y-%m-%d %H:%M:%S')
-        
-        subject = f"【連線測試】Resend API 設定確認"
-        email_content = f"✅ Resend API 連線成功！\n測試時間: {today_str}\n\n若收到此信，代表您的 API Key 設定正確。"
-
-        payload = {"from": sender_email, "to": [to_email], "subject": subject, "text": email_content}
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            "https://api.resend.com/emails", 
-            data=json.dumps(payload).encode('utf-8'),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, 
-            method='POST'
-        )
-        with urllib.request.urlopen(req, context=ctx) as res:
-            return "✅ 測試信發送成功"
-    except Exception as e:
-        traceback.print_exc()
-        return f"❌ 發送錯誤: {str(e)}"
-    finally:
-        cur.close(); conn.close()
 
 # --- 路由：後台主面板 ---
 @admin_bp.route('/', methods=['GET', 'POST'])
@@ -72,18 +26,25 @@ def admin_panel():
         action = request.form.get('action')
         
         if action == 'save_settings':
-            # 儲存設定
+            # 1. 取得表單資料
             new_config = {}
             for k in ['report_email', 'sender_email', 'resend_api_key']:
                 val = request.form.get(k, '').strip()
-                cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, val))
                 new_config[k] = val
+                # 寫入資料庫
+                cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, val))
+            
             conn.commit()
             
-            # 如果使用者勾選了測試連線
+            # 2. 如果使用者勾選了「測試連線」
             if request.form.get('test_connection') == 'on':
-                test_result = send_test_email(manual_config=new_config)
-                return redirect(url_for('admin.admin_panel', msg=f"✅ 設定已儲存 / {test_result}"))
+                try:
+                    # 直接呼叫 utils.py 的函式，並傳入 manual_config 與 is_test=True
+                    # 這樣可以測試「剛輸入但尚未生效」的設定，並確保使用與日結單相同的 SSL 邏輯
+                    test_result = send_daily_report(manual_config=new_config, is_test=True)
+                    return redirect(url_for('admin.admin_panel', msg=f"✅ 設定已儲存 / {test_result}"))
+                except Exception as e:
+                    return redirect(url_for('admin.admin_panel', msg=f"✅ 設定已儲存 / ❌ 測試失敗: {str(e)}"))
             
             return redirect(url_for('admin.admin_panel', msg="✅ 設定已儲存"))
         
@@ -103,18 +64,19 @@ def admin_panel():
     conn.close()
     return render_template('admin.html', config=config, prods=prods, msg=msg)
 
-# --- 路由：手動觸發日結報表 (使用 utils.py) ---
+# --- 路由：手動觸發日結報表 ---
 @admin_bp.route('/manual_report')
 def manual_report():
     try:
-        # 呼叫 utils.py 中的完整報表邏輯
-        # 由於 utils 會直接發送並 print 結果，我們這裡假設它執行成功
-        # 若要更嚴謹，可以修改 utils 讓其回傳狀態，但在不改 utils 前提下，我們捕捉例外即可
-        send_full_report()
-        return redirect(url_for('admin.admin_panel', msg="✅ 日結報表已發送 (請檢查收件匣)"))
+        # 直接呼叫 utils.py 中的 send_daily_report
+        # 不需要手動處理 DB 連線或 SSL，utils 裡都做好了
+        result_msg = send_daily_report(is_test=False)
+        
+        # result_msg 會是 "✅ 發送成功" 或 "❌ ..."
+        return redirect(url_for('admin.admin_panel', msg=f"手動發送結果: {result_msg}"))
     except Exception as e:
         traceback.print_exc()
-        return redirect(url_for('admin.admin_panel', msg=f"❌ 發送失敗: {e}"))
+        return redirect(url_for('admin.admin_panel', msg=f"❌ 發送失敗 (系統錯誤): {str(e)}"))
 
 # --- 路由：編輯產品 (完整多國語言版) ---
 @admin_bp.route('/edit_product/<int:pid>', methods=['GET','POST'])
