@@ -1,20 +1,67 @@
 import io
-import pandas as pd
+import json
+import ssl
 import threading
+import urllib.request
 import traceback
-from flask import Blueprint, request, redirect, url_for, jsonify, send_file, current_app, render_template
+from datetime import datetime, timedelta
+import pandas as pd
+from flask import Blueprint, render_template, request, redirect, url_for, jsonify, send_file, current_app
 
-# 匯入資料庫連線模組
-from database import get_db_connection
+# 從資料庫模組匯入連線函式
+from database import get_db_connection 
+# 從 utils 匯入完整的日結報表功能
+from utils import send_daily_report as send_full_report
 
-# 匯入 utils.py 中的發信函式
-# 注意：請確保 utils.py 檔案在同一層目錄下
-from utils import send_daily_report 
-
-# 定義 Blueprint
 admin_bp = Blueprint('admin', __name__)
 
-# --- 1. 後台主面板 (顯示列表與設定) ---
+# --- 郵件發送功能 (整合 Utils 與 測試功能) ---
+def send_test_email(manual_config=None):
+    """
+    僅用於測試 API Key 連線設定是否正確。
+    真正的日結報表邏輯已移至 utils.py。
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        if manual_config:
+            config = manual_config
+        else:
+            cur.execute("SELECT key, value FROM settings")
+            config = dict(cur.fetchall())
+
+        api_key = config.get('resend_api_key', '').strip()
+        to_email = config.get('report_email', '').strip()
+        sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
+
+        if not api_key or not to_email:
+            return "❌ 未設定 Email 或 API Key"
+
+        tw_now = datetime.utcnow() + timedelta(hours=8)
+        today_str = tw_now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        subject = f"【連線測試】Resend API 設定確認"
+        email_content = f"✅ Resend API 連線成功！\n測試時間: {today_str}\n\n若收到此信，代表您的 API Key 設定正確。"
+
+        payload = {"from": sender_email, "to": [to_email], "subject": subject, "text": email_content}
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://api.resend.com/emails", 
+            data=json.dumps(payload).encode('utf-8'),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, 
+            method='POST'
+        )
+        with urllib.request.urlopen(req, context=ctx) as res:
+            return "✅ 測試信發送成功"
+    except Exception as e:
+        traceback.print_exc()
+        return f"❌ 發送錯誤: {str(e)}"
+    finally:
+        cur.close(); conn.close()
+
+# --- 路由：後台主面板 ---
 @admin_bp.route('/', methods=['GET', 'POST'])
 def admin_panel():
     conn = get_db_connection()
@@ -24,101 +71,53 @@ def admin_panel():
     if request.method == 'POST':
         action = request.form.get('action')
         
-        # [功能 1] 儲存設定
         if action == 'save_settings':
-            settings = {
-                'report_email': request.form.get('report_email', '').strip(),
-                'sender_email': request.form.get('sender_email', '').strip(),
-                'resend_api_key': request.form.get('resend_api_key', '').strip()
-            }
-            try:
-                for k, v in settings.items():
-                    # 使用 Upsert 語法確保設定值被更新或插入
-                    cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, v))
-                conn.commit()
-                msg = "✅ 設定已儲存"
-            except Exception as e:
-                conn.rollback()
-                msg = f"❌ 設定儲存失敗: {e}"
-            finally:
-                conn.close()
-            return redirect(url_for('admin.admin_panel', msg=msg))
+            # 儲存設定
+            new_config = {}
+            for k in ['report_email', 'sender_email', 'resend_api_key']:
+                val = request.form.get(k, '').strip()
+                cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, val))
+                new_config[k] = val
+            conn.commit()
+            
+            # 如果使用者勾選了測試連線
+            if request.form.get('test_connection') == 'on':
+                test_result = send_test_email(manual_config=new_config)
+                return redirect(url_for('admin.admin_panel', msg=f"✅ 設定已儲存 / {test_result}"))
+            
+            return redirect(url_for('admin.admin_panel', msg="✅ 設定已儲存"))
         
-        # [功能 2] 測試發信 (串接 utils.send_daily_report)
-        elif action == 'test_email':
-            # 組裝臨時設定，不讀取資料庫，直接用表單的輸入值進行測試
-            temp_config = {
-                'report_email': request.form.get('report_email'),
-                'sender_email': request.form.get('sender_email'),
-                'resend_api_key': request.form.get('resend_api_key')
-            }
-            conn.close() # 釋放連線，讓背景執行緒自己建立
-            
-            # 啟動背景執行緒發信，傳入 manual_config=temp_config, is_test=True
-            # 這樣 utils.send_daily_report 就會知道這是測試模式
-            threading.Thread(target=send_daily_report, kwargs={'manual_config': temp_config, 'is_test': True}).start()
-            
-            return redirect(url_for('admin.admin_panel', msg="🧪 測試信件發送請求已送出..."))
-
-        # [功能 3] 手動發送今日報表 (串接 utils.send_daily_report)
-        elif action == 'send_report_now':
-            conn.close() # 釋放連線
-            
-            # 啟動背景執行緒發信，傳入 manual_config=None (讀取 DB), is_test=False (正式報表)
-            threading.Thread(target=send_daily_report, kwargs={'manual_config': None, 'is_test': False}).start()
-            
-            return redirect(url_for('admin.admin_panel', msg="📊 正式報表發送請求已送出..."))
-
-        # [功能 4] 新增產品
         elif action == 'add_product':
-            try:
-                cur.execute("""
-                    INSERT INTO products (
-                        name, price, category, print_category, image_url, 
-                        name_en, name_jp, name_kr,
-                        category_en, category_jp, category_kr,
-                        custom_options, custom_options_en, custom_options_jp, custom_options_kr
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    request.form.get('name'), request.form.get('price'), request.form.get('category'), 
-                    request.form.get('print_category'), request.form.get('image_url'),
-                    request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
-                    request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
-                    request.form.get('custom_options'), request.form.get('custom_options_en'), 
-                    request.form.get('custom_options_jp'), request.form.get('custom_options_kr')
-                ))
-                conn.commit()
-                msg = "✅ 產品新增成功"
-            except Exception as e:
-                conn.rollback()
-                msg = f"❌ 新增失敗: {e}"
-            finally:
-                conn.close()
-            return redirect(url_for('admin.admin_panel', msg=msg))
+            cur.execute("""INSERT INTO products (name, price, category, print_category, image_url, name_en, name_jp, name_kr) 
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""", 
+                       (request.form.get('name'), request.form.get('price'), request.form.get('category'), 
+                        request.form.get('print_category'), request.form.get('image_url'),
+                        request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr')))
+            conn.commit()
+            return redirect(url_for('admin.admin_panel', msg="✅ 品項已新增"))
 
-    # --- GET 請求：讀取資料以顯示頁面 ---
-    try:
-        cur.execute("SELECT key, value FROM settings")
-        config = dict(cur.fetchall())
-        
-        cur.execute("""
-            SELECT id, name, price, category, is_available, print_category, sort_order, image_url 
-            FROM products ORDER BY sort_order ASC, id DESC
-        """)
-        prods = cur.fetchall()
-    except Exception as e:
-        msg = f"❌ 資料讀取錯誤: {e}"
-        config = {}
-        prods = []
-    finally:
-        conn.close()
-
-    # 渲染 admin.html 模板
+    cur.execute("SELECT key, value FROM settings")
+    config = dict(cur.fetchall())
+    cur.execute("SELECT id, name, price, category, is_available, print_category, sort_order, image_url, name_en, name_jp, name_kr FROM products ORDER BY sort_order ASC, id DESC")
+    prods = cur.fetchall()
+    conn.close()
     return render_template('admin.html', config=config, prods=prods, msg=msg)
 
+# --- 路由：手動觸發日結報表 (使用 utils.py) ---
+@admin_bp.route('/manual_report')
+def manual_report():
+    try:
+        # 呼叫 utils.py 中的完整報表邏輯
+        # 由於 utils 會直接發送並 print 結果，我們這裡假設它執行成功
+        # 若要更嚴謹，可以修改 utils 讓其回傳狀態，但在不改 utils 前提下，我們捕捉例外即可
+        send_full_report()
+        return redirect(url_for('admin.admin_panel', msg="✅ 日結報表已發送 (請檢查收件匣)"))
+    except Exception as e:
+        traceback.print_exc()
+        return redirect(url_for('admin.admin_panel', msg=f"❌ 發送失敗: {e}"))
 
-# --- 2. 編輯產品 (獨立頁面) ---
-@admin_bp.route('/edit_product/<int:pid>', methods=['GET', 'POST'])
+# --- 路由：編輯產品 (完整多國語言版) ---
+@admin_bp.route('/edit_product/<int:pid>', methods=['GET','POST'])
 def edit_product(pid):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -127,134 +126,129 @@ def edit_product(pid):
         try:
             cur.execute("""
                 UPDATE products SET 
-                name=%s, price=%s, category=%s, print_category=%s, image_url=%s,
+                name=%s, price=%s, category=%s, image_url=%s, custom_options=%s,
                 name_en=%s, name_jp=%s, name_kr=%s,
-                category_en=%s, category_jp=%s, category_kr=%s,
-                custom_options=%s, custom_options_en=%s, custom_options_jp=%s, custom_options_kr=%s
+                custom_options_en=%s, custom_options_jp=%s, custom_options_kr=%s,
+                print_category=%s, sort_order=%s,
+                category_en=%s, category_jp=%s, category_kr=%s
                 WHERE id=%s
             """, (
-                request.form.get('name'), request.form.get('price'), request.form.get('category'), 
-                request.form.get('print_category'), request.form.get('image_url'),
+                request.form.get('name'), request.form.get('price'), request.form.get('category'),
+                request.form.get('image_url'), request.form.get('custom_options'),
                 request.form.get('name_en'), request.form.get('name_jp'), request.form.get('name_kr'),
+                request.form.get('custom_options_en'), request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
+                request.form.get('print_category'), request.form.get('sort_order'),
                 request.form.get('category_en'), request.form.get('category_jp'), request.form.get('category_kr'),
-                request.form.get('custom_options'), request.form.get('custom_options_en'), 
-                request.form.get('custom_options_jp'), request.form.get('custom_options_kr'),
                 pid
             ))
             conn.commit()
             return redirect(url_for('admin.admin_panel', msg="✅ 產品已更新"))
         except Exception as e:
             conn.rollback()
+            traceback.print_exc()
             return f"Update Error: {e}"
         finally:
             conn.close()
 
-    # 讀取現有資料
-    cur.execute("SELECT * FROM products WHERE id = %s", (pid,))
-    if cur.description:
-        columns = [desc[0] for desc in cur.description]
-        row = cur.fetchone()
-    else:
-        row = None
-        
+    # 明確指定 SELECT 欄位順序
+    sql_query = """
+        SELECT 
+            id, name, price, category, image_url, 
+            custom_options, sort_order,
+            name_en, name_jp, name_kr,
+            custom_options_en, custom_options_jp, custom_options_kr,
+            print_category,
+            category_en, category_jp, category_kr
+        FROM products WHERE id=%s
+    """
+    cur.execute(sql_query, (pid,))
+    row = cur.fetchone()
     conn.close()
     
-    if not row: return "Product not found", 404
-    p = dict(zip(columns, row))
-    
-    # 內嵌簡單的 HTML 表單，方便直接使用
-    def v(key): return p.get(key, '') or ''
-    
+    if not row: return "找不到該產品", 404
+
+    # 建立絕對對應表
+    idx = {
+        'id': 0, 'name': 1, 'price': 2, 'category': 3, 'image_url': 4,
+        'custom_options': 5, 'sort_order': 6,
+        'name_en': 7, 'name_jp': 8, 'name_kr': 9,
+        'custom_options_en': 10, 'custom_options_jp': 11, 'custom_options_kr': 12,
+        'print_category': 13,
+        'category_en': 14, 'category_jp': 15, 'category_kr': 16
+    }
+
+    def v(key):
+        val = row[idx[key]]
+        return val if val is not None else ""
+
     return f"""
-    <!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <!DOCTYPE html><html><head><meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>編輯產品</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
-    <style>.container{{max-width:800px;padding:20px}}</style></head><body><div class="container">
-        <h3>✏️ 編輯產品: {v('name')}</h3>
-        <form method="POST">
-            <div class="row">
-                <div class="column"><label>名稱</label><input type="text" name="name" value="{v('name')}" required></div>
-                <div class="column"><label>價格</label><input type="number" name="price" value="{v('price')}" required></div>
-            </div>
-            <div class="row">
-                <div class="column"><label>分類</label><input type="text" name="category" value="{v('category')}"></div>
-                <div class="column"><label>出單區</label>
-                    <select name="print_category">
-                        <option value="Noodle" {'selected' if v('print_category')=='Noodle' else ''}>🍜 麵台</option>
-                        <option value="Soup" {'selected' if v('print_category')=='Soup' else ''}>🍲 湯台</option>
-                    </select>
-                </div>
-            </div>
-            <label>圖片 URL</label><input type="text" name="image_url" value="{v('image_url')}">
-            <details open><summary>多國語言與選項</summary>
+    <style>
+        body {{ padding: 20px; background: #f4f7f6; font-family: sans-serif; }}
+        .container {{ background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 900px; margin: auto; }}
+        h5 {{ background: #9b4dca; color: white; padding: 5px 10px; border-radius: 4px; margin-top: 25px; }}
+        label {{ font-weight: bold; margin-top: 10px; }}
+        hr {{ margin: 30px 0; }}
+        .row {{ margin-bottom: 1.5rem; }}
+    </style>
+    </head>
+    <body>
+        <div class="container">
+            <h3>📝 編輯產品 #{v('id')}</h3>
+            <form method="POST">
+                <h5>1. 基本資料 & 區域</h5>
                 <div class="row">
-                    <div class="column"><input type="text" name="name_en" value="{v('name_en')}" placeholder="Name EN"></div>
-                    <div class="column"><input type="text" name="name_jp" value="{v('name_jp')}" placeholder="Name JP"></div>
-                    <div class="column"><input type="text" name="name_kr" value="{v('name_kr')}" placeholder="Name KR"></div>
+                    <div class="column column-40"><label>名稱 (中文)</label><input type="text" name="name" value="{v('name')}" required></div>
+                    <div class="column"><label>價格</label><input type="number" name="price" value="{v('price')}" required></div>
+                    <div class="column"><label>排序</label><input type="number" name="sort_order" value="{v('sort_order')}"></div>
                 </div>
-                <label>選項 (中文)</label><input type="text" name="custom_options" value="{v('custom_options')}">
-            </details>
-            <br><button type="submit">💾 儲存</button> <a href="/admin" class="button button-outline">取消</a>
-        </form>
-    </div></body></html>
-    """
+                <div class="row">
+                    <div class="column">
+                        <label>出單區域</label>
+                        <select name="print_category">
+                            <option value="Noodle" {'selected' if v('print_category')=='Noodle' else ''}>🍜 麵區</option>
+                            <option value="Soup" {'selected' if v('print_category')=='Soup' else ''}>🍲 湯區</option>
+                        </select>
+                    </div>
+                    <div class="column column-67"><label>圖片 URL</label><input type="text" name="image_url" value="{v('image_url')}"></div>
+                </div>
 
-# --- 3. 匯出/匯入/重置/其他操作 ---
+                <h5>2. 分類多語翻譯 (Category)</h5>
+                <div class="row">
+                    <div class="column"><label>中文分類</label><input type="text" name="category" value="{v('category')}"></div>
+                    <div class="column"><label>English 分類</label><input type="text" name="category_en" value="{v('category_en')}"></div>
+                    <div class="column"><label>日本語 分類</label><input type="text" name="category_jp" value="{v('category_jp')}"></div>
+                    <div class="column"><label>한국어 分類</label><input type="text" name="category_kr" value="{v('category_kr')}"></div>
+                </div>
 
-@admin_bp.route('/export_menu')
-def export_menu():
-    try:
-        conn = get_db_connection()
-        # 利用 pandas 讀取 SQL 並轉為 DataFrame
-        df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
-        conn.close()
-        
-        # 寫入 Excel (需安裝 openpyxl)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        output.seek(0)
-        
-        return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="menu_export.xlsx")
-    except Exception as e:
-         return redirect(url_for('admin.admin_panel', msg=f"❌ 匯出失敗: {e}"))
+                <h5>3. 品名多語翻譯 (Name)</h5>
+                <div class="row">
+                    <div class="column"><label>English 品名</label><input type="text" name="name_en" value="{v('name_en')}"></div>
+                    <div class="column"><label>日本語 品名</label><input type="text" name="name_jp" value="{v('name_jp')}"></div>
+                    <div class="column"><label>한국어 品名</label><input type="text" name="name_kr" value="{v('name_kr')}"></div>
+                </div>
 
-@admin_bp.route('/import_menu', methods=['POST'])
-def import_menu():
-    try:
-        file = request.files.get('menu_file')
-        if not file: return redirect(url_for('admin.admin_panel', msg="❌ 無檔案"))
-        
-        df = pd.read_excel(file, engine='openpyxl')
-        df = df.where(pd.notnull(df), None) # 處理 NaN
-        conn = get_db_connection(); cur = conn.cursor()
-        
-        cnt = 0
-        for _, p in df.iterrows():
-            if not p.get('name'): continue
-            # 簡易匯入邏輯 (只示範主要欄位，可自行擴充)
-            cur.execute("INSERT INTO products (name, price, category, print_category) VALUES (%s, %s, %s, %s)", 
-                        (str(p.get('name')), p.get('price', 0), p.get('category'), p.get('print_category','Noodle')))
-            cnt += 1
-        conn.commit(); cur.close(); conn.close()
-        return redirect(url_for('admin.admin_panel', msg=f"✅ 匯入 {cnt} 筆成功"))
-    except Exception as e:
-        return redirect(url_for('admin.admin_panel', msg=f"❌ 匯入失敗: {e}"))
+                <h5>4. 客製化選項多語翻譯 (Options)</h5>
+                <label>中文選項 (例如: 加麵,去蔥)</label>
+                <input type="text" name="custom_options" value="{v('custom_options')}">
+                <div class="row">
+                    <div class="column"><label>English 客製化選項</label><input type="text" name="custom_options_en" value="{v('custom_options_en')}"></div>
+                    <div class="column"><label>日本語 客製化選項</label><input type="text" name="custom_options_jp" value="{v('custom_options_jp')}"></div>
+                    <div class="column"><label>한국어 客製化選項</label><input type="text" name="custom_options_kr" value="{v('custom_options_kr')}"></div>
+                </div>
 
-@admin_bp.route('/reset_menu')
-def reset_menu():
-    conn = get_db_connection(); cur = conn.cursor()
-    # TRUNCATE 會清空表格並重置 ID 計數
-    cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
-    return redirect(url_for('admin.admin_panel', msg="🗑️ 菜單已清空"))
+                <div style="margin-top:40px; text-align: right; border-top: 1px solid #eee; padding-top: 20px;">
+                    <a href="{url_for('admin.admin_panel')}" class="button button-outline">❌ 取消回後台</a>
+                    <button type="submit" style="margin-left:10px;">💾 儲存所有變更</button>
+                </div>
+            </form>
+        </div>
+    </body></html>"""
 
-@admin_bp.route('/reset_orders')
-def reset_orders():
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
-    conn.commit(); conn.close()
-    return redirect(url_for('admin.admin_panel', msg="💥 訂單已清空"))
-
+# --- 其他功能路由 ---
 @admin_bp.route('/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
     conn = get_db_connection(); cur = conn.cursor()
@@ -265,7 +259,6 @@ def toggle_product(pid):
         cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
         conn.commit(); conn.close()
         return jsonify({'status': 'success', 'is_available': new_s})
-    conn.close()
     return jsonify({'status': 'error'}), 404
 
 @admin_bp.route('/delete_product/<int:pid>')
@@ -283,3 +276,22 @@ def reorder_products():
         cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (idx, pid))
     conn.commit(); conn.close()
     return jsonify({'status': 'success'})
+
+# --- 新增：清空訂單功能 ---
+@admin_bp.route('/reset_orders')
+def reset_orders():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 清空 orders 資料表
+        # 注意：使用 DELETE 比較安全；若使用 PostgreSQL 且想重置 ID 可用 "TRUNCATE TABLE orders RESTART IDENTITY;"
+        cur.execute("DELETE FROM orders;") 
+        conn.commit()
+        msg = "✅ 所有歷史訂單已清空！"
+    except Exception as e:
+        conn.rollback()
+        msg = f"❌ 清空失敗: {e}"
+    finally:
+        cur.close()
+        conn.close()
+    return redirect(url_for('admin.admin_panel', msg=msg))
