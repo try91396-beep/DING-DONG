@@ -4,11 +4,14 @@ import threading
 import traceback
 from flask import Blueprint, request, redirect, url_for, jsonify, send_file, current_app, render_template
 
-# 匯入我們拆分出去的模組
+# 匯入資料庫連線模組
 from database import get_db_connection
+
+# 匯入 utils.py 中的發信函式
+# 注意：請確保 utils.py 檔案在同一層目錄下
 from utils import send_daily_report 
 
-# 定義藍圖
+# 定義 Blueprint
 admin_bp = Blueprint('admin', __name__)
 
 # --- 1. 後台主面板 (顯示列表與設定) ---
@@ -28,31 +31,43 @@ def admin_panel():
                 'sender_email': request.form.get('sender_email', '').strip(),
                 'resend_api_key': request.form.get('resend_api_key', '').strip()
             }
-            for k, v in settings.items():
-                cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, v))
-            conn.commit()
-            conn.close()
-            return redirect(url_for('admin.admin_panel', msg="✅ 設定已儲存"))
+            try:
+                for k, v in settings.items():
+                    # 使用 Upsert 語法確保設定值被更新或插入
+                    cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (k, v))
+                conn.commit()
+                msg = "✅ 設定已儲存"
+            except Exception as e:
+                conn.rollback()
+                msg = f"❌ 設定儲存失敗: {e}"
+            finally:
+                conn.close()
+            return redirect(url_for('admin.admin_panel', msg=msg))
         
-        # [功能 2] 測試發信 (使用 utils 的函式)
+        # [功能 2] 測試發信 (串接 utils.send_daily_report)
         elif action == 'test_email':
-            # 暫時組裝設定，不讀取資料庫，直接用表單的測試
+            # 組裝臨時設定，不讀取資料庫，直接用表單的輸入值進行測試
             temp_config = {
                 'report_email': request.form.get('report_email'),
                 'sender_email': request.form.get('sender_email'),
                 'resend_api_key': request.form.get('resend_api_key')
             }
-            conn.close()
-            # 啟動背景執行緒發信
-            threading.Thread(target=send_daily_report, args=(temp_config, True)).start()
-            return redirect(url_for('admin.admin_panel', msg="🧪 測試信件發送中..."))
+            conn.close() # 釋放連線，讓背景執行緒自己建立
+            
+            # 啟動背景執行緒發信，傳入 manual_config=temp_config, is_test=True
+            # 這樣 utils.send_daily_report 就會知道這是測試模式
+            threading.Thread(target=send_daily_report, kwargs={'manual_config': temp_config, 'is_test': True}).start()
+            
+            return redirect(url_for('admin.admin_panel', msg="🧪 測試信件發送請求已送出..."))
 
-        # [功能 3] 手動發送今日報表
+        # [功能 3] 手動發送今日報表 (串接 utils.send_daily_report)
         elif action == 'send_report_now':
-            conn.close()
-            # 傳入 None 讓函式去讀資料庫設定，False 代表正式報表
-            threading.Thread(target=send_daily_report, args=(None, False)).start()
-            return redirect(url_for('admin.admin_panel', msg="📊 報表發送中..."))
+            conn.close() # 釋放連線
+            
+            # 啟動背景執行緒發信，傳入 manual_config=None (讀取 DB), is_test=False (正式報表)
+            threading.Thread(target=send_daily_report, kwargs={'manual_config': None, 'is_test': False}).start()
+            
+            return redirect(url_for('admin.admin_panel', msg="📊 正式報表發送請求已送出..."))
 
         # [功能 4] 新增產品
         elif action == 'add_product':
@@ -81,19 +96,24 @@ def admin_panel():
                 conn.close()
             return redirect(url_for('admin.admin_panel', msg=msg))
 
-    # GET 請求：讀取資料以顯示
-    cur.execute("SELECT key, value FROM settings")
-    config = dict(cur.fetchall())
-    
-    cur.execute("""
-        SELECT id, name, price, category, is_available, print_category, sort_order, image_url 
-        FROM products ORDER BY sort_order ASC, id DESC
-    """)
-    prods = cur.fetchall()
-    conn.close()
+    # --- GET 請求：讀取資料以顯示頁面 ---
+    try:
+        cur.execute("SELECT key, value FROM settings")
+        config = dict(cur.fetchall())
+        
+        cur.execute("""
+            SELECT id, name, price, category, is_available, print_category, sort_order, image_url 
+            FROM products ORDER BY sort_order ASC, id DESC
+        """)
+        prods = cur.fetchall()
+    except Exception as e:
+        msg = f"❌ 資料讀取錯誤: {e}"
+        config = {}
+        prods = []
+    finally:
+        conn.close()
 
-    # 這裡假設您已經將原本很長的 HTML 移到了 templates/admin.html
-    # 如果還沒移，請暫時把原本 app.py 裡的 HTML string 貼回來這裡 return f"""..."""
+    # 渲染 admin.html 模板
     return render_template('admin.html', config=config, prods=prods, msg=msg)
 
 
@@ -131,15 +151,18 @@ def edit_product(pid):
 
     # 讀取現有資料
     cur.execute("SELECT * FROM products WHERE id = %s", (pid,))
-    columns = [desc[0] for desc in cur.description]
-    row = cur.fetchone()
+    if cur.description:
+        columns = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+    else:
+        row = None
+        
     conn.close()
     
     if not row: return "Product not found", 404
     p = dict(zip(columns, row))
     
-    # 為了方便，這裡保留內嵌 HTML (因為這是獨立的小頁面)
-    # 您也可以將其移至 templates/edit_product.html
+    # 內嵌簡單的 HTML 表單，方便直接使用
     def v(key): return p.get(key, '') or ''
     
     return f"""
@@ -181,12 +204,16 @@ def edit_product(pid):
 def export_menu():
     try:
         conn = get_db_connection()
+        # 利用 pandas 讀取 SQL 並轉為 DataFrame
         df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
         conn.close()
+        
+        # 寫入 Excel (需安裝 openpyxl)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
         output.seek(0)
+        
         return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="menu_export.xlsx")
     except Exception as e:
          return redirect(url_for('admin.admin_panel', msg=f"❌ 匯出失敗: {e}"))
@@ -198,13 +225,13 @@ def import_menu():
         if not file: return redirect(url_for('admin.admin_panel', msg="❌ 無檔案"))
         
         df = pd.read_excel(file, engine='openpyxl')
-        df = df.where(pd.notnull(df), None)
+        df = df.where(pd.notnull(df), None) # 處理 NaN
         conn = get_db_connection(); cur = conn.cursor()
         
         cnt = 0
         for _, p in df.iterrows():
             if not p.get('name'): continue
-            # 簡化版匯入 (只抓主要欄位，可自行擴充)
+            # 簡易匯入邏輯 (只示範主要欄位，可自行擴充)
             cur.execute("INSERT INTO products (name, price, category, print_category) VALUES (%s, %s, %s, %s)", 
                         (str(p.get('name')), p.get('price', 0), p.get('category'), p.get('print_category','Noodle')))
             cnt += 1
@@ -216,6 +243,7 @@ def import_menu():
 @admin_bp.route('/reset_menu')
 def reset_menu():
     conn = get_db_connection(); cur = conn.cursor()
+    # TRUNCATE 會清空表格並重置 ID 計數
     cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
     conn.commit(); conn.close()
     return redirect(url_for('admin.admin_panel', msg="🗑️ 菜單已清空"))
