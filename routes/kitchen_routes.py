@@ -1,18 +1,25 @@
 from flask import Blueprint, render_template, request, jsonify
 import json
 from datetime import datetime, timedelta
-from database import get_db_connection 
+from database import get_db_connection
 
 kitchen_bp = Blueprint('kitchen', __name__)
 
+# --- 輔助函式：計算台灣時間範圍 ---
 def get_tw_time_range(target_date_str=None, end_date_str=None):
-    """計算台灣時間的 UTC 起始與結束範圍 (支援報表與查詢)"""
+    """
+    計算台灣時間的 UTC 起始與結束範圍 (用於資料庫查詢)。
+    資料庫存 UTC，但查詢依據是台灣的「天」。
+    """
     try:
         if target_date_str:
+            # 使用者指定日期
             tw_start = datetime.strptime(target_date_str, '%Y-%m-%d')
         else:
+            # 預設為現在 (台灣時間)
             tw_start = datetime.utcnow() + timedelta(hours=8)
         
+        # 設定為當天 00:00:00
         tw_start = tw_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
         if end_date_str:
@@ -20,28 +27,38 @@ def get_tw_time_range(target_date_str=None, end_date_str=None):
         else:
             tw_end = tw_start
         
+        # 設定為當天 23:59:59
         tw_end = tw_end.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # 轉回 UTC 供資料庫查詢 (台灣時間 - 8小時)
         return tw_start - timedelta(hours=8), tw_end - timedelta(hours=8)
     except:
+        # 發生錯誤時的 fallback
         now = datetime.utcnow() + timedelta(hours=8)
         return now.replace(hour=0, minute=0, second=0) - timedelta(hours=8), \
                now.replace(hour=23, minute=59, second=59) - timedelta(hours=8)
+
 
 # --- 1. 廚房看板主頁 ---
 @kitchen_bp.route('/')
 def kitchen_panel():
     return render_template('kitchen.html')
 
-# --- 2. 檢查新訂單 API (含作廢單渲染邏輯) ---
+
+# --- 2. 檢查新訂單 API (核心功能：更新畫面 + 自動列印偵測) ---
 @kitchen_bp.route('/check_new_orders')
 def check_new_orders():
+    # 前端傳來它目前已知的最大序號 (若剛載入頁面則為 0)
     current_max = request.args.get('current_seq', 0, type=int)
+    
+    # 取得今日時間範圍
     utc_start, utc_end = get_tw_time_range()
 
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # 查詢當日所有訂單 (Pending, Completed, Cancelled)
+    # A. 查詢當日所有訂單 (用於刷新看板 HTML)
+    # 排序：Pending (0) -> Completed (1) -> Cancelled (2)，同狀態依序號倒序
     query = """
         SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json 
         FROM orders 
@@ -55,16 +72,21 @@ def check_new_orders():
     cur.execute(query, (utc_start, utc_end))
     orders = cur.fetchall()
     
+    # B. 取得目前資料庫中的「最大每日流水號」
     cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at >= %s AND created_at <= %s", (utc_start, utc_end))
     res_max = cur.fetchone()
     max_seq_val = res_max[0] if res_max and res_max[0] else 0
     
+    # C. 偵測需要「自動列印」的新訂單 ID
+    # 條件：前端已知序號 > 0 (非首次載入) 且 資料庫序號 > 前端已知序號
     new_order_ids = []
-    if current_max > 0:
+    if current_max > 0 and max_seq_val > current_max:
         cur.execute("SELECT id FROM orders WHERE daily_seq > %s AND created_at >= %s", (current_max, utc_start))
         new_order_ids = [r[0] for r in cur.fetchall()]
+    
     conn.close()
 
+    # D. 生成 HTML 卡片內容
     html_content = ""
     if not orders: 
         html_content = "<div id='loading-msg' style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#888;'>🍽️ 目前沒有訂單</div>"
@@ -74,7 +96,7 @@ def check_new_orders():
         status_cls = status.lower() # 'pending', 'completed', 'cancelled'
         tw_time = created + timedelta(hours=8)
         
-        # 處理品項 HTML
+        # 解析 JSON 品項
         items_html = ""
         try:
             cart = json.loads(c_json) if c_json else []
@@ -90,7 +112,7 @@ def check_new_orders():
         formatted_total = f"{int(total)}" 
         buttons = ""
 
-        # 根據狀態決定顯示樣式與按鈕
+        # 根據狀態生成按鈕
         if status == 'Pending':
             buttons += f"""
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px;">
@@ -105,7 +127,6 @@ def check_new_orders():
                 <button onclick='if(confirm(\"⚠️ 確定作廢此單？\")) action(\"/kitchen/cancel/{oid}\")' class='btn btn-void' style='background:#f44336; color:white; border:none; padding:8px; border-radius:4px;'>🗑️</button>
             </div>"""
         elif status == 'Cancelled':
-            # 作廢單按鈕區域 (僅保留補印，且文字提示已作廢)
             buttons += f"<div style='text-align:center; color:#d32f2f; font-weight:bold; margin-bottom:5px;'>【此單已作廢】</div>"
             buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; padding:8px; opacity:0.6;'>🖨️ 補印作廢單</button>"
         else: # Completed
@@ -117,9 +138,9 @@ def check_new_orders():
             """
             buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; padding:10px;'>🖨️ 補印單據</button>"
 
-        # 生成卡片，特別處理 cancelled class
+        # 組合單張卡片 HTML
         html_content += f"""
-        <div class="card {status_cls}" data-id="{oid}">
+        <div class="card {status_cls}" data-id="{oid}" style="background:white; border:1px solid #ddd; border-radius:8px; padding:15px; box-shadow:0 2px 5px rgba(0,0,0,0.1);">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:start; margin-bottom:10px; border-bottom:2px solid #eee; padding-bottom:5px;">
                 <div><div class="seq-num" style="font-size:1.5em; font-weight:900;">#{seq_num:03d}</div><div class="time-stamp" style="font-size:0.8em; color:#666;">{tw_time.strftime('%H:%M')} ({order_lang})</div></div>
                 <div class="table-num" style="background:#333; color:white; padding:4px 10px; border-radius:4px; font-weight:bold;">桌號 {table}</div>
@@ -128,11 +149,18 @@ def check_new_orders():
             <div class="actions" style="margin-top:15px;">{buttons}</div>
         </div>"""
         
-    return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
+    # 回傳 JSON 供前端 JS 使用
+    return jsonify({
+        'html': html_content, 
+        'max_seq': max_seq_val, 
+        'new_ids': new_order_ids
+    })
+
 
 # --- 3. 補印功能 (整合分區列印 - 80mm 加大字體版 - 桌號優化) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
+    # 參數 type: 'all' (預設), 'kitchen', 'receipt'
     print_type = request.args.get('type', 'all')
     
     conn = get_db_connection()
@@ -165,110 +193,42 @@ def print_order(oid):
         elif p_cat == 'Soup': soup_items.append(item)
         else: other_items.append(item)
 
-    # --- CSS 樣式設定 (針對 80mm 優化) ---
+    # --- CSS 樣式設定 (80mm) ---
     style = """
     <style>
         body { 
             font-family: 'Microsoft JhengHei', sans-serif; 
-            width: 76mm; /* 80mm 紙張的安全列印寬度 */
-            margin: 0; 
-            padding: 2px; 
-            color: #000;
+            width: 76mm; 
+            margin: 0; padding: 2px; color: #000;
         }
         .ticket { 
-            border-bottom: 3px dashed #000; 
-            padding: 10px 0; 
-            page-break-after: always; 
-            position: relative; 
+            border-bottom: 3px dashed #000; padding: 10px 0; 
+            page-break-after: always; position: relative; 
         }
         .void-watermark { 
             position: absolute; top: 30%; left: 5%; 
             font-size: 50px; color: rgba(0,0,0,0.2); 
             transform: rotate(-30deg); border: 5px solid rgba(0,0,0,0.2); 
-            padding: 10px; z-index: 100; pointer-events: none; 
-            font-weight: 900;
+            padding: 10px; z-index: 100; pointer-events: none; font-weight: 900;
         }
         .head { text-align: center; margin-bottom: 10px; }
-        .head h2 { 
-            font-size: 22px; 
-            margin: 0; 
-            background: #000; 
-            color: #fff; 
-            padding: 5px; 
-            border-radius: 4px;
-        }
-        .head h1 { 
-            font-size: 48px; /* 單號超大 */
-            margin: 5px 0; 
-            line-height: 1;
-        }
+        .head h2 { font-size: 22px; margin: 0; background: #000; color: #fff; padding: 5px; border-radius: 4px; }
+        .head h1 { font-size: 48px; margin: 5px 0; line-height: 1; }
         
-        /* --- 桌號區塊優化 (修改重點) --- */
-        .info-box {
-            border-bottom: 3px solid #000;
-            padding-bottom: 5px;
-            margin-bottom: 10px;
-        }
-        .table-row {
-            display: flex;
-            /* 修改處：改為 center 讓兩者置中緊鄰，不要用 space-between */
-            justify-content: center; 
-            align-items: baseline; /* 讓文字底部對齊 */
-            gap: 15px; /* 設定文字與數字之間的距離 */
-        }
-        .table-label { 
-            font-size: 24px; /* 標籤稍微加大 */
-            font-weight: bold; 
-        }
-        .table-val { 
-            font-size: 42px; /* 桌號數字再加大 */
-            font-weight: 900; 
-            line-height: 1;
-        }
-        .time-row {
-            font-size: 14px;
-            text-align: center; /* 時間也置中比較好看 */
-            margin-top: 5px;
-        }
-        /* --------------------------- */
+        /* 桌號區塊優化 */
+        .info-box { border-bottom: 3px solid #000; padding-bottom: 5px; margin-bottom: 10px; }
+        .table-row { display: flex; justify-content: center; align-items: baseline; gap: 15px; }
+        .table-label { font-size: 24px; font-weight: bold; }
+        .table-val { font-size: 42px; font-weight: 900; line-height: 1; }
+        .time-row { font-size: 14px; text-align: center; margin-top: 5px; }
 
         /* 品項樣式 */
-        .item-row { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: flex-start;
-            margin-top: 10px;
-            line-height: 1.2;
-        }
-        .item-name {
-            font-size: 24px; /* 品項加大 */
-            font-weight: 900;
-            width: 85%;
-        }
-        .item-qty {
-            font-size: 24px;
-            font-weight: 900;
-            white-space: nowrap;
-        }
+        .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
+        .item-name { font-size: 24px; font-weight: 900; width: 85%; }
+        .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
+        .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
 
-        /* 客製化選項樣式 */
-        .opt { 
-            font-size: 18px; /* 客製化加大 */
-            font-weight: bold; 
-            color: #000; 
-            padding-left: 15px; 
-            margin-top: 2px;
-            margin-bottom: 5px; 
-        }
-
-        .total { 
-            text-align: right; 
-            font-size: 24px; 
-            font-weight: 900; 
-            margin-top: 15px; 
-            padding-top: 10px; 
-            border-top: 2px solid #000; 
-        }
+        .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
     </style>
     """
 
@@ -277,11 +237,8 @@ def print_order(oid):
         
         void_mark = "<div class='void-watermark'>作廢單</div>" if status == 'Cancelled' else ""
         
-        # 標題與單號
         h = f"<div class='ticket'>{void_mark}<div class='head'><h2>{title}</h2><h1>#{seq:03d}</h1></div>"
         
-        # 桌號與時間區塊
-        # 修改：移除了 space-between，透過 CSS 讓它們靠在一起
         h += f"""
         <div class='info-box'>
             <div class='table-row'>
@@ -292,38 +249,28 @@ def print_order(oid):
         </div>
         """
         
-        # 品項列表
         for i in item_list:
             name = i.get('name_zh') or i.get('name')
             qty = i.get('qty', 1)
             opts = i.get('options_zh') or i.get('options', [])
             
-            h += f"""
-            <div class='item-row'>
-                <span class='item-name'>{name}</span>
-                <span class='item-qty'>x{qty}</span>
-            </div>
-            """
-            
+            h += f"<div class='item-row'><span class='item-name'>{name}</span><span class='item-qty'>x{qty}</span></div>"
             if opts:
-                opt_str = ', '.join(opts)
-                h += f"<div class='opt'>└ {opt_str}</div>"
+                h += f"<div class='opt'>└ {', '.join(opts)}</div>"
         
-        # 結帳單才顯示總金額
         if is_receipt: 
             h += f"<div class='total'>總計 Total: ${int(total_price)}</div>"
             
         return h + "</div>"
 
     content = ""
-    
     if print_type == 'receipt': 
         content = generate_html("結帳單 Receipt", items, is_receipt=True)
     elif print_type == 'kitchen':
         content += generate_html("廚房單 - 麵區", noodle_items)
         content += generate_html("廚房單 - 湯區", soup_items)
         content += generate_html("廚房單 - 其他", other_items)
-    else: # all
+    else: # all (自動列印通常走這裡)
         content = generate_html("結帳單 Receipt", items, is_receipt=True)
         content += generate_html("廚房單 - 麵區", noodle_items)
         content += generate_html("廚房單 - 湯區", soup_items)
@@ -331,7 +278,8 @@ def print_order(oid):
 
     return f"<html><head>{style}</head><body onload='window.print();setTimeout(()=>window.close(),500);'>{content}</body></html>"
 
-# --- 4. 狀態變更 ---
+
+# --- 4. 狀態變更 (完成/作廢) ---
 @kitchen_bp.route('/complete/<int:oid>')
 def complete_order(oid):
     c=get_db_connection(); cur=c.cursor()
@@ -344,10 +292,10 @@ def cancel_order(oid):
     cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,))
     c.commit(); c.close(); return "OK"
 
+
 # --- 5. 日結報表與銷售排名 ---
 @kitchen_bp.route('/sales_ranking')
 def sales_ranking():
-    # 支援來自 datetime-local 的 ISO 格式 (YYYY-MM-DDTHH:MM) 或舊版的日期格式
     start_time_str = request.args.get('start_time') or request.args.get('start')
     end_time_str = request.args.get('end_time') or request.args.get('end')
     
@@ -356,22 +304,12 @@ def sales_ranking():
     # 嘗試解析詳細時間 (YYYY-MM-DDTHH:MM)
     if start_time_str and 'T' in start_time_str:
         try:
-            tw_start = datetime.strptime(start_time_str, '%Y-%m-%dT%H:%M')
-            # 若無秒數補 00
-            tw_start = tw_start.replace(second=0)
-            
-            if end_time_str and 'T' in end_time_str:
-                tw_end = datetime.strptime(end_time_str, '%Y-%m-%dT%H:%M')
-            else:
-                tw_end = datetime.now() # 若無結束時間則設為現在
-
-            # 轉換為 UTC (台灣為 +8，所以減 8)
+            tw_start = datetime.strptime(start_time_str, '%Y-%m-%dT%H:%M').replace(second=0)
+            tw_end = datetime.strptime(end_time_str, '%Y-%m-%dT%H:%M') if (end_time_str and 'T' in end_time_str) else datetime.now()
             utc_start = tw_start - timedelta(hours=8)
             utc_end = tw_end - timedelta(hours=8)
-        except ValueError:
-            pass # 解析失敗則掉回下方邏輯
+        except ValueError: pass
 
-    # 如果上述解析未執行或失敗，使用舊有的整日邏輯
     if not utc_start:
         utc_start, utc_end = get_tw_time_range(start_time_str, end_time_str)
 
@@ -393,14 +331,13 @@ def sales_ranking():
     sorted_data = [{"name": k, "count": v} for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True)]
     return jsonify(sorted_data)
 
+
 @kitchen_bp.route('/report')
 def daily_report():
     target_date_str = request.args.get('date') or (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
     utc_start, utc_end = get_tw_time_range(target_date_str)
     
     conn = get_db_connection(); cur = conn.cursor()
-    
-    # 修正：預先抓取產品價格表，防止 JSON 中缺少價格導致金額為 0
     cur.execute("SELECT name, price FROM products")
     price_map = {row[0]: row[1] for row in cur.fetchall()}
     
@@ -425,17 +362,12 @@ def daily_report():
                 items = json.loads(r[0])
                 for i in items:
                     name = i.get('name_zh', i.get('name', '商品'))
-                    
-                    # 修正：若 qty 欄位不存在，預設應為 1
                     qty_val = i.get('qty')
                     qty = int(float(qty_val)) if qty_val is not None else 1
                     
-                    # 修正：確保 price 欄位讀取正確，若 JSON 無價格則查表
                     price_val = i.get('price')
-                    if price_val is not None:
-                        price = int(float(price_val))
-                    else:
-                        price = price_map.get(name, 0)
+                    if price_val is not None: price = int(float(price_val))
+                    else: price = price_map.get(name, 0)
                     
                     if name not in res: res[name] = {'qty':0, 'amt':0}
                     res[name]['qty'] += qty
@@ -477,5 +409,3 @@ def daily_report():
         </div>
     </body></html>
     """
-
-
