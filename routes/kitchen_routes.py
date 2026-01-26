@@ -130,7 +130,7 @@ def check_new_orders():
         
     return jsonify({'html': html_content, 'max_seq': max_seq_val, 'new_ids': new_order_ids})
 
-# --- 3. 補印功能 (整合分區列印 - 80mm 加大字體版) ---
+# --- 3. 補印功能 (整合分區列印 - 80mm 加大字體版 - 桌號優化) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     print_type = request.args.get('type', 'all')
@@ -203,7 +203,7 @@ def print_order(oid):
             line-height: 1;
         }
         
-        /* 桌號區塊優化 */
+        /* --- 桌號區塊優化 (修改重點) --- */
         .info-box {
             border-bottom: 3px solid #000;
             padding-bottom: 5px;
@@ -211,19 +211,26 @@ def print_order(oid):
         }
         .table-row {
             display: flex;
-            justify-content: space-between;
-            align-items: baseline;
+            /* 修改處：改為 center 讓兩者置中緊鄰，不要用 space-between */
+            justify-content: center; 
+            align-items: baseline; /* 讓文字底部對齊 */
+            gap: 15px; /* 設定文字與數字之間的距離 */
         }
-        .table-label { font-size: 20px; font-weight: bold; }
+        .table-label { 
+            font-size: 24px; /* 標籤稍微加大 */
+            font-weight: bold; 
+        }
         .table-val { 
-            font-size: 36px; /* 桌號加大 */
+            font-size: 42px; /* 桌號數字再加大 */
             font-weight: 900; 
+            line-height: 1;
         }
         .time-row {
             font-size: 14px;
-            text-align: right;
-            margin-top: 2px;
+            text-align: center; /* 時間也置中比較好看 */
+            margin-top: 5px;
         }
+        /* --------------------------- */
 
         /* 品項樣式 */
         .item-row { 
@@ -248,7 +255,7 @@ def print_order(oid):
         .opt { 
             font-size: 18px; /* 客製化加大 */
             font-weight: bold; 
-            color: #000; /* 改為純黑，避免熱感應印不清楚 */
+            color: #000; 
             padding-left: 15px; 
             margin-top: 2px;
             margin-bottom: 5px; 
@@ -259,7 +266,7 @@ def print_order(oid):
             font-size: 24px; 
             font-weight: 900; 
             margin-top: 15px; 
-            padding-top: 10px;
+            padding-top: 10px; 
             border-top: 2px solid #000; 
         }
     </style>
@@ -274,6 +281,7 @@ def print_order(oid):
         h = f"<div class='ticket'>{void_mark}<div class='head'><h2>{title}</h2><h1>#{seq:03d}</h1></div>"
         
         # 桌號與時間區塊
+        # 修改：移除了 space-between，透過 CSS 讓它們靠在一起
         h += f"""
         <div class='info-box'>
             <div class='table-row'>
@@ -298,7 +306,6 @@ def print_order(oid):
             """
             
             if opts:
-                # 每個選項換行顯示，比較清楚，或者用逗號分隔
                 opt_str = ', '.join(opts)
                 h += f"<div class='opt'>└ {opt_str}</div>"
         
@@ -322,7 +329,6 @@ def print_order(oid):
         content += generate_html("廚房單 - 湯區", soup_items)
         content += generate_html("廚房單 - 其他", other_items)
 
-    # 加上自動列印與關閉視窗的 JS
     return f"<html><head>{style}</head><body onload='window.print();setTimeout(()=>window.close(),500);'>{content}</body></html>"
 
 # --- 4. 狀態變更 ---
@@ -471,4 +477,5 @@ def daily_report():
         </div>
     </body></html>
     """
+
 
