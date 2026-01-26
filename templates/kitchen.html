@@ -18,6 +18,8 @@
             margin-bottom: 20px;
         }
 
+        .nav-links { display: flex; gap: 10px; }
+
         .order-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
         
         /* 基礎卡片樣式 */
@@ -79,7 +81,8 @@
         
         .btn { 
             padding: 10px; border: none; border-radius: 6px; cursor: pointer; 
-            font-size: 16px; font-weight: bold; text-align: center;
+            font-size: 16px; font-weight: bold; text-align: center; display: inline-block;
+            text-decoration: none; line-height: normal;
         }
         .btn-main { background: var(--accent-green); color: white; }
         .btn-print { background: var(--accent-blue); color: white; }
@@ -91,7 +94,7 @@
             background-color: rgba(0,0,0,0.6); backdrop-filter: blur(3px);
         }
         .modal-content {
-            background-color: #fff; margin: 15% auto; padding: 25px;
+            background-color: #fff; margin: 10% auto; padding: 25px;
             border-radius: 12px; width: 90%; max-width: 350px; text-align: center;
             box-shadow: 0 5px 20px rgba(0,0,0,0.3);
         }
@@ -99,6 +102,12 @@
             width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; 
             border-radius: 8px; border: none; cursor: pointer; font-weight: bold;
         }
+
+        /* 銷售排列表格樣式 */
+        .sales-table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: left; }
+        .sales-table th { background: #f8f9fa; padding: 10px; border-bottom: 2px solid #ddd; color: #555; font-size: 14px; }
+        .sales-table td { padding: 10px; border-bottom: 1px solid #eee; font-size: 16px; font-weight: 500; }
+        .sales-rank { width: 40px; text-align: center; font-weight: bold; color: var(--accent-orange); }
     </style>
 </head>
 <body>
@@ -110,7 +119,12 @@
     </div>
     <div class="nav-links">
         <button onclick="testAudioAndRefresh()" class="btn" style="background:#eee;">🔄 刷新 / 測試音效</button>
-        <a href="/kitchen/report" target="_blank" class="btn" style="background:#673ab7; color:white; text-decoration:none;">📊 營收報表</a>
+        
+        <button onclick="openSalesModal()" class="btn" style="background:var(--accent-orange); color:white;">📈 熱銷排名</button>
+        
+        <a href="/kitchen/report" target="_blank" class="btn" style="background:var(--accent-purple); color:white;">📊 營收報表</a>
+        
+        <a href="/admin" class="btn" style="background:#333; color:white;">⚙️ 後台管理</a>
     </div>
 </header>
 
@@ -128,6 +142,27 @@
     </div>
 </div>
 
+<div id="salesModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <h3 style="margin-top:0;">🔥 本日熱銷 TOP 10</h3>
+        <div style="max-height: 400px; overflow-y: auto;">
+            <table class="sales-table">
+                <thead>
+                    <tr>
+                        <th style="text-align:center;">#</th>
+                        <th>品項名稱</th>
+                        <th style="text-align:right;">銷售數量</th>
+                    </tr>
+                </thead>
+                <tbody id="salesListBody">
+                    <tr><td colspan="3" style="text-align:center; color:#999;">載入中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <button onclick="closeSalesModal()" class="modal-btn" style="background:#eee; color:#333; margin-top:20px;">關閉</button>
+    </div>
+</div>
+
 <audio id="newOrderSound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 
 <script>
@@ -137,32 +172,29 @@
     const updateTimeText = document.getElementById('update-time');
     const audio = document.getElementById('newOrderSound');
     
-    // 初始化語音合成
+    // --- 語音合成初始化 ---
     const synth = window.speechSynthesis;
 
-    // 播放語音函式
+    // --- 播放語音函式 ---
     function speakNewOrder() {
         if (synth.speaking) {
             console.log('正在說話中...');
             return;
         }
         const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
-        utterThis.lang = 'zh-TW'; // 設定語言為繁體中文
-        utterThis.rate = 1;       // 語速 (0.1 ~ 10)
-        utterThis.pitch = 1;      // 音高 (0 ~ 2)
-        utterThis.volume = 1;     // 音量 (0 ~ 1)
+        utterThis.lang = 'zh-TW'; 
+        utterThis.rate = 1;       
+        utterThis.volume = 1;     
         synth.speak(utterThis);
     }
 
-    // 結合手動刷新與音效測試 (解決瀏覽器自動播放限制)
+    // --- 結合手動刷新與音效測試 ---
     function testAudioAndRefresh() {
-        // 播放一個極短的無聲/低語音來解鎖瀏覽器限制
         audio.play().catch(e => {});
         refreshOrders();
     }
 
     function refreshOrders() {
-        // current_seq 用於讓後端判斷是否有新進訂單
         fetch('/kitchen/check_new_orders?current_seq=' + lastMaxSeq)
             .then(res => res.json())
             .then(data => {
@@ -170,24 +202,20 @@
                     grid.innerHTML = data.html;
                 }
                 
-                // 檢查是否有新訂單 ID (用於播放音效與語音)
+                // 檢查是否有新訂單 ID
                 if (data.new_ids && data.new_ids.length > 0) {
-                    // 1. 先播放叮噹聲
                     audio.play()
                         .then(() => {
-                            // 2. 叮噹聲播放成功後，延遲 0.8 秒再播報語音，避免聲音重疊
                             setTimeout(() => {
                                 speakNewOrder();
-                            }, 800);
+                            }, 500); // 延遲 0.5 秒播放語音
                         })
                         .catch(e => {
-                            console.log("音效播放受阻，請點擊頁面任意處解除限制:", e);
-                            // 即便叮噹聲失敗(可能沒加載完)，也嘗試播報語音
+                            console.log("音效播放受阻:", e);
                             speakNewOrder();
                         });
                 }
                 
-                // 更新最後一筆序號
                 if (data.max_seq) {
                     lastMaxSeq = data.max_seq;
                 }
@@ -200,7 +228,7 @@
             });
     }
 
-    // 由後端 Python 渲染的 onclick="askPrintType(oid)" 觸發
+    // --- 列印相關功能 ---
     function askPrintType(oid) {
         currentPrintOid = oid;
         document.getElementById('printModal').style.display = "block";
@@ -218,7 +246,60 @@
         closePrintModal();
     }
 
-    // 處理出餐(Complete)或作廢(Cancel)的動作
+    // --- 新增：銷售排名相關功能 ---
+    function openSalesModal() {
+        document.getElementById('salesModal').style.display = "block";
+        fetchSalesRanking();
+    }
+
+    function closeSalesModal() {
+        document.getElementById('salesModal').style.display = "none";
+    }
+
+    function fetchSalesRanking() {
+        const tbody = document.getElementById('salesListBody');
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">正在計算數據...</td></tr>';
+
+        // 注意：此處需要您的後端支援 /kitchen/sales_ranking 路由，並回傳 JSON 格式
+        // 格式範例: [{"name": "牛肉麵", "count": 15}, {"name": "排骨飯", "count": 12}]
+        fetch('/kitchen/sales_ranking') 
+            .then(res => {
+                if(!res.ok) throw new Error("API Error");
+                return res.json();
+            })
+            .then(data => {
+                tbody.innerHTML = '';
+                if (data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">今日尚無銷售紀錄</td></tr>';
+                    return;
+                }
+                
+                data.forEach((item, index) => {
+                    const row = `
+                        <tr>
+                            <td class="sales-rank">${index + 1}</td>
+                            <td>${item.name}</td>
+                            <td style="text-align:right;">${item.count} 份</td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            })
+            .catch(err => {
+                console.error("無法取得排名:", err);
+                // 模擬資料 (若後端尚未完成，可取消下方註解以測試 UI)
+                /*
+                tbody.innerHTML = `
+                    <tr><td class="sales-rank">1</td><td>招牌牛肉麵 (模擬)</td><td style="text-align:right;">25 份</td></tr>
+                    <tr><td class="sales-rank">2</td><td>炸排骨飯 (模擬)</td><td style="text-align:right;">18 份</td></tr>
+                    <tr><td class="sales-rank">3</td><td>燙青菜 (模擬)</td><td style="text-align:right;">12 份</td></tr>
+                `;
+                */
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:red;">無法取得數據 (請確認後端 API)</td></tr>';
+            });
+    }
+
+    // --- 通用功能 ---
     function action(url) {
         fetch(url).then(res => { 
             if (res.ok) {
@@ -229,18 +310,15 @@
         });
     }
 
-    // 每 4 秒自動同步一次資料
-    setInterval(refreshOrders, 4000);
-    
-    // 首次載入
+    setInterval(refreshOrders, 3000);
     refreshOrders();
 
     // 點擊彈窗外部區域自動關閉
     window.onclick = function(event) {
-        const modal = document.getElementById('printModal');
-        if (event.target == modal) {
-            closePrintModal();
-        }
+        const printModal = document.getElementById('printModal');
+        const salesModal = document.getElementById('salesModal');
+        if (event.target == printModal) closePrintModal();
+        if (event.target == salesModal) closeSalesModal();
     }
 </script>
 
