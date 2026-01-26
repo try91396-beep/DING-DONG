@@ -20,6 +20,8 @@ def menu():
     t = t_all.get(display_lang, t_all['zh'])
     
     conn = get_db_connection()
+    # 重要：關閉自動提交，以便手動控制 Transaction 與 Lock
+    conn.autocommit = False 
     cur = conn.cursor()
 
     if request.method == 'POST':
@@ -57,36 +59,32 @@ def menu():
 
             items_str = " + ".join(display_list)
 
-            # --- 核心修正：利用資料庫原子性解決並發衝突 ---
-            # 1. 直接在 INSERT 中嵌入子查詢
-            # 2. 如果是 PostgreSQL，這類語句在執行時會保證 daily_seq 的唯一性
+            # --- 核心修正：利用資料庫鎖定解決並發流水號重複問題 ---
+            
+            # 1. 鎖定資料表 (Share Row Exclusive Mode)
+            # 這會暫時阻止其他交易進行寫入，確保計算 MAX(daily_seq) 時是安全的
+            # 雖然會稍微犧牲一點點並發寫入速度，但在點餐系統中這通常在毫秒級完成，不影響體驗
+            cur.execute("LOCK TABLE orders IN SHARE ROW EXCLUSIVE MODE")
+
+            # 2. 插入資料並由資料庫生成流水號
+            # 使用 VALUES + 子查詢的方式，即使當天沒有訂單也能正確回傳 1
             cur.execute("""
                 INSERT INTO orders (
                     table_number, items, total_price, lang, 
                     daily_seq, 
                     content_json, need_receipt, created_at
                 )
-                SELECT 
+                VALUES (
                     %s, %s, %s, %s, 
-                    COALESCE(MAX(daily_seq), 0) + 1, 
+                    (SELECT COALESCE(MAX(daily_seq), 0) + 1 FROM orders WHERE created_at >= CURRENT_DATE), 
                     %s, %s, NOW()
-                FROM orders 
-                WHERE created_at >= CURRENT_DATE
+                )
                 RETURNING id, daily_seq
             """, (table_number, items_str, total_price, final_lang, cart_json, need_receipt))
 
             res = cur.fetchone()
-            # 如果今天還沒有訂單，子查詢可能回傳空值，需處理 edge case
-            if not res:
-                # 重新嘗試：強制插入第一筆
-                cur.execute("""
-                    INSERT INTO orders (table_number, items, total_price, lang, daily_seq, content_json, need_receipt, created_at)
-                    VALUES (%s, %s, %s, %s, 1, %s, %s, NOW())
-                    RETURNING id, daily_seq
-                """, (table_number, items_str, total_price, final_lang, cart_json, need_receipt))
-                res = cur.fetchone()
-
             oid = res[0]
+            # seq = res[1] # 若需要可在這裡取得 seq
             
             # 如果是編輯訂單，將舊單作廢
             if old_order_id:
@@ -103,7 +101,8 @@ def menu():
             conn.rollback()
             return f"Order Failed: {e}", 500
         finally:
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
 
     # --- GET 邏輯 ---
     url_table = request.args.get('table', '')
