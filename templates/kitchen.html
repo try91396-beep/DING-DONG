@@ -157,6 +157,7 @@
         <button onclick="testAudioAndRefresh()" class="btn" style="background:#eee;">🔄 刷新 / 測試音效</button>
         <button onclick="openSalesModal()" class="btn" style="background:var(--accent-orange); color:white;">📈 銷售排行</button>
         <a href="/kitchen/report" target="_blank" class="btn" style="background:#673ab7; color:white; text-decoration:none;">📊 營收報表</a>
+        <a href="/admin" target="_blank" class="btn" style="background:#333; color:white; text-decoration:none;">⚙️ 管理後台</a>
     </div>
 </header>
 
@@ -229,7 +230,7 @@
         if (synth.speaking) { console.log('正在說話中...'); return; }
         const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
         utterThis.lang = 'zh-TW'; 
-        utterThis.rate = 1;       
+        utterThis.rate = 1;        
         synth.speak(utterThis);
     }
 
