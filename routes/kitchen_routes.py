@@ -266,6 +266,11 @@ def daily_report():
     utc_start, utc_end = get_tw_time_range(target_date_str)
     
     conn = get_db_connection(); cur = conn.cursor()
+    
+    # 修正：預先抓取產品價格表，防止 JSON 中缺少價格導致金額為 0
+    cur.execute("SELECT name, price FROM products")
+    price_map = {row[0]: row[1] for row in cur.fetchall()}
+    
     # 統計有效單
     cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Completed'", (utc_start, utc_end))
     v_count, v_total = cur.fetchone()
@@ -288,13 +293,16 @@ def daily_report():
                 for i in items:
                     name = i.get('name_zh', i.get('name', '商品'))
                     
-                    # 修正：若 qty 欄位不存在，預設應為 1 (原為 0 會導致金額為 0)
+                    # 修正：若 qty 欄位不存在，預設應為 1
                     qty_val = i.get('qty')
                     qty = int(float(qty_val)) if qty_val is not None else 1
                     
-                    # 修正：確保 price 欄位讀取正確
+                    # 修正：確保 price 欄位讀取正確，若 JSON 無價格則查表
                     price_val = i.get('price')
-                    price = int(float(price_val)) if price_val is not None else 0
+                    if price_val is not None:
+                        price = int(float(price_val))
+                    else:
+                        price = price_map.get(name, 0)
                     
                     if name not in res: res[name] = {'qty':0, 'amt':0}
                     res[name]['qty'] += qty
