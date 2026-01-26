@@ -116,30 +116,65 @@ def send_daily_report(manual_config=None, is_test=False):
         cur.close()
         conn.close()
 
-# --- 2. 排程與背景任務 ---
-def scheduler_loop():
-    print("⏰ 排程執行緒已啟動")
+# --- 2. 背景維護工作 (防休眠 + 自動發信) ---
+def run_maintenance_tasks():
+    print("🚀 背景維護執行緒已啟動 (Maintenance Thread Started)")
+    
     last_sent_time = ""
+    # 設定下一次執行 Ping 的時間 (立即執行)
+    next_ping_time = datetime.now()
+
     while True:
         try:
-            now_tw = datetime.utcnow() + timedelta(hours=8)
-            current_time = now_tw.strftime("%H:%M")
-            # 設定自動發信時間
-            if current_time in ["22:00"] and current_time != last_sent_time:
-                print(f"⏰ 時間到 ({current_time})，執行自動發信...")
-                send_daily_report()
-                last_sent_time = current_time
+            now_obj = datetime.now()
+            now_str = now_obj.strftime("%Y-%m-%d %H:%M:%S")
             
-            # 防休眠 Ping (每 10 分鐘)
-            if now_tw.minute % 10 == 0 and now_tw.second < 10:
-                 # 請替換成您的 Render 網址
-                urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
+            # --- A. 自動發信檢查 (每分鐘檢查) ---
+            # 轉換為台灣時間
+            tw_time = datetime.utcnow() + timedelta(hours=8)
+            current_hm = tw_time.strftime("%H:%M")
+            
+            target_times = ["13:00", "18:00", "20:30"]
+            
+            if current_hm in target_times and current_hm != last_sent_time:
+                print(f"[{now_str}] ⏰ 時間到 ({current_hm})，執行自動發信...")
+                send_daily_report()
+                last_sent_time = current_hm
+
+            # --- B. 防休眠 Ping (每 5 分鐘執行一次) ---
+            if now_obj >= next_ping_time:
                 
-        except Exception:
-            pass # 忽略連線錯誤，避免 thread 停止
-        time.sleep(10)
+                # 1. 防止 Render 休眠 (Ping 網址)
+                try:
+                    urllib.request.urlopen("https://qr-mbdv.onrender.com", timeout=10)
+                    print(f"[{now_str}] ✅ Web Ping 成功 (Render is alive)")
+                except Exception as e:
+                    print(f"[{now_str}] ❌ Web Ping 失敗: {e}")
+
+                # 2. 防止 Aiven 資料庫休眠 (Ping 資料庫)
+                try:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1") # 最輕量的查詢
+                    cur.close()
+                    conn.close()
+                    print(f"[{now_str}] 💓 DB Heartbeat 成功 (Aiven is alive)")
+                except Exception as e:
+                    print(f"[{now_str}] ⚠️ DB 連線失敗: {e}")
+
+                print("-" * 30)
+                
+                # 設定下一次 Ping 是 5 分鐘後 (300秒)
+                next_ping_time = now_obj + timedelta(seconds=300)
+
+            # 休息 60 秒 (確保能抓到每一分鐘的整點 Email 檢查)
+            time.sleep(60)
+
+        except Exception as e:
+            print(f"⚠️ 背景任務發生錯誤: {e}")
+            time.sleep(60)
 
 def start_background_tasks():
     # 啟動守護執行緒 (Daemon Thread)，隨主程式結束
-    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t = threading.Thread(target=run_maintenance_tasks, daemon=True)
     t.start()
