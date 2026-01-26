@@ -264,34 +264,77 @@ def import_menu():
         file = request.files.get('menu_file')
         if not file: return redirect(url_for('admin.admin_panel', msg="❌ 無檔案"))
         
+        # 讀取 Excel
         df = pd.read_excel(file, engine='openpyxl')
-        # 將 NaN 轉為 None，避免資料庫錯誤
+        
+        # 將空值 NaN 轉為 None，避免 SQL 錯誤
         df = df.where(pd.notnull(df), None)
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # 這裡示範基本匯入，若 Excel 欄位與資料庫完全對應，可擴充 INSERT 欄位
         cnt = 0
         for _, p in df.iterrows():
+            # 確保有名稱才匯入
             if not p.get('name'): continue
             
-            cur.execute("""
-                INSERT INTO products (name, price, category, print_category, name_en) 
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                str(p.get('name')), 
-                p.get('price', 0), 
-                p.get('category'), 
-                p.get('print_category', 'Noodle'),
-                p.get('name_en')
-            ))
+            # 處理布林值：Excel 中的 TRUE/FALSE 或 1/0 轉為 Python bool
+            is_avail = True
+            if p.get('is_available') is not None:
+                val = str(p.get('is_available')).lower()
+                is_avail = val in ['1', 'true', 'yes', 't']
+
+            # 準備 SQL (不匯入 id，讓資料庫自動產生)
+            sql = """
+                INSERT INTO products (
+                    name, price, category, image_url, is_available, custom_options, sort_order,
+                    name_en, name_jp, name_kr,
+                    custom_options_en, custom_options_jp, custom_options_kr,
+                    print_category,
+                    category_en, category_jp, category_kr
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, 
+                    %s, %s, %s, 
+                    %s, %s, %s, 
+                    %s, 
+                    %s, %s, %s
+                )
+            """
+            
+            # 準備參數 (依照 SQL 順序)
+            params = (
+                str(p.get('name')),
+                p.get('price', 0),
+                p.get('category'),
+                p.get('image_url'),
+                is_avail,
+                p.get('custom_options'),
+                p.get('sort_order', 0), # 預設排序 0
+                
+                p.get('name_en'),
+                p.get('name_jp'),
+                p.get('name_kr'),
+                
+                p.get('custom_options_en'),
+                p.get('custom_options_jp'),
+                p.get('custom_options_kr'),
+                
+                p.get('print_category', 'Noodle'), # 預設麵區
+                
+                p.get('category_en'),
+                p.get('category_jp'),
+                p.get('category_kr')
+            )
+            
+            cur.execute(sql, params)
             cnt += 1
             
         conn.commit()
         cur.close(); conn.close()
-        return redirect(url_for('admin.admin_panel', msg=f"✅ 成功匯入 {cnt} 筆資料"))
+        return redirect(url_for('admin.admin_panel', msg=f"✅ 完整匯入成功！共 {cnt} 筆資料"))
+        
     except Exception as e:
+        traceback.print_exc() # 在後台印出詳細錯誤以便除錯
         return redirect(url_for('admin.admin_panel', msg=f"❌ 匯入失敗: {e}"))
 
 @admin_bp.route('/reset_menu')
