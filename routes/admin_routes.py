@@ -7,7 +7,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, jsonif
 
 # 從資料庫模組匯入連線函式
 from database import get_db_connection 
-# 從 utils 匯入發信功能 (確保 utils.py 中有此函式)
+# 從 utils 匯入發信功能
 from utils import send_daily_report
 
 admin_bp = Blueprint('admin', __name__)
@@ -26,10 +26,17 @@ def admin_panel():
         
         # --- 功能 1: 儲存設定 & 測試連線 ---
         if action == 'save_settings':
-            # 1. 取得表單資料
+            # 1. 取得表單資料 (並進行防呆處理)
+            sender_input = request.form.get('sender_email', '').strip()
+            
+            # 【修正】如果使用者沒填寫寄件人，強制使用 Resend 官方測試帳號
+            # 避免存入空字串導致 utils.py 發信失敗
+            if not sender_input:
+                sender_input = 'onboarding@resend.dev'
+
             new_config = {
                 'report_email': request.form.get('report_email', '').strip(),
-                'sender_email': request.form.get('sender_email', '').strip(),
+                'sender_email': sender_input,
                 'resend_api_key': request.form.get('resend_api_key', '').strip()
             }
             
@@ -47,8 +54,15 @@ def admin_panel():
                 if request.form.get('test_connection') == 'on':
                     try:
                         # 直接呼叫，傳入剛輸入的設定進行測試
+                        # is_test=True 會發送簡單的測試信，不撈資料庫數據
                         result_msg = send_daily_report(manual_config=new_config, is_test=True)
-                        msg = f"✅ 設定已儲存 / {result_msg}"
+                        
+                        if "✅" in result_msg:
+                            msg = f"✅ 設定已儲存 / {result_msg}"
+                        else:
+                            # 如果 utils 回傳錯誤訊息
+                            msg = f"⚠️ 設定已存，但連線測試失敗: {result_msg}"
+                            
                     except Exception as e:
                         traceback.print_exc()
                         msg = f"✅ 設定已儲存 / ❌ 測試失敗: {str(e)}"
@@ -65,7 +79,7 @@ def admin_panel():
         # --- 功能 2: 手動觸發日結報表 (背景執行) ---
         elif action == 'send_report_now':
             # 使用 Thread 背景執行，避免網頁卡住
-            # 傳入 is_test=False 代表是正式報表
+            # 傳入 is_test=False 代表是正式報表 (會撈取今日訂單數據)
             try:
                 threading.Thread(target=send_daily_report, kwargs={'is_test': False}).start()
                 msg = "🚀 報表正在背景發送中，請稍候檢查信箱"
