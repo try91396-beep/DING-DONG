@@ -214,11 +214,38 @@ def cancel_order(oid):
 # --- 5. 日結報表與銷售排名 ---
 @kitchen_bp.route('/sales_ranking')
 def sales_ranking():
-    start_str, end_str = request.args.get('start'), request.args.get('end')
-    utc_start, utc_end = get_tw_time_range(start_str, end_str)
+    # 支援來自 datetime-local 的 ISO 格式 (YYYY-MM-DDTHH:MM) 或舊版的日期格式
+    start_time_str = request.args.get('start_time') or request.args.get('start')
+    end_time_str = request.args.get('end_time') or request.args.get('end')
+    
+    utc_start, utc_end = None, None
+
+    # 嘗試解析詳細時間 (YYYY-MM-DDTHH:MM)
+    if start_time_str and 'T' in start_time_str:
+        try:
+            tw_start = datetime.strptime(start_time_str, '%Y-%m-%dT%H:%M')
+            # 若無秒數補 00
+            tw_start = tw_start.replace(second=0)
+            
+            if end_time_str and 'T' in end_time_str:
+                tw_end = datetime.strptime(end_time_str, '%Y-%m-%dT%H:%M')
+            else:
+                tw_end = datetime.now() # 若無結束時間則設為現在
+
+            # 轉換為 UTC (台灣為 +8，所以減 8)
+            utc_start = tw_start - timedelta(hours=8)
+            utc_end = tw_end - timedelta(hours=8)
+        except ValueError:
+            pass # 解析失敗則掉回下方邏輯
+
+    # 如果上述解析未執行或失敗，使用舊有的整日邏輯
+    if not utc_start:
+        utc_start, utc_end = get_tw_time_range(start_time_str, end_time_str)
+
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Completed'", (utc_start, utc_end))
     rows = cur.fetchall(); conn.close()
+    
     stats = {}
     for r in rows:
         if not r[0]: continue
@@ -229,7 +256,9 @@ def sales_ranking():
                 qty = int(float(i.get('qty', 1)))
                 stats[name] = stats.get(name, 0) + qty
         except: continue
-    sorted_data = [{"name": k, "total_qty": v} for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True)]
+        
+    # 這裡將 total_qty 改為 count 以符合前端需求
+    sorted_data = [{"name": k, "count": v} for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True)]
     return jsonify(sorted_data)
 
 @kitchen_bp.route('/report')
