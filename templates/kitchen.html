@@ -41,7 +41,7 @@
             background-color: #f9f9f9;
         }
 
-        /* 3. 已作廢 (Cancelled) - 關鍵更新部分 */
+        /* 3. 已作廢 (Cancelled) */
         .card.cancelled {
             background-color: var(--cancelled) !important; 
             border: 2px solid rgba(244, 67, 54, 0.3) !important;
@@ -109,7 +109,7 @@
         <span id="update-time" style="font-size:12px; color:#888;">正在連線...</span>
     </div>
     <div class="nav-links">
-        <button onclick="refreshOrders()" class="btn" style="background:#eee;">🔄 刷新</button>
+        <button onclick="testAudioAndRefresh()" class="btn" style="background:#eee;">🔄 刷新 / 測試音效</button>
         <a href="/kitchen/report" target="_blank" class="btn" style="background:#673ab7; color:white; text-decoration:none;">📊 營收報表</a>
     </div>
 </header>
@@ -136,9 +136,33 @@
     const grid = document.getElementById('order-grid');
     const updateTimeText = document.getElementById('update-time');
     const audio = document.getElementById('newOrderSound');
+    
+    // 初始化語音合成
+    const synth = window.speechSynthesis;
+
+    // 播放語音函式
+    function speakNewOrder() {
+        if (synth.speaking) {
+            console.log('正在說話中...');
+            return;
+        }
+        const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
+        utterThis.lang = 'zh-TW'; // 設定語言為繁體中文
+        utterThis.rate = 1;       // 語速 (0.1 ~ 10)
+        utterThis.pitch = 1;      // 音高 (0 ~ 2)
+        utterThis.volume = 1;     // 音量 (0 ~ 1)
+        synth.speak(utterThis);
+    }
+
+    // 結合手動刷新與音效測試 (解決瀏覽器自動播放限制)
+    function testAudioAndRefresh() {
+        // 播放一個極短的無聲/低語音來解鎖瀏覽器限制
+        audio.play().catch(e => {});
+        refreshOrders();
+    }
 
     function refreshOrders() {
-        // current_seq 用於讓後端判斷是否有新進訂單以觸發音效
+        // current_seq 用於讓後端判斷是否有新進訂單
         fetch('/kitchen/check_new_orders?current_seq=' + lastMaxSeq)
             .then(res => res.json())
             .then(data => {
@@ -146,9 +170,21 @@
                     grid.innerHTML = data.html;
                 }
                 
-                // 檢查是否有新訂單 ID (用於播放音效)
+                // 檢查是否有新訂單 ID (用於播放音效與語音)
                 if (data.new_ids && data.new_ids.length > 0) {
-                    audio.play().catch(e => console.log("音效播放受阻:", e));
+                    // 1. 先播放叮噹聲
+                    audio.play()
+                        .then(() => {
+                            // 2. 叮噹聲播放成功後，延遲 0.8 秒再播報語音，避免聲音重疊
+                            setTimeout(() => {
+                                speakNewOrder();
+                            }, 800);
+                        })
+                        .catch(e => {
+                            console.log("音效播放受阻，請點擊頁面任意處解除限制:", e);
+                            // 即便叮噹聲失敗(可能沒加載完)，也嘗試播報語音
+                            speakNewOrder();
+                        });
                 }
                 
                 // 更新最後一筆序號
