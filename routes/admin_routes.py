@@ -359,13 +359,57 @@ def reset_menu():
     conn.commit(); cur.close(); conn.close()
     return redirect(url_for('admin.admin_panel', msg="🗑️ 菜單已清空"))
 
-@admin_bp.route('/reset_orders')
+@admin_bp.route('/reset_orders', methods=['POST'])
 def reset_orders():
-    conn = get_db_connection(); cur = conn.cursor()
-    # 清空訂單表並重置 ID 計數
-    cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
-    conn.commit(); cur.close(); conn.close()
-    return redirect(url_for('admin.admin_panel', msg="💥 所有歷史訂單已清空"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        # 取得刪除模式：'all' 或 'range'
+        delete_mode = request.form.get('delete_mode')
+        
+        if delete_mode == 'all':
+            # --- 模式一：清空全部 (原本的功能) ---
+            # TRUNCATE 速度快且會重置 ID
+            cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
+            msg = "💥 已清空所有歷史訂單，流水號已重置！"
+            
+        elif delete_mode == 'range':
+            # --- 模式二：指定日期區間 ---
+            start_date = request.form.get('start_date')
+            end_date = request.form.get('end_date')
+            
+            if not start_date or not end_date:
+                return redirect(url_for('admin.admin_panel', msg="❌ 請選擇完整的開始與結束日期"))
+            
+            # 補上時間，確保涵蓋整天
+            # 例如：2023-10-27 變成 2023-10-27 00:00:00 到 2023-10-27 23:59:59
+            start_ts = f"{start_date} 00:00:00"
+            end_ts = f"{end_date} 23:59:59"
+            
+            # 使用 DELETE 刪除指定範圍 (不會重置 ID 流水號，這是正常的資料庫行為)
+            cur.execute("""
+                DELETE FROM orders 
+                WHERE created_at >= %s AND created_at <= %s
+            """, (start_ts, end_ts))
+            
+            deleted_count = cur.rowcount
+            msg = f"🗑️ 已刪除 {start_date} 至 {end_date} 期間的訂單，共 {deleted_count} 筆。"
+            
+        else:
+            msg = "❌ 無效的操作"
+
+        conn.commit()
+        
+    except Exception as e:
+        conn.rollback()
+        msg = f"❌ 刪除失敗: {str(e)}"
+        
+    finally:
+        cur.close()
+        conn.close()
+
+    return redirect(url_for('admin.admin_panel', msg=msg))
 
 @admin_bp.route('/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
