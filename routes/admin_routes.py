@@ -26,21 +26,9 @@ def admin_panel():
         
         # --- 功能 1: 儲存設定 & 測試連線 ---
         if action == 'save_settings':
-            # 1. 取得表單資料 (並進行防呆處理)
-            sender_input = request.form.get('sender_email', '').strip()
+            # ... (取得 sender_input 與 new_config 的程式碼保持不變) ...
             
-            # 【修正】如果使用者沒填寫寄件人，強制使用 Resend 官方測試帳號
-            # 避免存入空字串導致 utils.py 發信失敗
-            if not sender_input:
-                sender_input = 'onboarding@resend.dev'
-
-            new_config = {
-                'report_email': request.form.get('report_email', '').strip(),
-                'sender_email': sender_input,
-                'resend_api_key': request.form.get('resend_api_key', '').strip()
-            }
-            
-            # 2. 寫入資料庫
+            # 2. 寫入資料庫 (這部分保持不變)
             try:
                 for k, v in new_config.items():
                     cur.execute("""
@@ -50,17 +38,16 @@ def admin_panel():
                     """, (k, v))
                 conn.commit()
                 
-                # 3. 處理「測試連線」 (同步執行，以便立即回傳結果)
+                # 3. 處理「測試連線」
                 if request.form.get('test_connection') == 'on':
                     try:
-                        # 直接呼叫，傳入剛輸入的設定進行測試
-                        # is_test=True 會發送簡單的測試信，不撈資料庫數據
-                        result_msg = send_daily_report(manual_config=new_config, is_test=True)
+                        # [修改重點 1] 傳入 current_app._get_current_object()
+                        app_obj = current_app._get_current_object()
+                        result_msg = send_daily_report(app_obj, manual_config=new_config, is_test=True)
                         
                         if "✅" in result_msg:
                             msg = f"✅ 設定已儲存 / {result_msg}"
                         else:
-                            # 如果 utils 回傳錯誤訊息
                             msg = f"⚠️ 設定已存，但連線測試失敗: {result_msg}"
                             
                     except Exception as e:
@@ -78,10 +65,14 @@ def admin_panel():
 
         # --- 功能 2: 手動觸發日結報表 (背景執行) ---
         elif action == 'send_report_now':
-            # 使用 Thread 背景執行，避免網頁卡住
-            # 傳入 is_test=False 代表是正式報表 (會撈取今日訂單數據)
+            # [修改重點 2] 獲取真實的 app 物件並傳入執行緒
             try:
-                threading.Thread(target=send_daily_report, kwargs={'is_test': False}).start()
+                # 取得 app 實體 (Thread 內無法直接用 current_app)
+                app_obj = current_app._get_current_object()
+                
+                # 將 app_obj 作為參數 (args) 傳入
+                threading.Thread(target=send_daily_report, args=(app_obj,), kwargs={'is_test': False}).start()
+                
                 msg = "🚀 報表正在背景發送中，請稍候檢查信箱"
             except Exception as e:
                 msg = f"❌ 無法啟動背景任務: {e}"
