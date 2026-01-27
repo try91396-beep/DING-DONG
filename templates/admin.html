@@ -173,7 +173,7 @@
                     </form>
                 </div>
                 <div class="column" style="text-align: right;">
-                    <a href="/admin/reset_menu" class="button" style="background:#ff4d4f; border-color:#ff4d4f;" onclick="return confirm('⚠️ 將清空所有產品且無法復原，確定？')">🗑️ 清空菜單</a>
+                    <a href="{{ url_for('admin.reset_menu') }}" class="button" style="background:#ff4d4f; border-color:#ff4d4f; color:white; text-decoration:none; padding: 5px 10px; border-radius: 4px;" onclick="return confirm('⚠️ 將清空所有產品且無法復原，確定？')">🗑️ 清空菜單</a>
                     <button type="button" class="button" style="background:#d63031; border:none; color:white; padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-left: 5px;" onclick="openOrderModal()">💥 清空訂單</button>
                 </div>
             </div>
@@ -330,3 +330,4 @@
 </script>
 </body>
 </html>
+
