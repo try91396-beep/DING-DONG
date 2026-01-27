@@ -174,7 +174,7 @@
                 </div>
                 <div class="column" style="text-align: right;">
                     <a href="/admin/reset_menu" class="button" style="background:#ff4d4f; border-color:#ff4d4f;" onclick="return confirm('⚠️ 將清空所有產品且無法復原，確定？')">🗑️ 清空菜單</a>
-                    <a href="/admin/reset_orders" class="button" style="background:#ff4d4f; border-color:#ff4d4f;" onclick="return confirm('⚠️ 將清空所有歷史訂單，確定？')">💥 清空訂單</a>
+                    <button type="button" class="button" style="background:#d63031; border:none; color:white; padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-left: 5px;" onclick="openOrderModal()">💥 清空訂單</button>
                 </div>
             </div>
         </div>
@@ -220,5 +220,113 @@
             }
         });
     </script>
+    
+    //清空指定日期區間訂單紀錄
+    <div id="orderModal" class="custom-modal" style="display: none;">
+    <div class="custom-modal-content">
+        <span class="close-btn" onclick="closeOrderModal()">&times;</span>
+        <h3 style="color: #d63031; margin-top: 0;">💥 清空/刪除訂單</h3>
+        
+        <form action="{{ url_for('admin.reset_orders') }}" method="POST" onsubmit="return confirmOrderDelete()">
+            
+            <div style="margin-bottom: 15px; padding: 10px; background: #fff0f0; border-radius: 5px;">
+                <label style="cursor: pointer; display: block;">
+                    <input type="radio" name="delete_mode" value="all" checked onchange="toggleDateInputs(false)">
+                    <strong>清空所有歷史訂單</strong>
+                    <div style="font-size: 0.85em; color: #666; margin-left: 22px;">(警告：這將清空資料庫並重置流水號 ID)</div>
+                </label>
+            </div>
+
+            <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 5px;">
+                <label style="cursor: pointer; display: block; margin-bottom: 10px;">
+                    <input type="radio" name="delete_mode" value="range" onchange="toggleDateInputs(true)">
+                    <strong>刪除指定日期區間</strong>
+                </label>
+                
+                <div id="date-picker-area" style="display: none; margin-left: 22px;">
+                    <div style="margin-bottom: 5px;">
+                        <span>從：</span>
+                        <input type="date" name="start_date" style="padding: 4px;">
+                    </div>
+                    <div>
+                        <span>到：</span>
+                        <input type="date" name="end_date" style="padding: 4px;">
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align: right; margin-top: 20px;">
+                <button type="button" onclick="closeOrderModal()" style="padding: 8px 15px; cursor: pointer; background: #eee; border: none; border-radius: 4px; margin-right: 5px;">取消</button>
+                <button type="submit" style="padding: 8px 15px; cursor: pointer; background: #d63031; color: white; border: none; border-radius: 4px;">確認執行</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+    /* 遮罩背景 */
+    .custom-modal {
+        position: fixed; z-index: 9999; left: 0; top: 0;
+        width: 100%; height: 100%; overflow: auto;
+        background-color: rgba(0,0,0,0.5);
+        display: flex; justify-content: center; align-items: center;
+    }
+    /* 彈窗本體 */
+    .custom-modal-content {
+        background-color: #fefefe;
+        margin: 10% auto; padding: 20px;
+        border: 1px solid #888; width: 90%; max-width: 400px;
+        border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        position: relative;
+    }
+    /* 關閉按鈕 */
+    .close-btn {
+        color: #aaa; float: right; font-size: 28px; font-weight: bold;
+        cursor: pointer; line-height: 20px;
+    }
+    .close-btn:hover { color: black; }
+</style>
+
+<script>
+    function openOrderModal() {
+        document.getElementById('orderModal').style.display = 'block';
+    }
+
+    function closeOrderModal() {
+        document.getElementById('orderModal').style.display = 'none';
+    }
+
+    // 切換日期輸入框的顯示/隱藏
+    function toggleDateInputs(show) {
+        var area = document.getElementById('date-picker-area');
+        var inputs = area.querySelectorAll('input');
+        if (show) {
+            area.style.display = 'block';
+            inputs.forEach(i => i.required = true); // 必填
+        } else {
+            area.style.display = 'none';
+            inputs.forEach(i => i.required = false); // 免填
+            inputs.forEach(i => i.value = ''); // 清空
+        }
+    }
+
+    // 表單送出前的最後確認
+    function confirmOrderDelete() {
+        var mode = document.querySelector('input[name="delete_mode"]:checked').value;
+        if (mode === 'all') {
+            var input = prompt("⚠️ 危險操作！\n這將刪除「所有」訂單且無法復原。\n請輸入 'DELETE' 以確認：");
+            return input === 'DELETE';
+        }
+        return confirm("確定要刪除選定日期範圍內的訂單嗎？");
+    }
+
+    // 點擊視窗外部關閉
+    window.onclick = function(event) {
+        var modal = document.getElementById('orderModal');
+        if (event.target == modal) {
+            modal.style.display = "none";
+        }
+    }
+</script>
 </body>
 </html>
