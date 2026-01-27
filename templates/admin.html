@@ -173,7 +173,7 @@
                     </form>
                 </div>
                 <div class="column" style="text-align: right;">
-                    <a href="{{ url_for('admin.reset_menu') }}" class="button" style="background:#ff4d4f; border-color:#ff4d4f;" onclick="return confirm('⚠️ 將清空所有產品且無法復原，確定？')">🗑️ 清空菜單</a>
+                    <a href="{{ url_for('admin.reset_menu') }}" class="button" style="background:#ff4d4f; border-color:#ff4d4f;" onclick="return confirmMenuReset('⚠️ 將清空所有產品且無法復原，確定？')">🗑️ 清空菜單</a>
                     <button type="button" class="button" style="background:#ff4d4f; border-color:#ff4d4f; color: white; cursor: pointer;" onclick="openOrderModal()">💥 清空訂單</button>
                 </div>
             </div>
@@ -327,9 +327,25 @@
             modal.style.display = "none";
         }
     }
+
+   // --- 新增：清空菜單的雙重確認邏輯 ---
+    function confirmMenuReset() {
+        // 1. 彈出輸入框提示
+        var input = prompt("⚠️ 危險操作！\n這將清空所有產品資料且「無法復原」。\n\n若確定要執行，請輸入 'DELETE'：");
+        
+        // 2. 檢查輸入內容
+        if (input === 'DELETE') {
+            return true; // 允許連結跳轉 (執行刪除)
+        } else {
+            alert("❌ 輸入不正確或已取消，操作中止。");
+            return false; // 阻止連結跳轉 (取消操作)
+        }
+    }
+    
 </script>
 </body>
 </html>
+
 
 
 
