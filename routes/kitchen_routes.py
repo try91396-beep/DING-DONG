@@ -173,7 +173,7 @@ def check_new_orders():
     })
 
 
-# --- 3. 補印功能 (整合分區列印 - 80mm 加大字體版 - 桌號優化) ---
+# --- 3. 補印功能 (整合分區列印 - 80mm Auto長度版 - 桌號優化) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     # 參數 type: 'all' (預設), 'kitchen', 'receipt'
@@ -186,7 +186,6 @@ def print_order(oid):
     
     if not order:
         conn.close()
-        # [修改] 改用 print 輸出 Warning
         now = get_current_time_str()
         print(f"[{now}] ⚠️ 列印失敗：找不到訂單 ID {oid}")
         return "訂單不存在", 404
@@ -197,7 +196,6 @@ def print_order(oid):
     # 時間調整
     time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
-    # [修改] 改用 print 輸出 Log
     now = get_current_time_str()
     print(f"[{now}] 🖨️ 列印生成 | 序號: #{seq:03d} | 桌號: {table_num} | 模式: {print_type} | ID: {oid}")
 
@@ -216,17 +214,38 @@ def print_order(oid):
         elif p_cat == 'Soup': soup_items.append(item)
         else: other_items.append(item)
 
-    # --- CSS 樣式設定 (80mm) ---
+    # --- CSS 樣式設定 (80mm Auto Height) ---
+    # 關鍵修改：
+    # 1. @page { size: 80mm auto; } 讓瀏覽器知道高度是自動的
+    # 2. body { height: auto; } 允許內容撐開
+    # 3. .ticket { padding-bottom: 20px; } 底部留白防止切刀切到文字
     style = """
     <style>
+        @page {
+            size: 80mm auto;  /* 寬度固定，高度自動 */
+            margin: 0mm;      /* 移除瀏覽器預設頁面邊距 */
+        }
         body { 
             font-family: 'Microsoft JhengHei', sans-serif; 
-            width: 76mm; 
-            margin: 0; padding: 2px; color: #000;
+            width: 78mm;      /* 設定內容寬度略小於 80mm 防止溢出 */
+            height: auto;     /* 高度自動 */
+            margin: 0 auto; 
+            padding: 2px; 
+            color: #000;
+            background: #fff;
         }
         .ticket { 
-            border-bottom: 3px dashed #000; padding: 10px 0; 
-            page-break-after: always; position: relative; 
+            width: 100%;
+            display: block;
+            border-bottom: 3px dashed #000; 
+            padding: 10px 0 30px 0; /* 底部增加 Padding 防止切刀切到字 */
+            margin-bottom: 10px;
+            page-break-after: always; /* 每張單據後強制換頁(切刀) */
+            position: relative; 
+            box-sizing: border-box;
+        }
+        .ticket:last-child {
+            page-break-after: auto; /* 最後一張不一定要強制換頁，視驅動而定 */
         }
         .void-watermark { 
             position: absolute; top: 30%; left: 5%; 
@@ -235,7 +254,7 @@ def print_order(oid):
             padding: 10px; z-index: 100; pointer-events: none; font-weight: 900;
         }
         .head { text-align: center; margin-bottom: 10px; }
-        .head h2 { font-size: 22px; margin: 0; background: #000; color: #fff; padding: 5px; border-radius: 4px; }
+        .head h2 { font-size: 22px; margin: 0; background: #000; color: #fff; padding: 5px; border-radius: 4px; -webkit-print-color-adjust: exact; }
         .head h1 { font-size: 48px; margin: 5px 0; line-height: 1; }
         
         /* 桌號區塊優化 */
@@ -247,7 +266,7 @@ def print_order(oid):
 
         /* 品項樣式 */
         .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
-        .item-name { font-size: 24px; font-weight: 900; width: 85%; }
+        .item-name { font-size: 24px; font-weight: 900; width: 85%; word-wrap: break-word; } /* 防止長字串撐破 */
         .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
         .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
 
@@ -488,3 +507,4 @@ def daily_report():
         </div>
     </body></html>
     """
+
