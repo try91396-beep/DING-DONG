@@ -344,11 +344,21 @@ def sales_ranking():
         except ValueError: pass
 
     if not utc_start:
+        # 如果沒有詳細時間，使用預設日期範圍工具
         utc_start, utc_end = get_tw_time_range(start_time_str, end_time_str)
 
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Completed'", (utc_start, utc_end))
-    rows = cur.fetchall(); conn.close()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # 修改：包含 'Pending' (處理中) 和 'Completed' (已完成)
+    cur.execute("""
+        SELECT content_json FROM orders 
+        WHERE created_at >= %s AND created_at <= %s 
+        AND status IN ('Pending', 'Completed')
+    """, (utc_start, utc_end))
+    
+    rows = cur.fetchall()
+    conn.close()
     
     stats = {}
     for r in rows:
@@ -356,6 +366,7 @@ def sales_ranking():
         try:
             items = json.loads(r[0])
             for i in items:
+                # 優先使用 name_zh，若無則用 name，若皆無則顯示 '未知品項'
                 name = i.get('name_zh', i.get('name', '未知品項'))
                 qty = int(float(i.get('qty', 1)))
                 stats[name] = stats.get(name, 0) + qty
@@ -368,25 +379,55 @@ def sales_ranking():
 @kitchen_bp.route('/report')
 def daily_report():
     target_date_str = request.args.get('date') or (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
+    # 取得當天的 UTC 時間範圍
     utc_start, utc_end = get_tw_time_range(target_date_str)
     
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # 建立產品價格對照表 (避免 JSON 內價格遺失時使用)
     cur.execute("SELECT name, price FROM products")
     price_map = {row[0]: row[1] for row in cur.fetchall()}
     
-    # 統計有效單
-    cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Completed'", (utc_start, utc_end))
+    # --- 統計有效單 (包含 處理中 + 完成) ---
+    # 1. 計算總單數與總金額
+    cur.execute("""
+        SELECT COUNT(*), SUM(total_price) 
+        FROM orders 
+        WHERE created_at >= %s AND created_at <= %s 
+        AND status IN ('Pending', 'Completed')
+    """, (utc_start, utc_end))
     v_count, v_total = cur.fetchone()
-    cur.execute("SELECT content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Completed'", (utc_start, utc_end))
+
+    # 2. 取得有效單的詳細內容 (用於計算各品項銷售)
+    cur.execute("""
+        SELECT content_json 
+        FROM orders 
+        WHERE created_at >= %s AND created_at <= %s 
+        AND status IN ('Pending', 'Completed')
+    """, (utc_start, utc_end))
     v_rows = cur.fetchall()
     
-    # 統計作廢單
-    cur.execute("SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Cancelled'", (utc_start, utc_end))
+    # --- 統計作廢單 (Cancelled) ---
+    cur.execute("""
+        SELECT COUNT(*), SUM(total_price) 
+        FROM orders 
+        WHERE created_at >= %s AND created_at <= %s 
+        AND status = 'Cancelled'
+    """, (utc_start, utc_end))
     x_count, x_total = cur.fetchone()
-    cur.execute("SELECT content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Cancelled'", (utc_start, utc_end))
+    
+    cur.execute("""
+        SELECT content_json 
+        FROM orders 
+        WHERE created_at >= %s AND created_at <= %s 
+        AND status = 'Cancelled'
+    """, (utc_start, utc_end))
     x_rows = cur.fetchall()
+    
     conn.close()
 
+    # 聚合統計函式 (解析 JSON 並加總數量與金額)
     def agg(rows):
         res = {}
         for r in rows:
@@ -399,8 +440,10 @@ def daily_report():
                     qty = int(float(qty_val)) if qty_val is not None else 1
                     
                     price_val = i.get('price')
-                    if price_val is not None: price = int(float(price_val))
-                    else: price = price_map.get(name, 0)
+                    if price_val is not None: 
+                        price = int(float(price_val))
+                    else: 
+                        price = price_map.get(name, 0)
                     
                     if name not in res: res[name] = {'qty':0, 'amt':0}
                     res[name]['qty'] += qty
@@ -408,8 +451,10 @@ def daily_report():
             except: continue
         return res
 
-    v_stats = agg(v_rows); x_stats = agg(x_rows)
+    v_stats = agg(v_rows) # 有效單統計
+    x_stats = agg(x_rows) # 作廢單統計
 
+    # 產生 HTML 表格的函式
     def tbl(stats_dict):
         if not stats_dict: return "<p style='text-align:center;color:#888;'>無銷售數據</p>"
         h = "<table style='width:100%; border-collapse:collapse; margin-top:10px;'><thead><tr style='border-bottom:2px solid #333;'><th style='text-align:left;'>品項</th><th style='text-align:right;'>數</th><th style='text-align:right;'>額</th></tr></thead><tbody>"
@@ -417,6 +462,7 @@ def daily_report():
             h += f"<tr style='border-bottom:1px solid #eee;'><td>{k}</td><td style='text-align:right;'>{v['qty']}</td><td style='text-align:right;'>${v['amt']:,}</td></tr>"
         return h + "</tbody></table>"
 
+    # 回傳完整的 HTML 報表頁面
     return f"""
     <!DOCTYPE html><html><head><meta charset="UTF-8"><title>日結報表_{target_date_str}</title>
     <style>
@@ -434,7 +480,7 @@ def daily_report():
         <div class="ticket">
             <h2 style="text-align:center; margin:0;">日結營收報表</h2>
             <p style="text-align:center; font-size:14px;">日期: {target_date_str}</p>
-            <div class="summary"><b>✅ 有效營收</b><br>單數: {v_count} | 總計: <span style="font-size:1.2em; color:#2e7d32;">${int(v_total or 0):,}</span></div>
+            <div class="summary"><b>✅ 有效營收 (含進行中)</b><br>單數: {v_count} | 總計: <span style="font-size:1.2em; color:#2e7d32;">${int(v_total or 0):,}</span></div>
             {tbl(v_stats)}
             <div class="summary void-sum" style="margin-top:20px;"><b>❌ 作廢統計</b><br>單數: {x_count} | 金額: ${int(x_total or 0):,}</div>
             {tbl(x_stats)}
