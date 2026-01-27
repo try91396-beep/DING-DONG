@@ -360,8 +360,7 @@ def reset_orders():
         delete_mode = request.form.get('delete_mode')
         
         if delete_mode == 'all':
-            # --- 模式一：清空全部 (原本的功能) ---
-            # TRUNCATE 速度快且會重置 ID
+            # --- 模式一：清空全部 ---
             cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
             msg = "💥 已清空所有歷史訂單，流水號已重置！"
             
@@ -374,14 +373,15 @@ def reset_orders():
                 return redirect(url_for('admin.admin_panel', msg="❌ 請選擇完整的開始與結束日期"))
             
             # 補上時間，確保涵蓋整天
-            # 例如：2023-10-27 變成 2023-10-27 00:00:00 到 2023-10-27 23:59:59
             start_ts = f"{start_date} 00:00:00"
             end_ts = f"{end_date} 23:59:59"
             
-            # 使用 DELETE 刪除指定範圍 (不會重置 ID 流水號，這是正常的資料庫行為)
+            # 【修正重點】：加上 interval '8 hours'
+            # 將資料庫的 UTC 時間 +8 小時轉為台灣時間，再與使用者輸入的區間比對
             cur.execute("""
                 DELETE FROM orders 
-                WHERE created_at >= %s AND created_at <= %s
+                WHERE (created_at + interval '8 hours') >= %s 
+                  AND (created_at + interval '8 hours') <= %s
             """, (start_ts, end_ts))
             
             deleted_count = cur.rowcount
@@ -402,20 +402,29 @@ def reset_orders():
 
     return redirect(url_for('admin.admin_panel', msg=msg))
 
+# toggle_product 維持不變 (微調了排版以符合 Python 慣例，但功能一致)
 @admin_bp.route('/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
-    row = cur.fetchone()
-    if row:
-        new_s = not row[0]
-        cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
-        conn.commit()
-        cur.close(); conn.close()
-        return jsonify({'status': 'success', 'is_available': new_s})
-    
-    cur.close(); conn.close()
-    return jsonify({'status': 'error'}), 404
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
+        row = cur.fetchone()
+        
+        if row:
+            new_s = not row[0]
+            cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
+            conn.commit()
+            return jsonify({'status': 'success', 'is_available': new_s})
+        
+        return jsonify({'status': 'error', 'message': 'Product not found'}), 404
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        # 確保連線一定會關閉
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @admin_bp.route('/delete_product/<int:pid>')
 def delete_product(pid):
