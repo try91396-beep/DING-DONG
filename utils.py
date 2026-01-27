@@ -146,7 +146,7 @@ def run_maintenance_tasks():
                 
                 # 1. 防止 Render 休眠 (Ping 網址)
                 try:
-                    urllib.request.urlopen("https://qr-mbdv.onrender.com", timeout=10)
+                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
                     print(f"[{now_str}] ✅ Web Ping 成功 (Render is alive)")
                 except Exception as e:
                     print(f"[{now_str}] ❌ Web Ping 失敗: {e}")
@@ -178,3 +178,4 @@ def start_background_tasks():
     # 啟動守護執行緒 (Daemon Thread)，隨主程式結束
     t = threading.Thread(target=run_maintenance_tasks, daemon=True)
     t.start()
+
