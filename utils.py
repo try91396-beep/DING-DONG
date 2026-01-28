@@ -8,15 +8,20 @@ import traceback
 from datetime import datetime, timedelta
 from database import get_db_connection
 
-# --- 1. Email 報告發送核心 (修正增強版) ---
+# --- 1. Email 報告發送核心 (User-Agent 修正版) ---
 def send_daily_report(app, manual_config=None, is_test=False):
     """
     發送日結報告。
     """
+    # 初始化變數
+    conn = None
+    cur = None
+    
     with app.app_context():
-        conn = get_db_connection()
-        cur = conn.cursor()
         try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            
             # 決定設定來源
             if manual_config:
                 config = manual_config
@@ -26,9 +31,6 @@ def send_daily_report(app, manual_config=None, is_test=False):
 
             api_key = config.get('resend_api_key', '').strip()
             to_email = config.get('report_email', '').strip()
-            
-            # 【修正 1】更嚴謹的預設值邏輯
-            # 如果 DB 裡是空字串，or 語法會讓它自動變成後面的預設值
             sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
 
             if not api_key or not to_email:
@@ -44,7 +46,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
                 subject = f"【測試】Resend API 設定確認 ({today_str})"
                 email_content = f"✅ Resend API 連線成功！\n\n寄件者: {sender_email}\n收件者: {to_email}\n此為測試信件。"
             else:
-                # 抓取正式數據 (維持原邏輯)
+                # 抓取正式數據
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 tw_end = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
                 utc_start = tw_start - timedelta(hours=8)
@@ -100,10 +102,17 @@ def send_daily_report(app, manual_config=None, is_test=False):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
+            # 【重要修正】加入 User-Agent 偽裝成瀏覽器，避免被 Cloudflare 阻擋
+            headers = {
+                "Authorization": f"Bearer {api_key}", 
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" 
+            }
+
             req = urllib.request.Request(
                 "https://api.resend.com/emails",
                 data=json.dumps(payload).encode('utf-8'),
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                headers=headers,
                 method='POST'
             )
             
@@ -113,38 +122,47 @@ def send_daily_report(app, manual_config=None, is_test=False):
                 print(f"✅ Email 發送成功: {res.status}")
                 return "✅ 發送成功"
 
-        # 【修正 2】專門捕捉 HTTPError 並讀取錯誤內容
         except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8') # 讀取 Resend 回傳的詳細 JSON
+            # 嘗試讀取錯誤訊息，若被封鎖可能讀不到，需要 try-catch
+            try:
+                error_body = e.read().decode('utf-8')
+            except:
+                error_body = "無法讀取錯誤內容 (可能是 Cloudflare HTML 頁面)"
+
             print(f"❌ Resend API 拒絕連線 (HTTP {e.code}):")
             print(f"👉 詳細原因: {error_body}")
             
-            # 嘗試解析 JSON 讓錯誤訊息更好讀
+            if e.code == 403 and "1010" in error_body:
+                 return "❌ 發送失敗: 被 Cloudflare 防火牆阻擋 (User-Agent)"
+
             try:
                 err_json = json.loads(error_body)
                 msg = err_json.get('message', error_body)
                 return f"❌ 發送失敗: {msg}"
             except:
-                return f"❌ 發送失敗 (HTTP {e.code}): {error_body}"
+                return f"❌ 發送失敗 (HTTP {e.code})"
 
         except Exception as e:
             traceback.print_exc()
             print(f"❌ 程式內部錯誤: {e}")
             return f"❌ 程式錯誤: {str(e)}"
+        
         finally:
-            cur.close()
-            conn.close()
+            if cur: cur.close()
+            if conn: conn.close()
 
 # --- 2. 背景維護工作 (維持不變) ---
 def run_maintenance_tasks(app):
-    print("🚀 背景維護執行緒已啟動 (Maintenance Thread Started)")
+    print("⏳ 背景任務等待啟動中 (Wait 30s)...")
+    time.sleep(30)
+    print("🚀 背景維護執行緒已正式啟動")
     last_sent_time = ""
     next_ping_time = datetime.now()
 
     while True:
         try:
             now_obj = datetime.now()
-            # ... (其餘背景任務程式碼保持不變，與發信無關) ...
+            
             # --- A. 自動發信檢查 ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
@@ -158,13 +176,14 @@ def run_maintenance_tasks(app):
             # --- B. 防休眠 Ping ---
             if now_obj >= next_ping_time:
                 try:
-                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
+                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
                 except Exception: pass
                 
                 try:
                     conn = get_db_connection()
                     conn.close()
                 except Exception: pass
+                
                 next_ping_time = now_obj + timedelta(seconds=300)
 
             time.sleep(60)
