@@ -166,7 +166,7 @@ def run_maintenance_tasks(app):
             # --- A. 自動發信檢查 ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
-            target_times = ["13:00", "18:00", "20:30", "14:40"]
+            target_times = ["13:00", "18:00", "20:30", "14:46"]
             
             if current_hm in target_times and current_hm != last_sent_time:
                 print(f"[{current_hm}] ⏰ 執行自動發信...")
@@ -194,4 +194,5 @@ def run_maintenance_tasks(app):
 def start_background_tasks(app):
     t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
     t.start()
+
 
