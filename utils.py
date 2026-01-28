@@ -8,17 +8,12 @@ import traceback
 from datetime import datetime, timedelta
 from database import get_db_connection
 
-# --- 1. Email 報告發送核心 (修正版) ---
+# --- 1. Email 報告發送核心 (修正增強版) ---
 def send_daily_report(app, manual_config=None, is_test=False):
     """
     發送日結報告。
-    :param app: Flask app 實體 (必須傳入以取得 Context)
-    :param manual_config: dict, 若提供則使用此設定 (後台測試用)，否則讀取 DB。
-    :param is_test: bool, 若為 True 則只發送測試內容。
     """
-    # 關鍵修正：建立應用程式上下文，讓執行緒知道資料庫設定在哪
     with app.app_context():
-        # print("🔄 準備發送報表...") # debug 用
         conn = get_db_connection()
         cur = conn.cursor()
         try:
@@ -31,7 +26,10 @@ def send_daily_report(app, manual_config=None, is_test=False):
 
             api_key = config.get('resend_api_key', '').strip()
             to_email = config.get('report_email', '').strip()
-            sender_email = config.get('sender_email', 'onboarding@resend.dev').strip()
+            
+            # 【修正 1】更嚴謹的預設值邏輯
+            # 如果 DB 裡是空字串，or 語法會讓它自動變成後面的預設值
+            sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
 
             if not api_key or not to_email:
                 print("❌ 未設定 Email 或 API Key，取消發送")
@@ -44,9 +42,9 @@ def send_daily_report(app, manual_config=None, is_test=False):
 
             if is_test:
                 subject = f"【測試】Resend API 設定確認 ({today_str})"
-                email_content = "✅ Resend API 連線成功！\n此為測試信件。"
+                email_content = f"✅ Resend API 連線成功！\n\n寄件者: {sender_email}\n收件者: {to_email}\n此為測試信件。"
             else:
-                # 抓取正式數據
+                # 抓取正式數據 (維持原邏輯)
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 tw_end = tw_now.replace(hour=23, minute=59, second=59, microsecond=999999)
                 utc_start = tw_start - timedelta(hours=8)
@@ -77,7 +75,6 @@ def send_daily_report(app, manual_config=None, is_test=False):
                             stats[name] = stats.get(name, 0) + qty
                     except: pass
                 
-                # 排序品項
                 sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)
                 item_text = "\n".join([f"• {k}: {v}" for k, v in sorted_stats]) if sorted_stats else "(無銷量)"
 
@@ -91,7 +88,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
 ❌ 作廢: {x_count} 筆 (${int(x_total):,})
 """
 
-            # 發送請求 (SSL Fix)
+            # 發送請求
             payload = {
                 "from": sender_email,
                 "to": [to_email],
@@ -110,72 +107,71 @@ def send_daily_report(app, manual_config=None, is_test=False):
                 method='POST'
             )
             
-            print(f"📡 正在連線 Resend API 發送至 {to_email} ...")
+            print(f"📡 正在連線 Resend API (From: {sender_email} -> To: {to_email}) ...")
+            
             with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
                 print(f"✅ Email 發送成功: {res.status}")
                 return "✅ 發送成功"
 
+        # 【修正 2】專門捕捉 HTTPError 並讀取錯誤內容
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') # 讀取 Resend 回傳的詳細 JSON
+            print(f"❌ Resend API 拒絕連線 (HTTP {e.code}):")
+            print(f"👉 詳細原因: {error_body}")
+            
+            # 嘗試解析 JSON 讓錯誤訊息更好讀
+            try:
+                err_json = json.loads(error_body)
+                msg = err_json.get('message', error_body)
+                return f"❌ 發送失敗: {msg}"
+            except:
+                return f"❌ 發送失敗 (HTTP {e.code}): {error_body}"
+
         except Exception as e:
             traceback.print_exc()
-            print(f"❌ Email 發送失敗: {e}")
-            return f"❌ 發送失敗: {str(e)}"
+            print(f"❌ 程式內部錯誤: {e}")
+            return f"❌ 程式錯誤: {str(e)}"
         finally:
             cur.close()
             conn.close()
 
-# --- 2. 背景維護工作 (防休眠 + 自動發信) ---
-# 修改：接收 app 參數
+# --- 2. 背景維護工作 (維持不變) ---
 def run_maintenance_tasks(app):
     print("🚀 背景維護執行緒已啟動 (Maintenance Thread Started)")
-    
     last_sent_time = ""
     next_ping_time = datetime.now()
 
     while True:
         try:
             now_obj = datetime.now()
-            now_str = now_obj.strftime("%Y-%m-%d %H:%M:%S")
-            
-            # --- A. 自動發信檢查 (每分鐘檢查) ---
+            # ... (其餘背景任務程式碼保持不變，與發信無關) ...
+            # --- A. 自動發信檢查 ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
-            
             target_times = ["13:00", "18:00", "20:30"]
             
             if current_hm in target_times and current_hm != last_sent_time:
-                print(f"[{now_str}] ⏰ 時間到 ({current_hm})，執行自動發信...")
-                # 修改：傳入 app
+                print(f"[{current_hm}] ⏰ 執行自動發信...")
                 send_daily_report(app)
                 last_sent_time = current_hm
 
-            # --- B. 防休眠 Ping (每 5 分鐘執行一次) ---
+            # --- B. 防休眠 Ping ---
             if now_obj >= next_ping_time:
-                # 1. 防止 Render 休眠 (Ping 網址)
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
-                    print(f"[{now_str}] ✅ Web Ping 成功")
-                except Exception:
-                    pass # 忽略錯誤保持安靜
-
-                # 2. 防止 DB 休眠
+                except Exception: pass
+                
                 try:
                     conn = get_db_connection()
                     conn.close()
-                    # print(f"[{now_str}] 💓 DB Heartbeat 成功")
-                except Exception:
-                    pass
-
+                except Exception: pass
                 next_ping_time = now_obj + timedelta(seconds=300)
 
             time.sleep(60)
-
         except Exception as e:
-            print(f"⚠️ 背景任務發生錯誤: {e}")
+            print(f"⚠️ 背景任務錯誤: {e}")
             time.sleep(60)
 
-# 修改：接收 app 參數
 def start_background_tasks(app):
-    # 啟動守護執行緒 (Daemon Thread)，隨主程式結束
-    # 將 app 傳入執行緒
     t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
     t.start()
