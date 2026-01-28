@@ -24,10 +24,11 @@ def admin_panel():
     if request.method == 'POST':
         action = request.form.get('action')
         
-        # --- 功能 1: 儲存設定 & 測試連線 ---
-        if action == 'save_settings':
+        # --- 功能 1: 儲存設定 & 測試連線 (合併處理) ---
+        # 【修正】: 監聽 'save_settings' (儲存鈕) 與 'test_email' (測試鈕)
+        if action == 'save_settings' or action == 'test_email':
             try:
-                # 【修正 1】定義 new_config (修復 NameError)
+                # 1. 取得表單資料
                 new_config = {
                     'report_email': request.form.get('report_email'),
                     'resend_api_key': request.form.get('resend_api_key'),
@@ -35,7 +36,7 @@ def admin_panel():
                     'sender_email': request.form.get('sender_email') or 'onboarding@resend.dev'
                 }
 
-                # 2. 寫入資料庫
+                # 2. 寫入資料庫 (無論是儲存還是測試，都先更新 DB)
                 for k, v in new_config.items():
                     cur.execute("""
                         INSERT INTO settings (key, value) 
@@ -44,11 +45,15 @@ def admin_panel():
                     """, (k, v))
                 conn.commit()
                 
-                # 3. 處理「測試連線」
-                if request.form.get('test_connection') == 'on':
+                # 3. 判斷是否執行測試
+                # 邏輯：如果勾選了 "test_connection" 或者 按下的是 "test_email" 按鈕
+                should_test = (request.form.get('test_connection') == 'on') or (action == 'test_email')
+
+                if should_test:
                     try:
                         # 傳入 current_app._get_current_object() 以支援 Thread 環境
                         app_obj = current_app._get_current_object()
+                        # 使用 manual_config 確保測試使用當下表單填寫的值
                         result_msg = send_daily_report(app_obj, manual_config=new_config, is_test=True)
                         
                         if "✅" in result_msg:
@@ -384,7 +389,6 @@ def reset_orders():
             start_ts = f"{start_date} 00:00:00"
             end_ts = f"{end_date} 23:59:59"
             
-            # 【修正重點】：加上 interval '8 hours'
             # 將資料庫的 UTC 時間 +8 小時轉為台灣時間，再與使用者輸入的區間比對
             cur.execute("""
                 DELETE FROM orders 
