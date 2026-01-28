@@ -1,4 +1,4 @@
-import io 
+import io
 import json
 import threading
 import traceback
@@ -6,7 +6,7 @@ import pandas as pd
 from flask import Blueprint, render_template, request, redirect, url_for, jsonify, send_file, current_app
 
 # 從資料庫模組匯入連線函式
-from database import get_db_connection 
+from database import get_db_connection
 # 從 utils 匯入發信功能
 from utils import send_daily_report
 
@@ -26,10 +26,16 @@ def admin_panel():
         
         # --- 功能 1: 儲存設定 & 測試連線 ---
         if action == 'save_settings':
-            # ... (取得 sender_input 與 new_config 的程式碼保持不變) ...
-            
-            # 2. 寫入資料庫 (這部分保持不變)
             try:
+                # 【修正 1】定義 new_config (修復 NameError)
+                new_config = {
+                    'report_email': request.form.get('report_email'),
+                    'resend_api_key': request.form.get('resend_api_key'),
+                    # 如果未填寫 Sender，預設使用 Resend 測試帳號以避免 403 錯誤
+                    'sender_email': request.form.get('sender_email') or 'onboarding@resend.dev'
+                }
+
+                # 2. 寫入資料庫
                 for k, v in new_config.items():
                     cur.execute("""
                         INSERT INTO settings (key, value) 
@@ -41,7 +47,7 @@ def admin_panel():
                 # 3. 處理「測試連線」
                 if request.form.get('test_connection') == 'on':
                     try:
-                        # [修改重點 1] 傳入 current_app._get_current_object()
+                        # 傳入 current_app._get_current_object() 以支援 Thread 環境
                         app_obj = current_app._get_current_object()
                         result_msg = send_daily_report(app_obj, manual_config=new_config, is_test=True)
                         
@@ -59,13 +65,13 @@ def admin_panel():
             except Exception as e:
                 conn.rollback()
                 msg = f"❌ 儲存失敗: {e}"
-
-            cur.close(); conn.close()
+            finally:
+                cur.close(); conn.close()
+            
             return redirect(url_for('admin.admin_panel', msg=msg))
 
         # --- 功能 2: 手動觸發日結報表 (背景執行) ---
         elif action == 'send_report_now':
-            # [修改重點 2] 獲取真實的 app 物件並傳入執行緒
             try:
                 # 取得 app 實體 (Thread 內無法直接用 current_app)
                 app_obj = current_app._get_current_object()
@@ -107,17 +113,19 @@ def admin_panel():
             return redirect(url_for('admin.admin_panel', msg=msg))
 
     # --- GET: 讀取資料顯示頁面 ---
-    cur.execute("SELECT key, value FROM settings")
-    config = dict(cur.fetchall())
-    
-    cur.execute("""
-        SELECT id, name, price, category, is_available, print_category, sort_order, image_url, 
-               name_en, name_jp, name_kr 
-        FROM products 
-        ORDER BY sort_order ASC, id DESC
-    """)
-    prods = cur.fetchall()
-    cur.close(); conn.close()
+    try:
+        cur.execute("SELECT key, value FROM settings")
+        config = dict(cur.fetchall())
+        
+        cur.execute("""
+            SELECT id, name, price, category, is_available, print_category, sort_order, image_url, 
+                   name_en, name_jp, name_kr 
+            FROM products 
+            ORDER BY sort_order ASC, id DESC
+        """)
+        prods = cur.fetchall()
+    finally:
+        cur.close(); conn.close()
     
     return render_template('admin.html', config=config, prods=prods, msg=msg)
 
@@ -402,7 +410,6 @@ def reset_orders():
 
     return redirect(url_for('admin.admin_panel', msg=msg))
 
-# toggle_product 維持不變 (微調了排版以符合 Python 慣例，但功能一致)
 @admin_bp.route('/toggle_product/<int:pid>', methods=['POST'])
 def toggle_product(pid):
     conn = get_db_connection()
@@ -422,7 +429,6 @@ def toggle_product(pid):
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
-        # 確保連線一定會關閉
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
