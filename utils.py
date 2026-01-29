@@ -177,11 +177,13 @@ def run_maintenance_tasks(app):
             if now_obj >= next_ping_time:
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
+                    print(f"[{now_str}] ✅ Web Ping 成功")
                 except Exception: pass
                 
                 try:
                     conn = get_db_connection()
                     conn.close()
+                    print(f"[{now_str}] 💓 DB Heartbeat 成功")
                 except Exception: pass
                 
                 next_ping_time = now_obj + timedelta(seconds=300)
@@ -194,6 +196,7 @@ def run_maintenance_tasks(app):
 def start_background_tasks(app):
     t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
     t.start()
+
 
 
 
