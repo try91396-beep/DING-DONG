@@ -8,12 +8,13 @@ import traceback
 from datetime import datetime, timedelta
 from database import get_db_connection
 
-# --- 1. Email 報告發送核心 (User-Agent 修正版) ---
+# ==========================================
+# 1. Email 報告發送核心 (User-Agent 修正版)
+# ==========================================
 def send_daily_report(app, manual_config=None, is_test=False):
     """
     發送日結報告。
     """
-    # 初始化變數
     conn = None
     cur = None
     
@@ -102,7 +103,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
-            # 【重要修正】加入 User-Agent 偽裝成瀏覽器，避免被 Cloudflare 阻擋
+            # 【重要修正】加入 User-Agent 偽裝成瀏覽器
             headers = {
                 "Authorization": f"Bearer {api_key}", 
                 "Content-Type": "application/json",
@@ -123,14 +124,12 @@ def send_daily_report(app, manual_config=None, is_test=False):
                 return "✅ 發送成功"
 
         except urllib.error.HTTPError as e:
-            # 嘗試讀取錯誤訊息，若被封鎖可能讀不到，需要 try-catch
             try:
                 error_body = e.read().decode('utf-8')
             except:
-                error_body = "無法讀取錯誤內容 (可能是 Cloudflare HTML 頁面)"
+                error_body = "無法讀取錯誤內容"
 
-            print(f"❌ Resend API 拒絕連線 (HTTP {e.code}):")
-            print(f"👉 詳細原因: {error_body}")
+            print(f"❌ Resend API 拒絕連線 (HTTP {e.code}): {error_body}")
             
             if e.code == 403 and "1010" in error_body:
                  return "❌ 發送失敗: 被 Cloudflare 防火牆阻擋 (User-Agent)"
@@ -144,25 +143,29 @@ def send_daily_report(app, manual_config=None, is_test=False):
 
         except Exception as e:
             traceback.print_exc()
-            print(f"❌ 程式內部錯誤: {e}")
             return f"❌ 程式錯誤: {str(e)}"
         
         finally:
             if cur: cur.close()
             if conn: conn.close()
 
-# --- 2. 背景維護工作 (維持不變) ---
+# ==========================================
+# 2. 背景維護工作 (修正 Print 顯示)
+# ==========================================
 def run_maintenance_tasks(app):
     print("⏳ 背景任務等待啟動中 (Wait 30s)...")
     time.sleep(30)
     print("🚀 背景維護執行緒已正式啟動")
+    
     last_sent_time = ""
     next_ping_time = datetime.now()
 
     while True:
         try:
             now_obj = datetime.now()
-            
+            # 【修正】定義 now_str 供下方 Print 使用
+            now_str = now_obj.strftime("%H:%M:%S")
+
             # --- A. 自動發信檢查 ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
@@ -175,17 +178,23 @@ def run_maintenance_tasks(app):
 
             # --- B. 防休眠 Ping ---
             if now_obj >= next_ping_time:
+                # 1. Ping 網站
                 try:
+                    # 這裡請確保網址是您正確的 Render 網址
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
                     print(f"[{now_str}] ✅ Web Ping 成功")
-                except Exception: pass
+                except Exception: 
+                    pass # 失敗不報錯，保持安靜
                 
+                # 2. Ping 資料庫 (維持連線)
                 try:
                     conn = get_db_connection()
                     conn.close()
                     print(f"[{now_str}] 💓 DB Heartbeat 成功")
-                except Exception: pass
+                except Exception: 
+                    pass
                 
+                # 設定下次 Ping 的時間 (5分鐘後)
                 next_ping_time = now_obj + timedelta(seconds=300)
 
             time.sleep(60)
@@ -196,7 +205,3 @@ def run_maintenance_tasks(app):
 def start_background_tasks(app):
     t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
     t.start()
-
-
-
-
