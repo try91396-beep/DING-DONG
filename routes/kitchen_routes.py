@@ -1,11 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify
 import json
-# import logging  <-- [移除] 不再需要 logging 模組
 from datetime import datetime, timedelta
 from database import get_db_connection
-
-# [移除] logging.basicConfig 設定
-# 現在直接使用 print 輸出到 Console
 
 kitchen_bp = Blueprint('kitchen', __name__)
 
@@ -94,7 +90,6 @@ def check_new_orders():
         new_orders_data = cur.fetchall()
         new_order_ids = [r[0] for r in new_orders_data]
 
-        # [修改] 改用 print 輸出 Log
         if new_order_ids:
             seq_list = [f"#{r[1]}" for r in new_orders_data]
             now = get_current_time_str()
@@ -173,7 +168,7 @@ def check_new_orders():
     })
 
 
-# --- 3. 補印功能 (整合分區列印 - 80mm Auto長度版 - 桌號優化) ---
+# --- 3. 補印功能 (整合分區列印 - 80mm Auto長度版 - 桌號優化 - 雙語結帳單) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     # 參數 type: 'all' (預設), 'kitchen', 'receipt'
@@ -215,20 +210,16 @@ def print_order(oid):
         else: other_items.append(item)
 
     # --- CSS 樣式設定 (80mm Auto Height) ---
-    # 關鍵修改：
-    # 1. @page { size: 80mm auto; } 讓瀏覽器知道高度是自動的
-    # 2. body { height: auto; } 允許內容撐開
-    # 3. .ticket { padding-bottom: 20px; } 底部留白防止切刀切到文字
     style = """
     <style>
         @page {
-            size: 80mm auto;  /* 寬度固定，高度自動 */
-            margin: 0mm;      /* 移除瀏覽器預設頁面邊距 */
+            size: 80mm auto;  
+            margin: 0mm;      
         }
         body { 
             font-family: 'Microsoft JhengHei', sans-serif; 
-            width: 78mm;      /* 設定內容寬度略小於 80mm 防止溢出 */
-            height: auto;     /* 高度自動 */
+            width: 78mm;      
+            height: auto;     
             margin: 0 auto; 
             padding: 2px; 
             color: #000;
@@ -238,14 +229,14 @@ def print_order(oid):
             width: 100%;
             display: block;
             border-bottom: 3px dashed #000; 
-            padding: 10px 0 30px 0; /* 底部增加 Padding 防止切刀切到字 */
+            padding: 10px 0 30px 0; 
             margin-bottom: 10px;
-            page-break-after: always; /* 每張單據後強制換頁(切刀) */
+            page-break-after: always; 
             position: relative; 
             box-sizing: border-box;
         }
         .ticket:last-child {
-            page-break-after: auto; /* 最後一張不一定要強制換頁，視驅動而定 */
+            page-break-after: auto; 
         }
         .void-watermark { 
             position: absolute; top: 30%; left: 5%; 
@@ -264,11 +255,17 @@ def print_order(oid):
         .table-val { font-size: 42px; font-weight: 900; line-height: 1; }
         .time-row { font-size: 14px; text-align: center; margin-top: 5px; }
 
-        /* 品項樣式 */
+        /* 品項樣式 - 修改支援雙語 */
         .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
-        .item-name { font-size: 24px; font-weight: 900; width: 85%; word-wrap: break-word; } /* 防止長字串撐破 */
+        
+        .name-col { width: 85%; display: flex; flex-direction: column; }
+        .item-name-main { font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.1; }
+        .item-name-sub { font-size: 16px; font-weight: bold; color: #444; margin-top: 2px; line-height: 1.1; }
+        
         .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
+        
         .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
+        .opt-sub { font-size: 14px; color: #555; margin-top: -2px; }
 
         .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
     </style>
@@ -292,13 +289,42 @@ def print_order(oid):
         """
         
         for i in item_list:
-            name = i.get('name_zh') or i.get('name')
-            qty = i.get('qty', 1)
-            opts = i.get('options_zh') or i.get('options', [])
-            
-            h += f"<div class='item-row'><span class='item-name'>{name}</span><span class='item-qty'>x{qty}</span></div>"
-            if opts:
-                h += f"<div class='opt'>└ {', '.join(opts)}</div>"
+            if is_receipt:
+                # --- 結帳單模式：主語言(通常為客語) + 中文註釋 ---
+                
+                # 名稱處理
+                main_name = i.get('name', 'Item')     # 客人點餐語言
+                sub_name = i.get('name_zh', '')       # 中文名稱
+                
+                name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
+                # 如果有中文且跟主語言不同，才顯示中文
+                if sub_name and sub_name != main_name:
+                    name_html += f"<span class='item-name-sub'>{sub_name}</span>"
+                name_html += "</div>"
+                
+                qty = i.get('qty', 1)
+                h += f"<div class='item-row'>{name_html}<span class='item-qty'>x{qty}</span></div>"
+
+                # 選項處理
+                opts_main = i.get('options', [])
+                opts_sub = i.get('options_zh', [])
+                
+                if opts_main:
+                    h += f"<div class='opt'>└ {', '.join(opts_main)}</div>"
+                # 如果有中文選項且跟主選項不同
+                if opts_sub and opts_sub != opts_main:
+                    h += f"<div class='opt opt-sub'>({', '.join(opts_sub)})</div>"
+
+            else:
+                # --- 廚房單模式：優先顯示中文 (原有邏輯) ---
+                name = i.get('name_zh') or i.get('name')
+                qty = i.get('qty', 1)
+                opts = i.get('options_zh') or i.get('options', [])
+                
+                # 廚房單不需要複雜結構，直接顯示
+                h += f"<div class='item-row'><div class='name-col'><span class='item-name-main'>{name}</span></div><span class='item-qty'>x{qty}</span></div>"
+                if opts:
+                    h += f"<div class='opt'>└ {', '.join(opts)}</div>"
         
         if is_receipt: 
             h += f"<div class='total'>總計 Total: ${int(total_price)}</div>"
@@ -507,4 +533,3 @@ def daily_report():
         </div>
     </body></html>
     """
-
