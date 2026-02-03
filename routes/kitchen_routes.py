@@ -168,7 +168,7 @@ def check_new_orders():
     })
 
 
-# --- 3. 補印功能 (整合分區列印 - 80mm Auto長度版 - 桌號優化 - 雙語結帳單) ---
+# --- 3. 補印功能 (整合 RawBT Android 列印) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     # 參數 type: 'all' (預設), 'kitchen', 'receipt'
@@ -181,8 +181,6 @@ def print_order(oid):
     
     if not order:
         conn.close()
-        now = get_current_time_str()
-        print(f"[{now}] ⚠️ 列印失敗：找不到訂單 ID {oid}")
         return "訂單不存在", 404
     
     table_num, total_price, seq, content_json, created_at, status = order
@@ -190,9 +188,6 @@ def print_order(oid):
     
     # 時間調整
     time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
-
-    now = get_current_time_str()
-    print(f"[{now}] 🖨️ 列印生成 | 序號: #{seq:03d} | 桌號: {table_num} | 模式: {print_type} | ID: {oid}")
 
     # 取得產品分類對照表
     cur.execute("SELECT name, print_category FROM products")
@@ -203,70 +198,53 @@ def print_order(oid):
     noodle_items, soup_items, other_items = [], [], []
     for item in items:
         p_name = item.get('name_zh') or item.get('name')
-        p_cat = product_map.get(p_name, 'Noodle') # 預設為麵區
+        p_cat = product_map.get(p_name, 'Noodle') 
         
         if p_cat == 'Noodle': noodle_items.append(item)
         elif p_cat == 'Soup': soup_items.append(item)
         else: other_items.append(item)
 
-    # --- CSS 樣式設定 (80mm Auto Height) ---
+    # --- CSS 樣式設定 (保持不變) ---
     style = """
     <style>
-        @page {
-            size: 80mm auto;  
-            margin: 0mm;      
-        }
+        @page { margin: 0; }
         body { 
             font-family: 'Microsoft JhengHei', sans-serif; 
             width: 78mm;      
-            height: auto;     
             margin: 0 auto; 
-            padding: 2px; 
+            padding: 5px; 
             color: #000;
             background: #fff;
         }
         .ticket { 
-            width: 100%;
-            display: block;
             border-bottom: 3px dashed #000; 
-            padding: 10px 0 30px 0; 
-            margin-bottom: 10px;
-            page-break-after: always; 
+            padding: 10px 0 20px 0; 
+            margin-bottom: 15px;
             position: relative; 
-            box-sizing: border-box;
-        }
-        .ticket:last-child {
-            page-break-after: auto; 
         }
         .void-watermark { 
-            position: absolute; top: 30%; left: 5%; 
-            font-size: 50px; color: rgba(0,0,0,0.2); 
-            transform: rotate(-30deg); border: 5px solid rgba(0,0,0,0.2); 
-            padding: 10px; z-index: 100; pointer-events: none; font-weight: 900;
+            position: absolute; top: 30%; left: 10%; 
+            font-size: 40px; color: rgba(0,0,0,0.2); 
+            transform: rotate(-30deg); border: 4px solid rgba(0,0,0,0.2); 
+            font-weight: 900; pointer-events: none;
         }
-        .head { text-align: center; margin-bottom: 10px; }
-        .head h2 { font-size: 22px; margin: 0; background: #000; color: #fff; padding: 5px; border-radius: 4px; -webkit-print-color-adjust: exact; }
-        .head h1 { font-size: 48px; margin: 5px 0; line-height: 1; }
+        .head { text-align: center; margin-bottom: 5px; }
+        .head h2 { font-size: 20px; margin: 0; background: #000; color: #fff; display:inline-block; padding: 2px 8px; border-radius: 4px; }
+        .head h1 { font-size: 42px; margin: 5px 0; line-height: 1; }
         
-        /* 桌號區塊優化 */
-        .info-box { border-bottom: 3px solid #000; padding-bottom: 5px; margin-bottom: 10px; }
-        .table-row { display: flex; justify-content: center; align-items: baseline; gap: 15px; }
-        .table-label { font-size: 24px; font-weight: bold; }
-        .table-val { font-size: 42px; font-weight: 900; line-height: 1; }
-        .time-row { font-size: 14px; text-align: center; margin-top: 5px; }
+        .info-box { border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 10px; }
+        .table-row { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
+        .table-label { font-size: 20px; font-weight: bold; }
+        .table-val { font-size: 36px; font-weight: 900; }
+        .time-row { font-size: 12px; text-align: center; }
 
-        /* 品項樣式 - 修改支援雙語 */
-        .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
+        .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px; line-height: 1.1; }
+        .name-col { width: 85%; }
+        .item-name-main { font-size: 22px; font-weight: 800; display:block; }
+        .item-name-sub { font-size: 16px; font-weight: bold; color: #333; }
+        .item-qty { font-size: 22px; font-weight: 900; white-space: nowrap; }
         
-        .name-col { width: 85%; display: flex; flex-direction: column; }
-        .item-name-main { font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.1; }
-        .item-name-sub { font-size: 16px; font-weight: bold; color: #444; margin-top: 2px; line-height: 1.1; }
-        
-        .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
-        
-        .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
-        .opt-sub { font-size: 14px; color: #555; margin-top: -2px; }
-
+        .opt { font-size: 16px; font-weight: bold; padding-left: 10px; margin-top: 2px; }
         .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
     </style>
     """
@@ -281,7 +259,7 @@ def print_order(oid):
         h += f"""
         <div class='info-box'>
             <div class='table-row'>
-                <span class='table-label'>桌號 Table</span>
+                <span class='table-label'>桌號</span>
                 <span class='table-val'>{table_num}</span>
             </div>
             <div class='time-row'>{time_str}</div>
@@ -289,66 +267,81 @@ def print_order(oid):
         """
         
         for i in item_list:
-            if is_receipt:
-                # --- 結帳單模式：主語言(通常為客語) + 中文註釋 ---
-                
-                # 核心修正：避免顯示 "Item"
-                # 邏輯：先找 name -> 再找 name_en -> 都沒有就用 name_zh
-                main_name = i.get('name') or i.get('name_en') or i.get('name_zh') or 'Unknown Item'
-                sub_name = i.get('name_zh', '')       # 中文名稱
-                
-                name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
-                
-                # 如果有中文且中文不等於主名稱，才顯示下方中文
-                if sub_name and sub_name != main_name:
-                    name_html += f"<span class='item-name-sub'>{sub_name}</span>"
-                name_html += "</div>"
-                
-                qty = i.get('qty', 1)
-                h += f"<div class='item-row'>{name_html}<span class='item-qty'>x{qty}</span></div>"
+            # 名稱處理 (優先顯示中文)
+            name_zh = i.get('name_zh', '')
+            name_en = i.get('name', '') or i.get('name_en', '')
+            
+            # 如果有中文就主顯中文，沒有就顯示英文
+            main_name = name_zh if name_zh else name_en
+            sub_name = name_en if (name_zh and name_en) else ""
+            
+            # 在廚房單只需顯示主名稱(中文)，結帳單可顯示雙語
+            if not is_receipt: sub_name = "" 
 
-                # 選項處理
-                # 同樣邏輯：先找 options -> 再找 options_zh
-                opts_main = i.get('options') or i.get('options_zh', [])
-                opts_sub = i.get('options_zh', [])
-                
-                if opts_main:
-                    h += f"<div class='opt'>└ {', '.join(opts_main)}</div>"
-                
-                # 如果有中文選項且跟主選項不同
-                if opts_sub and opts_sub != opts_main:
-                    h += f"<div class='opt opt-sub'>({', '.join(opts_sub)})</div>"
+            name_html = f"<span class='item-name-main'>{main_name}</span>"
+            if sub_name: name_html += f"<span class='item-name-sub'>{sub_name}</span>"
+            
+            qty = i.get('qty', 1)
+            h += f"<div class='item-row'><div class='name-col'>{name_html}</div><span class='item-qty'>x{qty}</span></div>"
 
-            else:
-                # --- 廚房單模式：優先顯示中文 (原有邏輯) ---
-                name = i.get('name_zh') or i.get('name')
-                qty = i.get('qty', 1)
-                opts = i.get('options_zh') or i.get('options', [])
-                
-                # 廚房單不需要複雜結構，直接顯示
-                h += f"<div class='item-row'><div class='name-col'><span class='item-name-main'>{name}</span></div><span class='item-qty'>x{qty}</span></div>"
-                if opts:
-                    h += f"<div class='opt'>└ {', '.join(opts)}</div>"
+            # 選項處理
+            opts = i.get('options_zh') or i.get('options', [])
+            if opts: h += f"<div class='opt'>└ {', '.join(opts)}</div>"
         
         if is_receipt: 
-            h += f"<div class='total'>總計 Total: ${int(total_price)}</div>"
+            h += f"<div class='total'>${int(total_price)}</div>"
             
         return h + "</div>"
 
+    # 生成 HTML 內容
     content = ""
     if print_type == 'receipt': 
         content = generate_html("結帳單 Receipt", items, is_receipt=True)
     elif print_type == 'kitchen':
-        content += generate_html("廚房單 - 麵區", noodle_items)
-        content += generate_html("廚房單 - 湯區", soup_items)
-        content += generate_html("廚房單 - 其他", other_items)
-    else: # all (自動列印通常走這裡)
+        content += generate_html("麵區", noodle_items)
+        content += generate_html("湯區", soup_items)
+        content += generate_html("其他", other_items)
+    else: 
         content = generate_html("結帳單 Receipt", items, is_receipt=True)
-        content += generate_html("廚房單 - 麵區", noodle_items)
-        content += generate_html("廚房單 - 湯區", soup_items)
-        content += generate_html("廚房單 - 其他", other_items)
+        content += generate_html("麵區", noodle_items)
+        content += generate_html("湯區", soup_items)
+        content += generate_html("其他", other_items)
 
-    return f"<html><head>{style}</head><body onload='window.print();setTimeout(()=>window.close(),500);'>{content}</body></html>"
+    # 組合完整 HTML (注意：這裡移除了 onload=window.print)
+    full_html = f"<html><head>{style}</head><body>{content}</body></html>"
+
+    # --- RawBT 整合核心邏輯 ---
+    # 將 HTML 轉為 Base64 編碼
+    b64_data = base64.b64encode(full_html.encode('utf-8')).decode('utf-8')
+    
+    # RawBT Scheme 格式
+    rawbt_url = f"rawbt:data:text/html;base64,{b64_data}"
+
+    # 回傳一個自動跳轉頁面
+    # 邏輯：瀏覽器打開此頁 -> 執行 JS -> 跳轉至 rawbt App -> 關閉此頁
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <body>
+        <h2 style="text-align:center; margin-top:50px;">正在呼叫列印機...</h2>
+        <script>
+            // 1. 呼叫 RawBT
+            window.location.href = "{rawbt_url}";
+            
+            // 2. 短暫延遲後關閉視窗 (避免畫面殘留)
+            setTimeout(function() {{
+                // 檢查是否由 window.open 開啟，是則關閉
+                if(window.opener) {{
+                    window.close();
+                }} else {{
+                    // 如果不是 popup，可以導回上一頁或顯示完成
+                    document.body.innerHTML = '<h2 style="text-align:center; color:green;">列印指令已發送</h2><div style="text-align:center;"><button onclick="history.back()" style="padding:10px 20px; font-size:20px;">返回</button></div>';
+                }}
+            }}, 1000);
+        </script>
+    </body>
+    </html>
+    """
 
 
 # --- 4. 狀態變更 (完成/作廢) ---
@@ -537,3 +530,4 @@ def daily_report():
         </div>
     </body></html>
     """
+
