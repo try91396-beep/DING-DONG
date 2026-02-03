@@ -1,6 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify
 import json
-import base64
+import base64  # <--- ⚠️ 修正重點：這裡必須導入 base64
+import traceback 
 from datetime import datetime, timedelta
 from database import get_db_connection
 
@@ -531,5 +532,6 @@ def daily_report():
         </div>
     </body></html>
     """
+
 
 
