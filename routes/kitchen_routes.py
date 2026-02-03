@@ -292,12 +292,14 @@ def print_order(oid):
             if is_receipt:
                 # --- 結帳單模式：主語言(通常為客語) + 中文註釋 ---
                 
-                # 名稱處理
-                main_name = i.get('name', 'Item')     # 客人點餐語言
+                # 核心修正：避免顯示 "Item"
+                # 邏輯：先找 name -> 再找 name_en -> 都沒有就用 name_zh
+                main_name = i.get('name') or i.get('name_en') or i.get('name_zh') or 'Unknown Item'
                 sub_name = i.get('name_zh', '')       # 中文名稱
                 
                 name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
-                # 如果有中文且跟主語言不同，才顯示中文
+                
+                # 如果有中文且中文不等於主名稱，才顯示下方中文
                 if sub_name and sub_name != main_name:
                     name_html += f"<span class='item-name-sub'>{sub_name}</span>"
                 name_html += "</div>"
@@ -306,11 +308,13 @@ def print_order(oid):
                 h += f"<div class='item-row'>{name_html}<span class='item-qty'>x{qty}</span></div>"
 
                 # 選項處理
-                opts_main = i.get('options', [])
+                # 同樣邏輯：先找 options -> 再找 options_zh
+                opts_main = i.get('options') or i.get('options_zh', [])
                 opts_sub = i.get('options_zh', [])
                 
                 if opts_main:
                     h += f"<div class='opt'>└ {', '.join(opts_main)}</div>"
+                
                 # 如果有中文選項且跟主選項不同
                 if opts_sub and opts_sub != opts_main:
                     h += f"<div class='opt opt-sub'>({', '.join(opts_sub)})</div>"
