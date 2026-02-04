@@ -11,37 +11,49 @@ kitchen_bp = Blueprint('kitchen', __name__)
 def get_current_time_str():
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
-# --- 輔助函式：計算台灣時間範圍 ---
+# --- 輔助函式：計算台灣時間範圍 (已修正訂單消失 bug) ---
 def get_tw_time_range(target_date_str=None, end_date_str=None):
     try:
-        # 處理含時間的字串 (例如來自銷售排行的 datetime-local)
+        # 1. 決定起始時間 tw_start
         if target_date_str and 'T' in target_date_str:
+            # 情況 A: 傳入完整時間 (例如 2023-10-01T14:30)
             tw_start = datetime.strptime(target_date_str, '%Y-%m-%dT%H:%M')
+            is_specific_time = True
         elif target_date_str:
+            # 情況 B: 傳入日期 (例如 2023-10-01)
             tw_start = datetime.strptime(target_date_str, '%Y-%m-%d')
+            is_specific_time = False
         else:
+            # 情況 C: 沒傳入 (預設為今日)
             tw_start = datetime.utcnow() + timedelta(hours=8)
+            is_specific_time = False
         
-        # 如果只有日期，預設從 00:00:00 開始
-        if target_date_str and 'T' not in target_date_str:
+        # 2. 關鍵修正：如果不是指定「特定時間點」，一律將時間歸零從 00:00:00 開始
+        # 這樣才能抓到「今天」所有的單，而不是「現在這一秒以後」的單
+        if not is_specific_time:
             tw_start = tw_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
+        # 3. 決定結束時間 tw_end
         if end_date_str and 'T' in end_date_str:
             tw_end = datetime.strptime(end_date_str, '%Y-%m-%dT%H:%M')
         elif end_date_str:
             tw_end = datetime.strptime(end_date_str, '%Y-%m-%d')
             tw_end = tw_end.replace(hour=23, minute=59, second=59, microsecond=999999)
         else:
-            # 預設結束時間為當天最後一秒
+            # 預設結束時間為當天最後一秒 (涵蓋整天)
+            # 注意：這裡使用 tw_start 的日期部分來設定結束時間
             tw_end = tw_start.replace(hour=23, minute=59, second=59, microsecond=999999)
         
-        # 轉回 UTC 給資料庫查詢
+        # 4. 轉回 UTC 給資料庫查詢 (-8小時)
         return tw_start - timedelta(hours=8), tw_end - timedelta(hours=8)
+
     except Exception as e:
         print(f"Time Range Error: {e}")
+        # 發生錯誤時的保險措施：回傳今日整天
         now = datetime.utcnow() + timedelta(hours=8)
-        return now.replace(hour=0, minute=0, second=0) - timedelta(hours=8), \
-               now.replace(hour=23, minute=59, second=59) - timedelta(hours=8)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return start - timedelta(hours=8), end - timedelta(hours=8)
 
 
 # --- 1. 廚房看板主頁 ---
@@ -529,3 +541,4 @@ def daily_report():
         </div>
     </body></html>
     """
+
