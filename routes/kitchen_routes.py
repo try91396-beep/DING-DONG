@@ -110,7 +110,7 @@ def check_new_orders():
             formatted_total = f"{int(total or 0)}" 
             buttons = ""
 
-            # 定義列印按鈕
+            # 定義列印按鈕 (預設列印全部，若需要選單需在前端 HTML 修改)
             print_action = f"window.open('/kitchen/print_order/{oid}?type=all', '_blank', 'width=350,height=600');"
 
             if status == 'Pending':
@@ -200,7 +200,7 @@ def print_order(oid):
             elif p_cat == 'Soup': soup_items.append(item)
             else: other_items.append(item)
 
-        # CSS 優化：強制黑色，加深線條
+        # CSS 優化：強制黑色，加深線條，標題改為白底黑字黑框
         style = """
         <style>
             @page { size: 80mm auto; margin: 0mm; }
@@ -231,7 +231,7 @@ def print_order(oid):
 
             .head { text-align: center; margin-bottom: 15px; }
             
-            /* 修改後的標題樣式：白底黑字加黑框 */
+            /* 修改後的標題樣式：白底黑字加黑框 (最清晰) */
             .head h2 { 
                 font-size: 26px; 
                 margin: 0; 
@@ -249,7 +249,7 @@ def print_order(oid):
             .table-row { display: flex; justify-content: center; align-items: baseline; gap: 15px; }
             .table-label { font-size: 24px; font-weight: bold; }
             .table-val { font-size: 42px; font-weight: 900; line-height: 1; }
-            .time-row { font-size: 14px; text-align: center; margin-top: 5px; font-weight: bold;}
+            .time-row { font-size: 14px; text-align: center; margin-top: 5px; font-weight: bold; color: #000; }
 
             .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
             .name-col { width: 85%; display: flex; flex-direction: column; }
@@ -258,7 +258,7 @@ def print_order(oid):
             .item-name-sub { font-size: 16px; font-weight: bold; color: #000; margin-top: 2px; }
             .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
             
-            /* 選項也改為純黑 */
+            /* 選項也改為純黑，避免灰色在熱感紙上看不清 */
             .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
             .opt-sub { font-size: 14px; color: #000; margin-top: -2px; }
             
@@ -299,6 +299,11 @@ def print_order(oid):
 
         content = ""
         has_content = False
+        
+        # 邏輯說明：
+        # 如果 type='all'，兩個 if 都會成立 -> 印收據 + 印廚房
+        # 如果 type='receipt'，只有第一個 if 成立 -> 印收據
+        # 如果 type='kitchen'，只有第二個 if 成立 -> 印廚房
         
         if print_type in ['all', 'receipt']:
             content += generate_html("結帳單 Receipt", items, is_receipt=True)
