@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, jsonify
 import json
-import base64  # <--- ⚠️ 核心新增：用於 RawBT 編碼
+import base64  # 用於 RawBT 編碼
 import traceback 
 from datetime import datetime, timedelta
 from database import get_db_connection
@@ -90,7 +90,6 @@ def check_new_orders():
             
             items_html = ""
             try:
-                # 處理 JSON 格式相容性
                 if isinstance(c_json, str):
                     cart = json.loads(c_json)
                 elif isinstance(c_json, (list, dict)):
@@ -111,6 +110,10 @@ def check_new_orders():
             formatted_total = f"{int(total or 0)}" 
             buttons = ""
 
+            # --- 定義列印按鈕的行為 (直接開啟新視窗呼叫 /print_order) ---
+            # 如果您希望可以選 "只印廚房" 或 "只印收據"，可以修改 type=all 為 type=kitchen 或 type=receipt
+            print_action = f"window.open('/kitchen/print_order/{oid}?type=all', '_blank', 'width=350,height=600');"
+
             if status == 'Pending':
                 buttons += f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px;">
@@ -120,13 +123,13 @@ def check_new_orders():
                 """
                 buttons += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-main' style='width:100%; background:#28a745; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;'>✅ 出餐 / 付款</button>"
                 buttons += f"""<div class="btn-group" style="margin-top:8px; display:flex; gap:5px;">
-                    <button onclick='askPrintType({oid})' class='btn btn-print' style='flex:1; padding:8px;'>🖨️ 列印</button>
+                    <button onclick="{print_action}" class='btn btn-print' style='flex:1; padding:8px; background:#17a2b8; color:white; border:none; border-radius:4px; cursor:pointer;'>🖨️ 列印</button>
                     <a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn' style='flex:1; background:#ff9800; color:white; text-decoration:none; text-align:center; padding:8px; border-radius:4px;'>✏️ 修改</a>
-                    <button onclick='if(confirm(\"⚠️ 確定作廢此單？\")) action(\"/kitchen/cancel/{oid}\")' class='btn btn-void' style='background:#f44336; color:white; border:none; padding:8px; border-radius:4px;'>🗑️</button>
+                    <button onclick='if(confirm(\"⚠️ 確定作廢此單？\")) action(\"/kitchen/cancel/{oid}\")' class='btn btn-void' style='background:#f44336; color:white; border:none; padding:8px; border-radius:4px; cursor:pointer;'>🗑️</button>
                 </div>"""
             elif status == 'Cancelled':
                 buttons += f"<div style='text-align:center; color:#d32f2f; font-weight:bold; margin-bottom:5px;'>【此單已作廢】</div>"
-                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; padding:8px; opacity:0.6;'>🖨️ 補印作廢單</button>"
+                buttons += f"<button onclick=\"{print_action}\" class='btn btn-print' style='width:100%; padding:8px; opacity:0.6; cursor:pointer;'>🖨️ 補印作廢單</button>"
             else: # Completed
                 buttons += f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px; opacity:0.7;">
@@ -134,7 +137,7 @@ def check_new_orders():
                         <span style="font-size:18px; color:#333; font-weight:bold;">${formatted_total}</span>
                     </div>
                 """
-                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; padding:10px;'>🖨️ 補印單據</button>"
+                buttons += f"<button onclick=\"{print_action}\" class='btn btn-print' style='width:100%; padding:10px; cursor:pointer;'>🖨️ 補印單據</button>"
 
             html_content += f"""
             <div class="card {status_cls}" data-id="{oid}" style="background:white; border:1px solid #ddd; border-radius:8px; padding:15px; box-shadow:0 2px 5px rgba(0,0,0,0.1);">
@@ -152,11 +155,11 @@ def check_new_orders():
             'new_ids': new_order_ids
         })
     except Exception as e:
-        print(f"Check Orders Error: {e}")
+        traceback.print_exc()
         return jsonify({'html': f"載入錯誤: {str(e)}", 'max_seq': 0, 'new_ids': []})
 
 
-# --- 3. 補印功能 (整合 Windows/iOS 一般列印 + Android RawBT 靜默列印) ---
+# --- 3. 核心列印路由 (支援 Windows Kiosk 與 Android RawBT) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     try:
@@ -173,7 +176,6 @@ def print_order(oid):
         
         table_num, total_price, seq, content_json, created_at, status = order
         
-        # 資料解析防呆
         if isinstance(content_json, str):
             items = json.loads(content_json)
         elif isinstance(content_json, (list, dict)):
@@ -183,7 +185,7 @@ def print_order(oid):
         
         time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
-        # 取得產品分類
+        # 分類邏輯
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT name, print_category FROM products")
@@ -199,7 +201,7 @@ def print_order(oid):
             elif p_cat == 'Soup': soup_items.append(item)
             else: other_items.append(item)
 
-        # --- CSS 樣式 ---
+        # CSS
         style = """
         <style>
             @page { size: 80mm auto; margin: 0mm; }
@@ -258,11 +260,9 @@ def print_order(oid):
                 sub_name = i.get('name_zh', '')
                 
                 name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
-                # 結帳單顯示雙語，廚房單如果主名稱不是中文才顯示中文
                 if is_receipt:
                     if sub_name and sub_name != main_name: name_html += f"<span class='item-name-sub'>{sub_name}</span>"
                 else:
-                    # 廚房單強制優先顯示中文
                     kitchen_name = i.get('name_zh') or main_name
                     name_html = f"<div class='name-col'><span class='item-name-main'>{kitchen_name}</span>"
 
@@ -280,7 +280,6 @@ def print_order(oid):
             if is_receipt: h += f"<div class='total'>Total: ${int(total_price or 0)}</div>"
             return h + "</div>"
 
-        # 生成內容
         content = ""
         has_content = False
         
@@ -296,13 +295,11 @@ def print_order(oid):
         if not has_content:
             return "<script>alert('無可列印內容');window.close();</script>", 200
 
-        # --- 雙模組核心邏輯 ---
+        # --- 雙模組核心 (Render 雲端適用) ---
         
-        # 1. 準備 Android RawBT 用的 Base64 (必須包含 HTML 結構)
+        # 1. 產生 RawBT 用的 URL (Android)
         rawbt_html_source = f"<html><head>{style}</head><body>{content}</body></html>"
         b64_data = base64.b64encode(rawbt_html_source.encode('utf-8')).decode('utf-8')
-        
-        # RawBT Intent (加入 S.editor=false 確保靜默)
         intent_url = (
             f"intent:base64,{b64_data}#Intent;"
             f"scheme=rawbt;"
@@ -312,8 +309,7 @@ def print_order(oid):
             f"end;"
         )
 
-        # 2. 準備回傳給瀏覽器的 HTML (包含內容 + 裝置判斷 JS)
-        # 注意：不再使用 body onload="window.print()"，改由 JS 判斷
+        # 2. 回傳給瀏覽器的 HTML (包含 JS 判斷)
         final_html = f"""
         <!DOCTYPE html>
         <html>
@@ -324,33 +320,28 @@ def print_order(oid):
                 document.addEventListener("DOMContentLoaded", function() {{
                     var userAgent = navigator.userAgent || navigator.vendor || window.opera;
                     
-                    // 偵測 Android 裝置
                     if (/android/i.test(userAgent)) {{
-                        // --- Android 模式: 呼叫 RawBT ---
-                        // 在頁面上顯示訊息
+                        // --- Android: 跳轉至 RawBT ---
                         var msg = document.createElement('div');
                         msg.innerHTML = '<h2 style="text-align:center;color:green;margin-top:20px;">🖨️ 正在傳送至出單機...</h2>';
                         document.body.appendChild(msg);
-                        
-                        // 執行跳轉
                         window.location.href = "{intent_url}";
                         
-                        // 嘗試關閉視窗 (對於彈出視窗有效)
                         setTimeout(function() {{
                             if(window.opener) window.close();
                         }}, 2000);
                         
                     }} else {{
-                        // --- Windows / iOS 模式: 呼叫瀏覽器列印 ---
-                        window.print();
-                        
-                        // Windows 通常不建議自動關閉，因為會中斷預覽
-                        // 若需自動關閉可取消下方註解
-                        /*
+                        // --- Windows / PC: 瀏覽器列印 (Kiosk模式下靜默) ---
+                        // 延遲一點點確保樣式載入
                         setTimeout(function() {{
+                            window.print();
+                        }}, 200);
+                        
+                        // 嘗試在列印後關閉視窗 (部分瀏覽器支援)
+                        window.onafterprint = function() {{
                             if(window.opener) window.close();
-                        }}, 500);
-                        */
+                        }};
                     }}
                 }});
             </script>
@@ -361,7 +352,7 @@ def print_order(oid):
 
     except Exception as e:
         traceback.print_exc()
-        return f"列印發生錯誤: {str(e)}", 500
+        return f"Print Error: {str(e)}", 500
 
 
 # --- 4. 狀態變更 (完成/作廢) ---
@@ -370,7 +361,6 @@ def complete_order(oid):
     c=get_db_connection(); cur=c.cursor()
     cur.execute("UPDATE orders SET status='Completed' WHERE id=%s",(oid,))
     c.commit(); c.close(); 
-    
     print(f"[{get_current_time_str()}] ✅ 訂單完成: ID {oid}")
     return "OK"
 
@@ -379,7 +369,6 @@ def cancel_order(oid):
     c=get_db_connection(); cur=c.cursor()
     cur.execute("UPDATE orders SET status='Cancelled' WHERE id=%s",(oid,))
     c.commit(); c.close(); 
-    
     print(f"[{get_current_time_str()}] 🗑️ 訂單作廢: ID {oid}")
     return "OK"
 
