@@ -110,8 +110,7 @@ def check_new_orders():
             formatted_total = f"{int(total or 0)}" 
             buttons = ""
 
-            # --- 定義列印按鈕的行為 (直接開啟新視窗呼叫 /print_order) ---
-            # 如果您希望可以選 "只印廚房" 或 "只印收據"，可以修改 type=all 為 type=kitchen 或 type=receipt
+            # 定義列印按鈕
             print_action = f"window.open('/kitchen/print_order/{oid}?type=all', '_blank', 'width=350,height=600');"
 
             if status == 'Pending':
@@ -201,7 +200,7 @@ def print_order(oid):
             elif p_cat == 'Soup': soup_items.append(item)
             else: other_items.append(item)
 
-        # CSS
+        # CSS 優化：強制黑色，加深線條
         style = """
         <style>
             @page { size: 80mm auto; margin: 0mm; }
@@ -210,7 +209,7 @@ def print_order(oid):
                 width: 78mm;      
                 margin: 0 auto; 
                 padding: 2px; 
-                color: #000;
+                color: #000; /* 全域強制黑色 */
                 background: #fff;
             }
             .ticket { 
@@ -221,31 +220,49 @@ def print_order(oid):
                 position: relative; 
             }
             .ticket:last-child { page-break-after: auto; }
+            
+            /* 作廢浮水印 */
             .void-watermark { 
                 position: absolute; top: 30%; left: 5%; 
-                font-size: 50px; color: rgba(0,0,0,0.2); 
-                transform: rotate(-30deg); border: 5px solid rgba(0,0,0,0.2); 
+                font-size: 50px; color: #000; opacity: 0.2; /* 黑色半透明 */
+                transform: rotate(-30deg); border: 5px solid #000; 
                 padding: 10px; z-index: 100; pointer-events: none; font-weight: 900;
             }
-            .head { text-align: center; margin-bottom: 10px; }
-            .head h2 { font-size: 22px; margin: 0; background: #000; color: #fff; padding: 5px; border-radius: 4px; display:inline-block; }
-            .head h1 { font-size: 48px; margin: 5px 0; line-height: 1; }
+
+            .head { text-align: center; margin-bottom: 15px; }
+            
+            /* 修改後的標題樣式：白底黑字加黑框 */
+            .head h2 { 
+                font-size: 26px; 
+                margin: 0; 
+                background: #fff; /* 白底 */
+                color: #000;      /* 黑字 */
+                border: 3px solid #000; /* 粗黑框 */
+                padding: 6px 12px; 
+                border-radius: 4px; 
+                display: inline-block;
+                font-weight: 900; /* 極粗體 */
+            }
+            .head h1 { font-size: 48px; margin: 5px 0; line-height: 1; font-weight: 900; }
             
             .info-box { border-bottom: 3px solid #000; padding-bottom: 5px; margin-bottom: 10px; }
             .table-row { display: flex; justify-content: center; align-items: baseline; gap: 15px; }
             .table-label { font-size: 24px; font-weight: bold; }
             .table-val { font-size: 42px; font-weight: 900; line-height: 1; }
-            .time-row { font-size: 14px; text-align: center; margin-top: 5px; }
+            .time-row { font-size: 14px; text-align: center; margin-top: 5px; font-weight: bold;}
 
             .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 10px; line-height: 1.2; }
             .name-col { width: 85%; display: flex; flex-direction: column; }
             .item-name-main { font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.1; }
-            .item-name-sub { font-size: 16px; font-weight: bold; color: #444; margin-top: 2px; }
+            /* 副標題也改為純黑 */
+            .item-name-sub { font-size: 16px; font-weight: bold; color: #000; margin-top: 2px; }
             .item-qty { font-size: 24px; font-weight: 900; white-space: nowrap; }
             
+            /* 選項也改為純黑 */
             .opt { font-size: 18px; font-weight: bold; color: #000; padding-left: 15px; margin-top: 2px; margin-bottom: 5px; }
-            .opt-sub { font-size: 14px; color: #555; margin-top: -2px; }
-            .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
+            .opt-sub { font-size: 14px; color: #000; margin-top: -2px; }
+            
+            .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 15px; padding-top: 10px; border-top: 3px solid #000; }
         </style>
         """
 
@@ -333,12 +350,10 @@ def print_order(oid):
                         
                     }} else {{
                         // --- Windows / PC: 瀏覽器列印 (Kiosk模式下靜默) ---
-                        // 延遲一點點確保樣式載入
                         setTimeout(function() {{
                             window.print();
                         }}, 200);
                         
-                        // 嘗試在列印後關閉視窗 (部分瀏覽器支援)
                         window.onafterprint = function() {{
                             if(window.opener) window.close();
                         }};
