@@ -57,7 +57,7 @@
         .card.cancelled::after {
             content: "CANCELLED";
             position: absolute; top: 50%; left: 50%;
-            transform: translate(-50%, -50%) rotate(-15deg);
+            transform: translate(-50%, -50) rotate(-15deg);
             font-size: 2.2em; font-weight: 900;
             color: rgba(244, 67, 54, 0.25);
             pointer-events: none; z-index: 1; letter-spacing: 2px;
@@ -204,22 +204,20 @@
     // 初始化語音合成
     const synth = window.speechSynthesis;
 
-    // 播放語音函式
     function speakNewOrder() {
         if (synth.speaking) return;
-        const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
+        const utterThis = new SpeechSynthesisUtterance("有新訂單");
         utterThis.lang = 'zh-TW'; 
-        utterThis.rate = 1;        
+        utterThis.rate = 1.1;        
         synth.speak(utterThis);
     }
 
-    // 手動測試與刷新
     function testAudioAndRefresh() {
         audio.play().catch(e => console.log("Audio block:", e));
         refreshOrders();
     }
 
-    // --- 核心：定時刷新與自動列印 ---
+    // --- 核心刷新邏輯 (已移除自動列印) ---
     function refreshOrders() {
         fetch('/kitchen/check_new_orders?current_seq=' + lastMaxSeq)
             .then(res => res.json())
@@ -230,25 +228,14 @@
                 // 2. 更新時間
                 updateTimeText.innerText = '最後更新: ' + new Date().toLocaleTimeString();
 
-                // 3. 更新最大序號
-                if (data.max_seq) lastMaxSeq = data.max_seq;
-
-                // 4. 偵測新訂單 -> 觸發 RawBT 自動列印
-                if (data.new_ids && data.new_ids.length > 0) {
-                    console.log("🔔 新訂單 ID:", data.new_ids);
-                    
-                    // 播放音效
-                    audio.play()
-                        .then(() => setTimeout(speakNewOrder, 800))
-                        .catch(() => speakNewOrder());
-
-                    // 【RawBT 關鍵邏輯】依序開啟列印視窗
-                    data.new_ids.forEach((oid, index) => {
-                        setTimeout(() => {
-                            // 呼叫後端路由，該路由會自動轉址到 rawbt:
-                            window.open(`/kitchen/print_order/${oid}?type=all`, '_blank');
-                        }, index * 1200); // 每 1.2 秒印一張，避免卡住
-                    });
+                // 3. 偵測是否有「新」序號產生 -> 僅播放提醒，不自動列印
+                if (data.max_seq && data.max_seq > lastMaxSeq) {
+                    if (lastMaxSeq !== 0) { // 排除第一次載入
+                        audio.play()
+                            .then(() => setTimeout(speakNewOrder, 500))
+                            .catch(() => speakNewOrder());
+                    }
+                    lastMaxSeq = data.max_seq;
                 }
             })
             .catch(err => { 
@@ -265,7 +252,7 @@
         });
     }
 
-    // --- 手動列印相關 ---
+    // --- 手動列印觸發 ---
     function askPrintType(oid) {
         currentPrintOid = oid;
         document.getElementById('printModal').style.display = "block";
@@ -278,9 +265,9 @@
 
     function doPrint(type) {
         if (!currentPrintOid) return;
-        // 使用 window.open 觸發 RawBT
+        // 開啟列印分頁，Windows 端若有設定 --kiosk-printing 會直接印出並關閉
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
-        window.open(printUrl, '_blank');
+        window.open(printUrl, '_blank', 'width=100,height=100');
         closePrintModal();
     }
 
@@ -296,15 +283,11 @@
 
     function setTodayRange() {
         const now = new Date();
-        // 解決時區問題 (簡單做法：手動調整 ISO 字串)
         const toLocalISO = (date) => {
             const offset = date.getTimezoneOffset() * 60000;
-            const localISOTime = (new Date(date - offset)).toISOString().slice(0, 16);
-            return localISOTime;
+            return (new Date(date - offset)).toISOString().slice(0, 16);
         };
-
         document.getElementById('rankEndTime').value = toLocalISO(now);
-        
         const start = new Date(now);
         start.setHours(0, 0, 0, 0);
         document.getElementById('rankStartTime').value = toLocalISO(start);
@@ -354,10 +337,8 @@
 
     // 啟動定時刷新 (每 3 秒)
     setInterval(refreshOrders, 3000);
-    // 頁面載入後立即執行一次
     refreshOrders();
 
-    // 點擊遮罩關閉彈窗
     window.onclick = function(event) {
         const pModal = document.getElementById('printModal');
         const sModal = document.getElementById('salesModal');
