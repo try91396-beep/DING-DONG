@@ -1,3 +1,4 @@
+# routes/admin_routes.py
 import io
 import json
 import threading
@@ -5,7 +6,7 @@ import traceback
 import pandas as pd
 from flask import Blueprint, render_template, request, redirect, url_for, jsonify, send_file, current_app
 
-# 從資料庫模組匯入連線函式
+# 從資料庫模組匯入連線函式 (PostgreSQL)
 from database import get_db_connection
 # 從 utils 匯入發信功能
 from utils import send_daily_report
@@ -24,19 +25,18 @@ def admin_panel():
     if request.method == 'POST':
         action = request.form.get('action')
         
-        # --- 功能 1: 儲存設定 & 測試連線 (合併處理) ---
-        # 【修正】: 監聽 'save_settings' (儲存鈕) 與 'test_email' (測試鈕)
+        # --- 功能 1: 儲存一般設定 & 測試連線 (合併處理) ---
         if action == 'save_settings' or action == 'test_email':
             try:
                 # 1. 取得表單資料
                 new_config = {
                     'report_email': request.form.get('report_email'),
                     'resend_api_key': request.form.get('resend_api_key'),
-                    # 如果未填寫 Sender，預設使用 Resend 測試帳號以避免 403 錯誤
+                    # 如果未填寫 Sender，預設使用 Resend 測試帳號
                     'sender_email': request.form.get('sender_email') or 'onboarding@resend.dev'
                 }
 
-                # 2. 寫入資料庫 (無論是儲存還是測試，都先更新 DB)
+                # 2. 寫入資料庫 (PostgreSQL Upsert)
                 for k, v in new_config.items():
                     cur.execute("""
                         INSERT INTO settings (key, value) 
@@ -46,14 +46,11 @@ def admin_panel():
                 conn.commit()
                 
                 # 3. 判斷是否執行測試
-                # 邏輯：如果勾選了 "test_connection" 或者 按下的是 "test_email" 按鈕
                 should_test = (request.form.get('test_connection') == 'on') or (action == 'test_email')
 
                 if should_test:
                     try:
-                        # 傳入 current_app._get_current_object() 以支援 Thread 環境
                         app_obj = current_app._get_current_object()
-                        # 使用 manual_config 確保測試使用當下表單填寫的值
                         result_msg = send_daily_report(app_obj, manual_config=new_config, is_test=True)
                         
                         if "✅" in result_msg:
@@ -78,12 +75,8 @@ def admin_panel():
         # --- 功能 2: 手動觸發日結報表 (背景執行) ---
         elif action == 'send_report_now':
             try:
-                # 取得 app 實體 (Thread 內無法直接用 current_app)
                 app_obj = current_app._get_current_object()
-                
-                # 將 app_obj 作為參數 (args) 傳入
                 threading.Thread(target=send_daily_report, args=(app_obj,), kwargs={'is_test': False}).start()
-                
                 msg = "🚀 報表正在背景發送中，請稍候檢查信箱"
             except Exception as e:
                 msg = f"❌ 無法啟動背景任務: {e}"
@@ -94,6 +87,7 @@ def admin_panel():
         # --- 功能 3: 新增產品 ---
         elif action == 'add_product':
             try:
+                # 包含所有多語系欄位
                 cur.execute("""
                     INSERT INTO products (
                         name, price, category, print_category, image_url, sort_order,
@@ -119,9 +113,29 @@ def admin_panel():
 
     # --- GET: 讀取資料顯示頁面 ---
     try:
+        # 讀取設定檔
         cur.execute("SELECT key, value FROM settings")
-        config = dict(cur.fetchall())
+        settings_rows = cur.fetchall()
+        config = {row[0]: row[1] for row in settings_rows} # 轉為 Dictionary
         
+        # 【關鍵修正 1】轉換資料型態，確保模板中的 if 判斷正確
+        toggle_keys = ['shop_open', 'enable_delivery', 'delivery_enabled']
+        for key in toggle_keys:
+            val = config.get(key, '0') # 預設為 '0'
+            config[key] = 1 if val == '1' else 0
+
+        # 【關鍵修正 2】確保 enable_delivery 與 delivery_enabled 狀態一致
+        # 若資料庫只存了其中一個，另一個也要有值，避免前端判斷錯誤
+        if 'enable_delivery' not in config:
+            config['enable_delivery'] = config.get('delivery_enabled', 0)
+        
+        # 【關鍵修正 3】外送參數預設值
+        # 這些 setdefault 確保如果資料庫是空的，前端 input 會有預設值顯示
+        config.setdefault('delivery_min_price', '0')
+        config.setdefault('delivery_fee_base', '0')
+        config.setdefault('delivery_max_km', '5')
+        config.setdefault('delivery_fee_per_km', '10')
+
         cur.execute("""
             SELECT id, name, price, category, is_available, print_category, sort_order, image_url, 
                    name_en, name_jp, name_kr 
@@ -136,6 +150,106 @@ def admin_panel():
 
 
 # ==========================================
+# [關鍵] 外送詳細設定 (表單提交)
+# 這裡負責寫入：最低消費、基本運費、最大距離、每公里加價
+# ==========================================
+@admin_bp.route('/settings/delivery', methods=['POST'])
+def update_delivery_settings():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 1. 處理 Checkbox 狀態 (HTML checkbox 沒勾選時不會送出值，需手動轉 '0')
+        is_enabled = '1' if request.form.get('delivery_enabled') else '0'
+
+        # 2. 準備寫入資料庫的字典
+        # 使用 'or' 運算符：如果前端傳來空字串，給予預設值，防止資料庫錯誤
+        settings_to_update = {
+            'delivery_enabled': is_enabled,
+            'enable_delivery': is_enabled,  # 同步更新兩個 Key，避免邏輯衝突
+            'delivery_min_price': request.form.get('delivery_min_price') or '0',
+            'delivery_fee_base': request.form.get('delivery_fee_base') or '0',
+            'delivery_max_km': request.form.get('delivery_max_km') or '5',
+            'delivery_fee_per_km': request.form.get('delivery_fee_per_km') or '10'
+        }
+
+        # 3. 執行 SQL Upsert (若 Key 存在則更新，不存在則插入)
+        for key, val in settings_to_update.items():
+            cur.execute("""
+                INSERT INTO settings (key, value) 
+                VALUES (%s, %s) 
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """, (key, str(val)))
+        
+        conn.commit()
+        msg = "✅ 外送設定已更新 (含運費規則)"
+    except Exception as e:
+        conn.rollback()
+        msg = f"❌ 設定更新失敗: {e}"
+        traceback.print_exc()
+    finally:
+        cur.close(); conn.close()
+
+    return redirect(url_for('admin.admin_panel', msg=msg))
+
+
+# ==========================================
+# [關鍵修正] 通用設定切換路由 (AJAX)
+# 用於快速切換 'shop_open' 或 'enable_delivery'
+# ==========================================
+@admin_bp.route('/toggle_config', methods=['POST'])
+def toggle_config():
+    """
+    處理前端 AJAX 開關請求
+    接收 JSON: {key: 'shop_open' 或 'enable_delivery'}
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        data = request.get_json()
+        key = data.get('key')
+        
+        # 安全性檢查
+        allowed_keys = ['shop_open', 'enable_delivery', 'delivery_enabled']
+        if key not in allowed_keys:
+            return jsonify({'status': 'error', 'message': '不允許的設定項目'}), 400
+
+        # 1. 檢查目前設定值
+        cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
+        row = cur.fetchone()
+
+        # 2. 切換狀態 ('1' <-> '0')
+        current_val = row[0] if row else '0'
+        new_val = '0' if current_val == '1' else '1'
+        
+        # 3. 【關鍵修正】同步更新相關欄位
+        # 如果切換的是外送設定，要同時更新 enable_delivery 和 delivery_enabled
+        keys_to_update = [key]
+        if key in ['enable_delivery', 'delivery_enabled']:
+            keys_to_update = ['enable_delivery', 'delivery_enabled']
+
+        # 4. 寫入資料庫
+        for k in keys_to_update:
+            cur.execute("""
+                INSERT INTO settings (key, value) 
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """, (k, new_val))
+
+        conn.commit()
+
+        # 回傳給前端，status=success, new_value=boolean
+        return jsonify({'status': 'success', 'new_value': (new_val == '1')})
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Toggle Config Error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ==========================================
 # 編輯產品 (獨立頁面)
 # ==========================================
 @admin_bp.route('/edit_product/<int:pid>', methods=['GET','POST'])
@@ -145,6 +259,7 @@ def edit_product(pid):
     
     if request.method == 'POST':
         try:
+            # 更新所有欄位，包含多語系
             cur.execute("""
                 UPDATE products SET 
                 name=%s, price=%s, category=%s, image_url=%s, custom_options=%s,
@@ -172,17 +287,21 @@ def edit_product(pid):
 
     # 讀取現有資料
     cur.execute("SELECT * FROM products WHERE id=%s", (pid,))
-    columns = [desc[0] for desc in cur.description]
-    row = cur.fetchone()
+    if cur.description:
+        columns = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+    else:
+        row = None
+        
     cur.close(); conn.close()
     
     if not row: return "找不到該產品", 404
 
-    # 將資料轉換為字典以便存取
+    # 將資料轉換為字典方便前端存取
     p = dict(zip(columns, row))
     def v(key): return p.get(key) if p.get(key) is not None else ""
 
-    # 這裡直接回傳簡易的編輯 HTML
+    # 回傳簡單的 HTML 編輯表單
     return f"""
     <!DOCTYPE html><html><head><meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -249,7 +368,6 @@ def edit_product(pid):
         </div>
     </body></html>"""
 
-
 # ==========================================
 # 匯入 / 匯出 / 重置 / 其他
 # ==========================================
@@ -296,13 +414,12 @@ def import_menu():
             # 確保有名稱才匯入
             if not p.get('name'): continue
             
-            # 處理布林值：Excel 中的 TRUE/FALSE 或 1/0 轉為 Python bool
+            # 處理布林值
             is_avail = True
             if p.get('is_available') is not None:
                 val = str(p.get('is_available')).lower()
                 is_avail = val in ['1', 'true', 'yes', 't']
 
-            # 準備 SQL (不匯入 id，讓資料庫自動產生)
             sql = """
                 INSERT INTO products (
                     name, price, category, image_url, is_available, custom_options, sort_order,
@@ -319,7 +436,6 @@ def import_menu():
                 )
             """
             
-            # 準備參數 (依照 SQL 順序)
             params = (
                 str(p.get('name')),
                 p.get('price', 0),
@@ -327,7 +443,7 @@ def import_menu():
                 p.get('image_url'),
                 is_avail,
                 p.get('custom_options'),
-                p.get('sort_order', 0), # 預設排序 0
+                p.get('sort_order', 0),
                 
                 p.get('name_en'),
                 p.get('name_jp'),
@@ -337,7 +453,7 @@ def import_menu():
                 p.get('custom_options_jp'),
                 p.get('custom_options_kr'),
                 
-                p.get('print_category', 'Noodle'), # 預設麵區
+                p.get('print_category', 'Noodle'),
                 
                 p.get('category_en'),
                 p.get('category_jp'),
@@ -352,13 +468,13 @@ def import_menu():
         return redirect(url_for('admin.admin_panel', msg=f"✅ 完整匯入成功！共 {cnt} 筆資料"))
         
     except Exception as e:
-        traceback.print_exc() # 在後台印出詳細錯誤以便除錯
+        traceback.print_exc()
         return redirect(url_for('admin.admin_panel', msg=f"❌ 匯入失敗: {e}"))
 
 @admin_bp.route('/reset_menu')
 def reset_menu():
     conn = get_db_connection(); cur = conn.cursor()
-    # 清空產品表並重置 ID 計數
+    # 清空產品表並重置 ID 計數 (PostgreSQL)
     cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
     conn.commit(); cur.close(); conn.close()
     return redirect(url_for('admin.admin_panel', msg="🗑️ 菜單已清空"))
@@ -369,7 +485,6 @@ def reset_orders():
     cur = conn.cursor()
     
     try:
-        # 取得刪除模式：'all' 或 'range'
         delete_mode = request.form.get('delete_mode')
         
         if delete_mode == 'all':
@@ -385,11 +500,11 @@ def reset_orders():
             if not start_date or not end_date:
                 return redirect(url_for('admin.admin_panel', msg="❌ 請選擇完整的開始與結束日期"))
             
-            # 補上時間，確保涵蓋整天
             start_ts = f"{start_date} 00:00:00"
             end_ts = f"{end_date} 23:59:59"
             
-            # 將資料庫的 UTC 時間 +8 小時轉為台灣時間，再與使用者輸入的區間比對
+            # 注意: 這裡假設你的 DB 儲存 UTC 時間，需 +8 小時轉為台灣時間比對
+            # 如果你的 DB 已經存台灣時間，請移除 `+ interval '8 hours'`
             cur.execute("""
                 DELETE FROM orders 
                 WHERE (created_at + interval '8 hours') >= %s 

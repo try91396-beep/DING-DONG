@@ -1,0 +1,194 @@
+templates/delivery_setup.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>外送資料填寫</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <style>
+        body { font-family: 'Microsoft JhengHei', sans-serif; background: #f5f5f5; padding: 20px; text-align: center; }
+        .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 400px; margin: 0 auto; }
+        .form-group { margin-bottom: 20px; text-align: left; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #555; }
+        input, select { width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; background: white; }
+        
+        /* 按鈕樣式 */
+        .btn-submit {
+            width: 100%; padding: 15px;
+            background: #ff5722; color: white;
+            border: none; border-radius: 50px;
+            font-size: 1.2em; cursor: pointer;
+            transition: 0.3s;
+            margin-top: 10px;
+        }
+        .btn-submit:disabled { background: #ccc; cursor: not-allowed; }
+        
+        /* 載入中動畫 */
+        .loader {
+            display: none;
+            border: 4px solid #f3f3f3; border-top: 4px solid #ff5722;
+            border-radius: 50%; width: 20px; height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .error-msg { color: #d32f2f; margin-top: 10px; display: none; font-weight: bold; }
+        
+        /* 時間選擇區塊樣式微調 */
+        .datetime-row { display: flex; gap: 10px; }
+        .datetime-col { flex: 1; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🛵 外送服務</h2>
+    <p style="color:#666; font-size:0.9em;">請填寫資訊以計算運費與預約時間</p>
+
+    <div class="form-group">
+        <label>聯絡人姓名</label>
+        <input type="text" id="name" placeholder="您的稱呼" required>
+    </div>
+
+    <div class="form-group">
+        <label>手機號碼</label>
+        <input type="tel" id="phone" placeholder="09xx-xxx-xxx" required>
+    </div>
+
+    <div class="form-group">
+        <div class="datetime-row">
+            <div class="datetime-col">
+                <label>日期</label>
+                <select id="date-select" onchange="updateTimeSlots()">
+                    {% for d in dates %}
+                    <option value="{{ d.value }}">{{ d.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="datetime-col">
+                <label>時間</label>
+                <select id="time-select">
+                    <option value="">請選擇時間</option>
+                </select>
+            </div>
+        </div>
+        <small style="color:#888; display:block; margin-top:5px;">* 11:30~13:30 暫停外送服務</small>
+    </div>
+
+    <div class="form-group">
+        <label>完整地址 (含縣市)</label>
+        <input type="text" id="address" placeholder="例如：台北市中山區..." required>
+    </div>
+
+    <div id="error-box" class="error-msg"></div>
+
+    <button onclick="checkAndSubmit()" id="submitBtn" class="btn-submit">
+        <span id="btnText">確認並開始點餐</span>
+        <div id="loader" class="loader"></div>
+    </button>
+    
+    <br><br>
+    <a href="/" style="color:#999; text-decoration:none;">← 返回首頁</a>
+</div>
+
+<script>
+    // 1. 從後端取得完整的日期與時段資料 (Jinja2 渲染)
+    const DATE_DATA = {{ dates | tojson }};
+
+    // 2. 更新時間選項的函式
+    function updateTimeSlots() {
+        const dateSelect = document.getElementById('date-select');
+        const timeSelect = document.getElementById('time-select');
+        const selectedDateVal = dateSelect.value;
+        
+        // 清空目前的時間選項
+        timeSelect.innerHTML = '<option value="">請選擇時間</option>';
+        
+        // 找到對應日期的資料
+        const targetDateObj = DATE_DATA.find(d => d.value === selectedDateVal);
+        
+        if (targetDateObj && targetDateObj.slots && targetDateObj.slots.length > 0) {
+            targetDateObj.slots.forEach(timeStr => {
+                const opt = document.createElement('option');
+                opt.value = timeStr;
+                opt.textContent = timeStr;
+                timeSelect.appendChild(opt);
+            });
+        } else {
+            const opt = document.createElement('option');
+            opt.textContent = "本日已無時段";
+            timeSelect.appendChild(opt);
+        }
+    }
+
+    // 3. 頁面載入時初始化時間選項
+    window.onload = function() {
+        updateTimeSlots();
+    };
+
+    // 4. 送出檢查
+    async function checkAndSubmit() {
+        const name = document.getElementById('name').value;
+        const phone = document.getElementById('phone').value;
+        const address = document.getElementById('address').value;
+        const date = document.getElementById('date-select').value;
+        const time = document.getElementById('time-select').value;
+        
+        const btn = document.getElementById('submitBtn');
+        const loader = document.getElementById('loader');
+        const btnText = document.getElementById('btnText');
+        const errorBox = document.getElementById('error-box');
+
+        // 驗證
+        if(!name || !phone || !address) {
+            alert('請填寫姓名、電話與地址');
+            return;
+        }
+        if(!date || !time) {
+            alert('請選擇外送日期與時間');
+            return;
+        }
+
+        // UI 變更為讀取中
+        btn.disabled = true;
+        btnText.style.display = 'none';
+        loader.style.display = 'block';
+        errorBox.style.display = 'none';
+
+        try {
+            const response = await fetch('/delivery/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                // 這裡加入了 date 和 time
+                body: JSON.stringify({ name, phone, address, date, time })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                // 成功，跳轉到菜單
+                window.location.href = result.redirect;
+            } else {
+                // 失敗 (距離太遠或找不到地址)
+                errorBox.innerText = "❌ " + result.msg;
+                errorBox.style.display = 'block';
+                
+                // 恢復按鈕
+                btn.disabled = false;
+                btnText.style.display = 'inline';
+                loader.style.display = 'none';
+            }
+        } catch (err) {
+            console.error(err);
+            errorBox.innerText = "❌ 系統錯誤，請檢查網路連線";
+            errorBox.style.display = 'block';
+            btn.disabled = false;
+            btnText.style.display = 'inline';
+            loader.style.display = 'none';
+        }
+    }
+</script>
+
+</body>
+</html>

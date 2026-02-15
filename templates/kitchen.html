@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🍳 廚房出餐看板 Pro</title>
+    <title>🍳 廚房出餐看板 Pro (含外送)</title>
     <style>
         :root {
             --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
             --main-text: #333; --accent-purple: #673ab7; --accent-blue: #2196f3;
             --accent-green: #4caf50; --accent-orange: #ff9800; --accent-red: #f44336;
+            --delivery-color: #ff5722; /* 新增外送色系 */
         }
         body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
         
@@ -21,13 +22,21 @@
         .nav-links { display: flex; gap: 10px; }
 
         /* 訂單網格佈局 */
-        .order-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+        .order-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
+            gap: 20px; 
+            /* 關鍵修改：讓卡片靠上對齊，高度隨內容自動伸縮，不會被同一列最高的卡片拉長 */
+            align-items: flex-start; 
+        }
         
         /* 卡片基礎樣式 */
         .card { 
             background: white; border-radius: 12px; border: 1px solid #ddd;
             display: flex; flex-direction: column; overflow: hidden;
             transition: transform 0.2s; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            /* 關鍵修改：確保高度自動，不鎖死 */
+            height: auto;
         }
 
         /* 1. 待出餐 (Pending) */
@@ -57,7 +66,7 @@
         .card.cancelled::after {
             content: "CANCELLED";
             position: absolute; top: 50%; left: 50%;
-            transform: translate(-50%, -50) rotate(-15deg);
+            transform: translate(-50%, -50%) rotate(-15deg);
             font-size: 2.2em; font-weight: 900;
             color: rgba(244, 67, 54, 0.25);
             pointer-events: none; z-index: 1; letter-spacing: 2px;
@@ -66,7 +75,24 @@
         .card-header { padding: 12px; border-bottom: 1px dashed #ccc; display: flex; justify-content: space-between; z-index: 2; align-items: flex-start; }
         .seq-num { font-size: 26px; font-weight: 900; color: #d32f2f; line-height: 1; }
         .time-stamp { font-size: 0.8em; color: #666; margin-top: 4px; }
-        .table-num { font-size: 20px; font-weight: bold; background: #333; color: white; padding: 4px 10px; border-radius: 4px; }
+        
+        /* 桌號與外送標籤樣式 */
+        .badge-table { font-size: 20px; font-weight: bold; background: #333; color: white; padding: 4px 10px; border-radius: 4px; }
+        .badge-delivery { font-size: 18px; font-weight: bold; background: var(--delivery-color); color: white; padding: 4px 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; }
+        
+        /* 外送詳細資訊區塊 - 關鍵修正區域 */
+        .delivery-details {
+            font-size: 0.9rem; /* 稍微加大一點字體 */
+            background: #fff3e0; color: #bf360c;
+            padding: 8px; margin: 0 12px 5px 12px; border-radius: 4px;
+            border: 1px dashed #ffb74d; 
+            display: flex; flex-direction: column; gap: 2px;
+            
+            /* 解決長地址被切掉的問題 */
+            word-break: break-all;  /* 強制斷行，避免長字串撐開或隱藏 */
+            white-space: normal;    /* 允許文字換行 */
+            overflow-wrap: break-word; /* 支援現代瀏覽器的斷詞 */
+        }
 
         .items { padding: 12px; flex-grow: 1; z-index: 2; min-height: 80px; }
         .item-row { margin-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.05); padding-bottom: 6px; }
@@ -148,7 +174,7 @@
     <div class="modal-content">
         <h3 style="margin-top:0;">🖨️ 選擇列印內容</h3>
         <button onclick="doPrint('receipt')" class="modal-btn" style="background:var(--accent-blue); color:white;">📄 僅列印結帳單</button>
-        <button onclick="doPrint('kitchen')" class="modal-btn" style="background:var(--accent-orange); color:white;">🍜 僅列印廚房單 (分區)</button>
+        <button onclick="doPrint('kitchen')" class="modal-btn" style="background:var(--accent-orange); color:white;">🍜 僅列印廚房/打包單</button>
         <button onclick="doPrint('all')" class="modal-btn" style="background:var(--accent-green); color:white;">📋 列印全部單據</button>
         <button onclick="closePrintModal()" class="modal-btn" style="background:#eee; color:#333;">取消</button>
     </div>
@@ -204,20 +230,22 @@
     // 初始化語音合成
     const synth = window.speechSynthesis;
 
+    // 播放語音函式
     function speakNewOrder() {
         if (synth.speaking) return;
-        const utterThis = new SpeechSynthesisUtterance("有新訂單");
+        const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
         utterThis.lang = 'zh-TW'; 
-        utterThis.rate = 1.1;        
+        utterThis.rate = 1;        
         synth.speak(utterThis);
     }
 
+    // 手動測試與刷新
     function testAudioAndRefresh() {
         audio.play().catch(e => console.log("Audio block:", e));
         refreshOrders();
     }
 
-    // --- 核心刷新邏輯 (已移除自動列印) ---
+    // --- 核心：定時刷新與自動列印 ---
     function refreshOrders() {
         fetch('/kitchen/check_new_orders?current_seq=' + lastMaxSeq)
             .then(res => res.json())
@@ -228,14 +256,25 @@
                 // 2. 更新時間
                 updateTimeText.innerText = '最後更新: ' + new Date().toLocaleTimeString();
 
-                // 3. 偵測是否有「新」序號產生 -> 僅播放提醒，不自動列印
-                if (data.max_seq && data.max_seq > lastMaxSeq) {
-                    if (lastMaxSeq !== 0) { // 排除第一次載入
-                        audio.play()
-                            .then(() => setTimeout(speakNewOrder, 500))
-                            .catch(() => speakNewOrder());
-                    }
-                    lastMaxSeq = data.max_seq;
+                // 3. 更新最大序號
+                if (data.max_seq) lastMaxSeq = data.max_seq;
+
+                // 4. 偵測新訂單 -> 觸發 RawBT 自動列印
+                if (data.new_ids && data.new_ids.length > 0) {
+                    console.log("🔔 新訂單 ID:", data.new_ids);
+                    
+                    // 播放音效
+                    audio.play()
+                        .then(() => setTimeout(speakNewOrder, 800))
+                        .catch(() => speakNewOrder());
+
+                    // 【RawBT 關鍵邏輯】依序開啟列印視窗
+                    data.new_ids.forEach((oid, index) => {
+                        setTimeout(() => {
+                            // 呼叫後端路由，該路由會自動轉址到 rawbt:
+                            window.open(`/kitchen/print_order/${oid}?type=all`, '_blank');
+                        }, index * 1200); // 每 1.2 秒印一張，避免卡住
+                    });
                 }
             })
             .catch(err => { 
@@ -252,7 +291,7 @@
         });
     }
 
-    // --- 手動列印觸發 ---
+    // --- 手動列印相關 ---
     function askPrintType(oid) {
         currentPrintOid = oid;
         document.getElementById('printModal').style.display = "block";
@@ -265,9 +304,9 @@
 
     function doPrint(type) {
         if (!currentPrintOid) return;
-        // 開啟列印分頁，Windows 端若有設定 --kiosk-printing 會直接印出並關閉
+        // 使用 window.open 觸發 RawBT
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
-        window.open(printUrl, '_blank', 'width=100,height=100');
+        window.open(printUrl, '_blank');
         closePrintModal();
     }
 
@@ -283,11 +322,15 @@
 
     function setTodayRange() {
         const now = new Date();
+        // 解決時區問題 (簡單做法：手動調整 ISO 字串)
         const toLocalISO = (date) => {
             const offset = date.getTimezoneOffset() * 60000;
-            return (new Date(date - offset)).toISOString().slice(0, 16);
+            const localISOTime = (new Date(date - offset)).toISOString().slice(0, 16);
+            return localISOTime;
         };
+
         document.getElementById('rankEndTime').value = toLocalISO(now);
+        
         const start = new Date(now);
         start.setHours(0, 0, 0, 0);
         document.getElementById('rankStartTime').value = toLocalISO(start);
@@ -337,8 +380,10 @@
 
     // 啟動定時刷新 (每 3 秒)
     setInterval(refreshOrders, 3000);
+    // 頁面載入後立即執行一次
     refreshOrders();
 
+    // 點擊遮罩關閉彈窗
     window.onclick = function(event) {
         const pModal = document.getElementById('printModal');
         const sModal = document.getElementById('salesModal');
