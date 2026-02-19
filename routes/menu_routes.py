@@ -267,9 +267,8 @@ def index():
     shop_open = settings.get('shop_open', '1') == '1'
     delivery_enabled = settings.get('delivery_enabled', '1') == '1'
 
-    # 清除舊 session，避免狀態混亂
-    if 'delivery_data' in session: session.pop('delivery_data', None)
-    if 'delivery_info' in session: session.pop('delivery_info', None)
+    # 【更新】強制清除所有 Session，徹底避免舊資料與狀態混亂
+    session.clear()
     
     return render_template('index.html', 
                            table_num=table_num, 
@@ -514,7 +513,7 @@ def order_success():
                 </div>
                 
                 <p style="color:#999; font-size:0.85em; margin: 20px 0;">下單時間: {time_str}</p>
-                <a href="{back_link}" class="home-btn">{back_text}</a>
+                <a href="{back_link}" class="home-btn">{back_text }</a>
             </div>
         </div>
     </body>
