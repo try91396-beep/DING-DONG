@@ -332,7 +332,7 @@ def print_order(oid):
             elif p_cat == 'Soup': soup_items.append(item)
             else: other_items.append(item)
 
-        # CSS 樣式
+        # CSS 樣式 (輕量化處理)
         style = """
         <style>
             @page { size: 80mm auto; margin: 0mm; }
@@ -340,57 +340,24 @@ def print_order(oid):
             .ticket { border-bottom: 3px dashed #000; padding: 10px 0 30px 0; margin-bottom: 10px; page-break-after: always; position: relative; }
             .ticket:last-child { page-break-after: auto; }
             .void-watermark { position: absolute; top: 30%; left: 5%; font-size: 50px; color: #000; opacity: 0.2; transform: rotate(-30deg); border: 5px solid #000; padding: 10px; z-index: 100; font-weight: 900; }
-            
             .head { text-align: center; margin-bottom: 10px; }
             .head h2 { font-size: 24px; margin: 0; border: 2px solid #000; padding: 4px 10px; border-radius: 4px; display: inline-block; font-weight: 900; }
             .head h1 { font-size: 42px; margin: 5px 0; line-height: 1; font-weight: 900; }
-            
             .info-box { border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 5px; }
             .table-row { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
             .table-label { font-size: 20px; font-weight: bold; }
             .table-val { font-size: 36px; font-weight: 900; line-height: 1; }
             .time-row { font-size: 14px; text-align: center; margin-top: 2px; color: #333; }
-            
-            /* 客戶與外送詳細資訊樣式 */
-            .customer-info { 
-                border: 2px solid #000; 
-                padding: 6px; 
-                margin: 5px 0 10px 0; 
-                font-size: 18px; 
-                font-weight: bold; 
-                text-align: left; 
-                background: #f8f8f8; 
-                line-height: 1.3;
-            }
+            .customer-info { border: 2px solid #000; padding: 6px; margin: 5px 0 10px 0; font-size: 18px; font-weight: bold; text-align: left; background: #f8f8f8; line-height: 1.3; }
             .cust-row { margin-bottom: 2px; }
-            .addr-row { 
-                margin-top: 4px; 
-                border-top: 1px dashed #666; 
-                padding-top: 4px; 
-                font-size: 24px; /* 地址特大 */
-                font-weight: 900;
-                word-wrap: break-word; /* 強制換行 */
-                line-height: 1.2;
-            }
-            
-            .schedule-row { 
-                font-size: 22px; 
-                font-weight: 900; 
-                text-align: center; 
-                background: #000; 
-                color: #fff; 
-                margin: 5px 0; 
-                padding: 5px; 
-                border-radius: 0; 
-            }
-            
+            .addr-row { margin-top: 4px; border-top: 1px dashed #666; padding-top: 4px; font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.2; }
+            .schedule-row { font-size: 22px; font-weight: 900; text-align: center; background: #000; color: #fff; margin: 5px 0; padding: 5px; border-radius: 0; }
             .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px; line-height: 1.1; }
             .name-col { width: 85%; display: flex; flex-direction: column; }
             .item-name-main { font-size: 22px; font-weight: 900; word-wrap: break-word; }
-            .item-name-sub { font-size: 16px; font-weight: bold; color: #555; margin-top: 2px; } /* 副標題(中文)樣式 */
+            .item-name-sub { font-size: 16px; font-weight: bold; color: #555; margin-top: 2px; }
             .item-qty { font-size: 22px; font-weight: 900; white-space: nowrap; }
             .opt { font-size: 16px; font-weight: bold; padding-left: 10px; color: #333; }
-            
             .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 10px; padding-top: 5px; border-top: 2px solid #000; }
             .fee-row { text-align: right; font-size: 16px; font-weight: bold; color: #333; }
         </style>
@@ -402,66 +369,44 @@ def print_order(oid):
 
             void_mark = "<div class='void-watermark'>作廢單</div>" if status == 'Cancelled' else ""
             
-            # 頭部與基本資訊
             h = f"<div class='ticket'>{void_mark}<div class='head'><h2>{title}</h2><h1>#{seq:03d}</h1></div>"
             h += f"<div class='info-box'><div class='table-row'><span class='table-label'>Type</span><span class='table-val'>{display_tbl_name}</span></div>"
             h += f"<div class='time-row'>下單: {time_str}</div></div>"
             
-            # 1. 預約時間 (最優先顯示)
             if has_schedule:
                 h += f"<div class='schedule-row'>🕒 預約: {c_schedule}</div>"
 
-            # 2. 客戶資料區塊 (姓名、電話、地址)
             if is_delivery or has_contact or (c_name and str(c_name).strip()):
                 h += f"<div class='customer-info'>"
-                if c_name and str(c_name).strip():
-                    h += f"<div class='cust-row'>👤 {c_name}</div>"
-                if has_contact:
-                    h += f"<div class='cust-row'>📞 {c_phone}</div>"
-                if has_addr:
-                    h += f"<div class='addr-row'>📍 {c_addr}</div>"
+                if c_name and str(c_name).strip(): h += f"<div class='cust-row'>👤 {c_name}</div>"
+                if has_contact: h += f"<div class='cust-row'>📞 {c_phone}</div>"
+                if has_addr: h += f"<div class='addr-row'>📍 {c_addr}</div>"
                 h += f"</div>"
             
-            # 列出商品
             for i in item_list:
-                # 基礎中文資料
                 name_zh = i.get('name_zh') or i.get('name')
                 opts_zh = i.get('options_zh') or i.get('options', [])
                 
-                # 初始化變數
                 main_name = name_zh
                 sub_name = ""
                 opts_display = opts_zh
 
-                # --- 邏輯判斷開始 ---
                 if is_receipt:
-                    # 如果是結帳單，且客人非中文語系，切換顯示
                     if c_lang and c_lang != 'zh':
-                        # 1. 抓取對應語系的名稱 (例如 name_en, name_jp)
-                        # 如果找不到對應語系，嘗試抓英文，最後才Fallback回中文
                         lang_name_key = f"name_{c_lang}"
                         target_name = i.get(lang_name_key) or i.get('name_en')
-                        
                         if target_name:
                             main_name = target_name
-                            sub_name = name_zh # 中文保留在下方給店員看
+                            sub_name = name_zh 
                         
-                        # 2. 抓取對應語系的選項 (例如 options_en)
                         lang_opt_key = f"options_{c_lang}"
                         target_opts = i.get(lang_opt_key) or i.get('options_en')
                         if target_opts:
                             opts_display = target_opts
                 
-                # 如果是廚房單 (is_receipt=False)，完全不動，維持預設變數 (全中文)
-                # -------------------
-
-                # 組合 HTML
                 name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
-                
-                # 只有當有 sub_name 且跟主名稱不同時才顯示 (避免重複)
                 if sub_name and sub_name != main_name:
                     name_html += f"<span class='item-name-sub'>{sub_name}</span>"
-                
                 name_html += "</div>"
                 
                 qty = i.get('qty', 1)
@@ -470,13 +415,11 @@ def print_order(oid):
                 if opts_display:
                     h += f"<div class='opt'>└ {', '.join(opts_display)}</div>"
             
-            # 結帳單顯示總金額與運費
             if is_receipt: 
                 subtotal = total_price - c_fee if total_price else 0
                 if c_fee > 0:
                     h += f"<div class='fee-row'>小計: ${int(subtotal)}</div>"
                     h += f"<div class='fee-row'>運費: ${c_fee}</div>"
-                
                 h += f"<div class='total'>Total: ${int(total_price or 0)}</div>"
             
             return h + "</div>"
@@ -497,7 +440,7 @@ def print_order(oid):
             return "<script>alert('無內容可列印');window.close();</script>", 200
 
         # RawBT 整合 (APP 列印)
-        rawbt_html_source = f"<html><head>{style}</head><body>{content}</body></html>"
+        rawbt_html_source = f"<html><head><meta charset='utf-8'>{style}</head><body>{content}</body></html>"
         b64_data = base64.b64encode(rawbt_html_source.encode('utf-8')).decode('utf-8')
         intent_url = (
             f"intent:base64,{b64_data}#Intent;"
@@ -505,40 +448,42 @@ def print_order(oid):
             f"S.jobName=Order_{seq}_{print_type};S.editor=false;end;"
         )
 
-        # 優化後的 JavaScript：針對 Kiosk 模式加速
+        # 極速版 JavaScript：不等待 DOMContentLoaded，直接在 Body 尾端觸發
         final_html = f"""
         <!DOCTYPE html>
         <html>
-        <head>{style}</head>
+        <head>
+            <meta charset="utf-8">
+            <title>Print Order</title>
+            {style}
+        </head>
         <body>
             {content}
             <script>
-                document.addEventListener("DOMContentLoaded", function() {{
-                    var userAgent = navigator.userAgent || navigator.vendor || window.opera;
+                // 將 Script 放在 body 最後面，確保 HTML 已經載入，不浪費時間等待事件
+                var ua = navigator.userAgent || navigator.vendor || window.opera;
+                if (/android/i.test(ua)) {{
+                    var msg = document.createElement('div');
+                    msg.innerHTML = '<h2 style="text-align:center;color:green;margin-top:20px;">🖨️ 正在傳送至出單機...</h2>';
+                    document.body.appendChild(msg);
+                    window.location.href = "{intent_url}";
+                    setTimeout(function() {{ if(window.opener) window.close(); }}, 1500);
+                }} else {{
+                    // PC / Chrome Kiosk 模式加速
+                    // 1. 立即觸發列印 (Kiosk 會略過預覽畫面瞬間發送)
+                    window.print();
                     
-                    if (/android/i.test(userAgent)) {{
-                        // Android 手機 (RawBT)
-                        var msg = document.createElement('div');
-                        msg.innerHTML = '<h2 style="text-align:center;color:green;margin-top:20px;">🖨️ 正在傳送至出單機...</h2>';
-                        document.body.appendChild(msg);
-                        window.location.href = "{intent_url}";
-                        setTimeout(function() {{ if(window.opener) window.close(); }}, 2000);
+                    // 2. 利用 onafterprint 作為第一道保險 (Kiosk 模式下觸發很快)
+                    window.addEventListener('afterprint', function() {{
+                        if(window.opener) window.close();
+                    }});
                     
-                    }} else {{
-                        // PC / Chrome Kiosk 模式加速版
-                        // 1. 立即呼叫列印 (Kiosk 模式下不跳視窗)
-                        window.print();
-                        
-                        // 2. Fire-and-forget 策略：
-                        // 在 Kiosk 模式下，指令送出非常快，不需要等待 onafterprint (該事件常有延遲)
-                        // 設定 10ms 緩衝後直接關閉，體驗會像"閃一下"就沒了
-                        if(window.opener) {{
-                            setTimeout(function() {{
-                                window.close();
-                            }}, 10); 
-                        }}
-                    }}
-                }});
+                    // 3. 備用關閉機制：500ms 後強制關閉
+                    // 給印表機佇列(Spooler)足夠的時間抓取畫面，10ms 太短可能會導致 Chrome 丟失列印任務
+                    setTimeout(function() {{
+                        if(window.opener) window.close();
+                    }}, 500);
+                }}
             </script>
         </body>
         </html>
@@ -548,6 +493,7 @@ def print_order(oid):
     except Exception as e:
         traceback.print_exc()
         return f"Print Error: {str(e)}", 500
+
 
 # --- 4. 狀態變更 (完成/作廢) ---
 @kitchen_bp.route('/complete/<int:oid>')
@@ -754,6 +700,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
