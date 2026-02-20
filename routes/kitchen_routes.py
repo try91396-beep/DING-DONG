@@ -609,15 +609,15 @@ def daily_report():
     v_stats = agg(v_rows)
     x_stats = agg(x_rows)
 
-    # 產生表格 HTML 函式
+    # 產生表格 HTML 函式 (移除所有顏色，改為純黑白線條)
     def tbl(stats_dict):
-        if not stats_dict: return "<p style='text-align:center;color:#888;'>無數據</p>"
-        h = "<table style='width:100%; border-collapse:collapse; margin-top:10px;'><thead><tr style='border-bottom:2px solid #333;'><th style='text-align:left;'>品項</th><th style='text-align:right;'>數</th><th style='text-align:right;'>額</th></tr></thead><tbody>"
+        if not stats_dict: return "<p style='text-align:center; color:#000; font-weight:bold;'>無數據</p>"
+        h = "<table class='report-table'><thead><tr><th style='text-align:left;'>品項</th><th style='text-align:right;'>數</th><th style='text-align:right;'>額</th></tr></thead><tbody>"
         for k, v in sorted(stats_dict.items(), key=lambda x:x[1]['qty'], reverse=True):
-            h += f"<tr style='border-bottom:1px solid #eee;'><td>{k}</td><td style='text-align:right;'>{v['qty']}</td><td style='text-align:right;'>${v['amt']:,}</td></tr>"
+            h += f"<tr><td>{k}</td><td style='text-align:right;'>{v['qty']}</td><td style='text-align:right;'>${v['amt']:,}</td></tr>"
         return h + "</tbody></table>"
 
-    # 最終 HTML 輸出
+    # 最終 HTML 輸出 (純黑白 + 80mm 自動長度設定)
     return f"""
     <!DOCTYPE html>
     <html>
@@ -626,77 +626,91 @@ def daily_report():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>日結報表_{target_date_str}</title>
         <style>
-            body {{ font-family: 'Microsoft JhengHei', sans-serif; background: #f4f4f4; display:flex; flex-direction:column; align-items:center; padding:20px; }}
-            .ticket {{ background: white; width: 80mm; padding: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-radius: 5px; min-height: 500px; }}
-            .summary {{ background: #e8f5e9; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 5px solid #2e7d32; }}
-            .void-sum {{ background: #ffebee; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 5px solid #c62828; }}
-            .header {{ text-align:center; border-bottom:2px dashed #333; padding-bottom:10px; margin-bottom:10px; }}
-            .section-title {{ font-size:18px; font-weight:bold; margin-top:15px; border-bottom:1px solid #ccc; padding-bottom:5px; }}
-            h1 {{ margin:0; font-size:24px; }}
-            p {{ margin:5px 0; }}
-            .big-num {{ font-size:20px; font-weight:bold; }}
+            /* 螢幕預覽時的背景 (列印時會隱藏) */
+            body {{ font-family: 'Microsoft JhengHei', sans-serif; background: #f4f4f4; display:flex; flex-direction:column; align-items:center; padding:20px; color: #000; }}
+            
+            /* 單據本體設定 */
+            .ticket {{ background: white; width: 78mm; padding: 0; color: #000; }}
+            
+            /* 黑白化區塊設定 */
+            .summary {{ padding: 10px; margin: 10px 0; border: 2px solid #000; font-weight: bold; }}
+            .void-sum {{ padding: 10px; margin: 10px 0; border: 2px dashed #000; font-weight: bold; }}
+            .header {{ text-align:center; border-bottom: 2px dashed #000; padding-bottom:10px; margin-bottom:10px; }}
+            .section-title {{ font-size:18px; font-weight:bold; margin-top:15px; border-bottom: 2px solid #000; padding-bottom:5px; margin-bottom: 5px; color: #000; }}
+            
+            h1 {{ margin:0; font-size:24px; font-weight: 900; }}
+            p {{ margin:5px 0; color: #000; }}
+            .big-num {{ font-size:20px; font-weight:900; }}
+            
+            /* 表格黑白線條設定 */
+            .report-table {{ width:100%; border-collapse:collapse; margin-top:10px; color: #000; }}
+            .report-table th {{ border-bottom: 2px solid #000; padding-bottom: 5px; font-weight: bold; }}
+            .report-table td {{ border-bottom: 1px dashed #000; padding: 5px 0; }}
+            
+            /* --- 關鍵：專為熱感出單機設計的列印設定 --- */
+            @page {{ 
+                size: 80mm auto; /* 80mm 寬度，長度自動延伸 */
+                margin: 0mm;     /* 消除印表機預設邊界 */
+            }}
             
             @media print {{ 
-                .no-print {{ display: none; }} 
-                body {{ background: white; padding: 0; }} 
-                .ticket {{ box-shadow: none; width: 100%; }} 
+                .no-print {{ display: none !important; }} 
+                body {{ background: transparent; padding: 0; margin: 0; }} 
+                .ticket {{ width: 80mm; box-shadow: none; border: none; }}
+                
+                /* 強制所有內容為純黑白，避免印表機灰階化導致字體變淡 */
+                * {{ color: #000 !important; background: transparent !important; }}
             }}
         </style>
     </head>
     <body>
         <div class="no-print" style="margin-bottom:20px; text-align:center;">
             <div style="margin-bottom:10px;">
-                <label>選擇日期：</label>
-                <input type="date" id="dateInput" value="{target_date_str}" onchange="location.href='/kitchen/report?date='+this.value">
+                <label style="font-weight:bold;">選擇日期：</label>
+                <input type="date" id="dateInput" value="{target_date_str}" onchange="location.href='/kitchen/report?date='+this.value" style="padding: 5px; font-size: 16px;">
             </div>
-            <button onclick="window.print()" style="padding:10px 20px; font-size:16px; background:#2196F3; color:white; border:none; border-radius:5px; cursor:pointer;">🖨️ 列印報表</button>
-            <button onclick="location.href='/kitchen'" style="padding:10px 20px; font-size:16px; background:#607D8B; color:white; border:none; border-radius:5px; cursor:pointer; margin-left:10px;">🔙 返回看板</button>
+            <button onclick="window.print()" style="padding:10px 20px; font-size:16px; background:#000; color:#fff; border:2px solid #000; font-weight:bold; cursor:pointer;">🖨️ 列印報表</button>
+            <button onclick="location.href='/kitchen'" style="padding:10px 20px; font-size:16px; background:#fff; color:#000; border:2px solid #000; font-weight:bold; cursor:pointer; margin-left:10px;">🔙 返回看板</button>
         </div>
 
         <div class="ticket">
             <div class="header">
                 <h1>日結營收報表</h1>
-                <p>{target_date_str}</p>
-                <p style="font-size:12px; color:#666;">列印時間: {datetime.now().strftime('%H:%M:%S')}</p>
+                <p style="font-size: 18px; font-weight: bold;">{target_date_str}</p>
+                <p style="font-size:12px;">列印時間: {datetime.now().strftime('%H:%M:%S')}</p>
             </div>
 
             <div class="summary">
-                <div style="font-weight:bold; color:#2e7d32;">✅ 有效營收 (Pending+Completed)</div>
+                <div>[ Valid ] 有效營收</div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px;">
-                    <span>訂單數: <span class="big-num">{v_count}</span> 單</span>
-                    <span>總金額: <span class="big-num">${v_total:,}</span></span>
+                    <span>訂單: <span class="big-num">{v_count}</span> 單</span>
+                    <span>總計: <span class="big-num">${v_total:,}</span></span>
                 </div>
             </div>
 
             <div class="void-sum">
-                <div style="font-weight:bold; color:#c62828;">❌ 作廢統計 (Cancelled)</div>
+                <div>[ Void ] 作廢統計</div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px;">
-                    <span>作廢數: {x_count} 單</span>
+                    <span>作廢: {x_count} 單</span>
                     <span>作廢額: ${x_total:,}</span>
                 </div>
             </div>
 
-            <div class="section-title">📊 商品銷售明細</div>
+            <div class="section-title">商品銷售明細</div>
             {tbl(v_stats)}
 
-            <div class="section-title" style="color:#888; margin-top:30px;">🗑️ 作廢商品明細</div>
-            <div style="color:#888; font-size:0.9em;">
+            <div class="section-title" style="margin-top:30px;">作廢商品明細</div>
+            <div>
                 {tbl(x_stats)}
             </div>
 
-            <div style="margin-top:40px; text-align:center; border-top:2px dashed #000; padding-top:10px;">
-                <p>簽名: ________________</p>
+            <div style="margin-top:40px; text-align:center; border-top:2px solid #000; padding-top:10px;">
+                <p style="font-weight: bold;">經手人簽名</p>
+                <br><br>
+                <p>____________________</p>
+                <p style="font-size: 12px; margin-top: 20px;">- End of Report -</p>
             </div>
         </div>
     </body>
     </html>
     """
-
-
-
-
-
-
-
-
-
