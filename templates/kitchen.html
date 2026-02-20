@@ -80,18 +80,16 @@
         .badge-table { font-size: 20px; font-weight: bold; background: #333; color: white; padding: 4px 10px; border-radius: 4px; }
         .badge-delivery { font-size: 18px; font-weight: bold; background: var(--delivery-color); color: white; padding: 4px 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; }
         
-        /* 外送詳細資訊區塊 - 關鍵修正區域 */
+        /* 外送詳細資訊區塊 */
         .delivery-details {
-            font-size: 0.9rem; /* 稍微加大一點字體 */
+            font-size: 0.9rem;
             background: #fff3e0; color: #bf360c;
             padding: 8px; margin: 0 12px 5px 12px; border-radius: 4px;
             border: 1px dashed #ffb74d; 
             display: flex; flex-direction: column; gap: 2px;
-            
-            /* 解決長地址被切掉的問題 */
-            word-break: break-all;  /* 強制斷行，避免長字串撐開或隱藏 */
-            white-space: normal;    /* 允許文字換行 */
-            overflow-wrap: break-word; /* 支援現代瀏覽器的斷詞 */
+            word-break: break-all; 
+            white-space: normal;  
+            overflow-wrap: break-word; 
         }
 
         .items { padding: 12px; flex-grow: 1; z-index: 2; min-height: 80px; }
@@ -247,7 +245,8 @@
 
     // --- 核心：定時刷新與自動列印 ---
     function refreshOrders() {
-        fetch('/kitchen/check_new_orders?current_seq=' + lastMaxSeq)
+        // 【關鍵修改】：將 current_seq 改為 last_seq，與後端的 request.args.get('last_seq') 對應
+        fetch('/kitchen/check_new_orders?last_seq=' + lastMaxSeq)
             .then(res => res.json())
             .then(data => {
                 // 1. 更新訂單畫面
@@ -256,10 +255,7 @@
                 // 2. 更新時間
                 updateTimeText.innerText = '最後更新: ' + new Date().toLocaleTimeString();
 
-                // 3. 更新最大序號
-                if (data.max_seq) lastMaxSeq = data.max_seq;
-
-                // 4. 偵測新訂單 -> 觸發 RawBT 自動列印
+                // 3. 偵測新訂單 -> 觸發 RawBT 自動列印與音效
                 if (data.new_ids && data.new_ids.length > 0) {
                     console.log("🔔 新訂單 ID:", data.new_ids);
                     
@@ -275,6 +271,11 @@
                             window.open(`/kitchen/print_order/${oid}?type=all`, '_blank');
                         }, index * 1200); // 每 1.2 秒印一張，避免卡住
                     });
+                }
+
+                // 4. 【關鍵】：最後才更新最大序號，確保新訂單處理完畢後才記錄
+                if (data.max_seq && data.max_seq > lastMaxSeq) {
+                    lastMaxSeq = data.max_seq;
                 }
             })
             .catch(err => { 
