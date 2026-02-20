@@ -612,7 +612,7 @@ def daily_report():
     # 產生表格 HTML 函式 (移除所有顏色，改為純黑白線條)
     def tbl(stats_dict):
         if not stats_dict: return "<p style='text-align:center; color:#000; font-weight:bold;'>無數據</p>"
-        h = "<table class='report-table'><thead><tr><th style='text-align:left;'>品項</th><th style='text-align:right;'>數</th><th style='text-align:right;'>額</th></tr></thead><tbody>"
+        h = "<table class='report-table'><thead><tr><th style='text-align:left;'>品項</th><th style='text-align:right;'>數量</th><th style='text-align:right;'>金額</th></tr></thead><tbody>"
         for k, v in sorted(stats_dict.items(), key=lambda x:x[1]['qty'], reverse=True):
             h += f"<tr><td>{k}</td><td style='text-align:right;'>{v['qty']}</td><td style='text-align:right;'>${v['amt']:,}</td></tr>"
         return h + "</tbody></table>"
@@ -714,4 +714,5 @@ def daily_report():
     </body>
     </html>
     """
+
 
