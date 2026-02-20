@@ -9,7 +9,7 @@
             --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
             --main-text: #333; --accent-purple: #673ab7; --accent-blue: #2196f3;
             --accent-green: #4caf50; --accent-orange: #ff9800; --accent-red: #f44336;
-            --delivery-color: #ff5722; /* 新增外送色系 */
+            --delivery-color: #ff5722;
         }
         body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
         
@@ -26,7 +26,6 @@
             display: grid; 
             grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
             gap: 20px; 
-            /* 關鍵修改：讓卡片靠上對齊，高度隨內容自動伸縮，不會被同一列最高的卡片拉長 */
             align-items: flex-start; 
         }
         
@@ -35,7 +34,6 @@
             background: white; border-radius: 12px; border: 1px solid #ddd;
             display: flex; flex-direction: column; overflow: hidden;
             transition: transform 0.2s; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            /* 關鍵修改：確保高度自動，不鎖死 */
             height: auto;
         }
 
@@ -243,20 +241,28 @@
         refreshOrders();
     }
 
-    // --- 【新增】隱藏 iFrame 列印引擎 ---
+    // --- 【強化版】隱藏 iFrame 列印引擎 ---
     function printViaIframe(url) {
-        // 建立隱藏的 iframe
+        // 建立完全隱形的 iframe
         const iframe = document.createElement('iframe');
-        iframe.style.position = 'absolute';
+        iframe.style.position = 'fixed'; // 固定位置，避免影響滾動條
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
         iframe.style.width = '0';
         iframe.style.height = '0';
         iframe.style.border = 'none';
+        iframe.style.visibility = 'hidden'; // 確保絕對不可見
+        
+        iframe.onload = function() {
+            console.log("🖨️ 隱藏列印指令已送出: " + url);
+        };
+
         iframe.src = url;
         
-        // 插入畫面，這會觸發背景載入與列印
+        // 插入畫面，這會觸發背景載入與後端的 window.print()
         document.body.appendChild(iframe);
 
-        // 為了不讓 DOM 充滿冗餘元素，10 秒後自動將其移除
+        // 清理機制：10 秒後自動移除，避免網頁用久了累積一堆隱藏 iframe 拖慢效能
         setTimeout(() => {
             if (document.body.contains(iframe)) {
                 document.body.removeChild(iframe);
@@ -284,7 +290,7 @@
                         .then(() => setTimeout(speakNewOrder, 800))
                         .catch(() => speakNewOrder());
 
-                    // 使用隱藏 iFrame 依序列印 (取代 window.open)
+                    // 使用隱藏 iFrame 依序列印，完全背景執行
                     data.new_ids.forEach((oid, index) => {
                         setTimeout(() => {
                             printViaIframe(`/kitchen/print_order/${oid}?type=all`);
@@ -325,7 +331,7 @@
     function doPrint(type) {
         if (!currentPrintOid) return;
         
-        // 使用 iframe 取代 window.open
+        // 呼叫強化版的 iframe 列印取代舊的彈出視窗
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
         printViaIframe(printUrl);
         
