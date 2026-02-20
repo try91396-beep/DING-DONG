@@ -96,6 +96,9 @@ def check_new_orders():
         conn.close()
 
         html_content = ""
+        # 【關鍵修正】：建立一個陣列來收集未處理的新訂單 ID
+        pending_ids = []
+
         if not orders: 
             html_content = "<div id='loading-msg' style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#888;'>🍽️ 目前沒有訂單</div>"
         
@@ -107,6 +110,10 @@ def check_new_orders():
             status_cls = status.lower()
             tw_time = created + timedelta(hours=8)
             
+            # 【關鍵修正】：如果狀態是 Pending，就將 ID 加入陣列交給前端觸發通知
+            if status == 'Pending':
+                pending_ids.append(oid)
+
             # 資料預處理
             table_str = str(table).strip() if table else ""
             c_fee = int(c_fee or 0)
@@ -226,10 +233,11 @@ def check_new_orders():
                 <div class="actions">{buttons}</div>
             </div>"""
             
+        # 【關鍵修正】：將收集好的 pending_ids 放進 new_ids 中回傳
         return jsonify({
             'html': html_content, 
             'max_seq': max_seq_val, 
-            'new_ids': [] 
+            'new_ids': pending_ids 
         })
     except Exception as e:
         traceback.print_exc()
@@ -745,5 +753,6 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
