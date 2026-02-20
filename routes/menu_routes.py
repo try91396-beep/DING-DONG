@@ -462,8 +462,10 @@ def order_success():
     time_str = tw_time.strftime('%Y-%m-%d %H:%M:%S')
 
     # 返回連結邏輯
-    back_link = url_for('menu.delivery_menu', lang=lang) if is_delivery else url_for('menu.index', lang=lang)
-    back_text = "Back to Delivery" if is_delivery else "Back to Menu"
+    # back_link = url_for('menu.delivery_menu', lang=lang) if is_delivery else url_for('menu.index', lang=lang)
+    # back_text = "Back to Delivery" if is_delivery else "Back to Menu"
+    back_link = url_for(menu.index', lang=lang) if is_delivery else url_for('menu.index', lang=lang)
+    back_text = "Back to Menu" if is_delivery else "Back to Menu"
 
     return f"""
     <!DOCTYPE html>
