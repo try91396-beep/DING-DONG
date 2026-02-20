@@ -241,20 +241,21 @@
         refreshOrders();
     }
 
-    // --- 【強化版】隱藏 iFrame 列印引擎 ---
+    // --- 【修正版】隱藏 iFrame 列印引擎 ---
     function printViaIframe(url) {
-        // 建立完全隱形的 iframe
         const iframe = document.createElement('iframe');
-        iframe.style.position = 'fixed'; // 固定位置，避免影響滾動條
-        iframe.style.right = '0';
-        iframe.style.bottom = '0';
-        iframe.style.width = '0';
-        iframe.style.height = '0';
+        
+        // 關鍵修改：不要用 width:0 或 display:none，會被瀏覽器阻擋列印
+        // 改用 absolute 定位，把 iframe 推到畫面外遠遠的地方 (-9999px)
+        iframe.style.position = 'absolute';
+        iframe.style.left = '-9999px';
+        iframe.style.top = '-9999px';
+        iframe.style.width = '1px';
+        iframe.style.height = '1px';
         iframe.style.border = 'none';
-        iframe.style.visibility = 'hidden'; // 確保絕對不可見
         
         iframe.onload = function() {
-            console.log("🖨️ 隱藏列印指令已送出: " + url);
+            console.log("🖨️ 列印文件已載入: " + url);
         };
 
         iframe.src = url;
@@ -262,12 +263,13 @@
         // 插入畫面，這會觸發背景載入與後端的 window.print()
         document.body.appendChild(iframe);
 
-        // 清理機制：10 秒後自動移除，避免網頁用久了累積一堆隱藏 iframe 拖慢效能
+        // 關鍵修改 2：時間延長到 5 分鐘 (300000ms) 再清理
+        // 避免在正常瀏覽器下，使用者操作列印預覽稍慢，iframe 被砍掉導致預覽視窗關閉或列印失敗
         setTimeout(() => {
             if (document.body.contains(iframe)) {
                 document.body.removeChild(iframe);
             }
-        }, 10000);
+        }, 300000); 
     }
 
     // --- 核心：定時刷新與自動列印 ---
@@ -331,7 +333,7 @@
     function doPrint(type) {
         if (!currentPrintOid) return;
         
-        // 呼叫強化版的 iframe 列印取代舊的彈出視窗
+        // 呼叫修正版的 iframe 列印取代舊的彈出視窗
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
         printViaIframe(printUrl);
         
