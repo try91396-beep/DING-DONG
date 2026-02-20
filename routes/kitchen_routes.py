@@ -324,7 +324,7 @@ def print_order(oid):
         time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
         # 分類邏輯 (用於分單列印)
-        noodle_items, soup_items, other_items = [], [], []
+        noodle_items, soup_items, other_items = [], []
         for item in items:
             p_name = item.get('name_zh') or item.get('name')
             p_cat = product_map.get(p_name, 'Other') 
@@ -440,6 +440,7 @@ def print_order(oid):
             return "<script>alert('無內容可列印');window.close();</script>", 200
 
         # RawBT 整合 (APP 列印)
+        import base64
         rawbt_html_source = f"<html><head><meta charset='utf-8'>{style}</head><body>{content}</body></html>"
         b64_data = base64.b64encode(rawbt_html_source.encode('utf-8')).decode('utf-8')
         intent_url = (
@@ -470,19 +471,18 @@ def print_order(oid):
                     setTimeout(function() {{ if(window.opener) window.close(); }}, 1500);
                 }} else {{
                     // PC / Chrome Kiosk 模式加速
-                    // 1. 立即觸發列印 (Kiosk 會略過預覽畫面瞬間發送)
+                    // 1. 立即觸發列印
                     window.print();
                     
-                    // 2. 利用 onafterprint 作為第一道保險 (Kiosk 模式下觸發很快)
+                    // 2. 利用 onafterprint 作為第一道保險
                     window.addEventListener('afterprint', function() {{
                         if(window.opener) window.close();
                     }});
                     
-                    // 3. 備用關閉機制：500ms 後強制關閉
-                    // 給印表機佇列(Spooler)足夠的時間抓取畫面，10ms 太短可能會導致 Chrome 丟失列印任務
+                    // 3. 將備用關閉機制極限壓縮至 100ms
                     setTimeout(function() {{
                         if(window.opener) window.close();
-                    }}, 500);
+                    }}, 100);
                 }}
             </script>
         </body>
@@ -491,9 +491,9 @@ def print_order(oid):
         return final_html
 
     except Exception as e:
+        import traceback
         traceback.print_exc()
         return f"Print Error: {str(e)}", 500
-
 
 # --- 4. 狀態變更 (完成/作廢) ---
 @kitchen_bp.route('/complete/<int:oid>')
@@ -700,6 +700,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
