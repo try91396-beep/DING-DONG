@@ -303,11 +303,16 @@
                         .catch(() => speakNewOrder());
 
                     // 依序列印
+                     // ==========================================
+                    // ⚠️ 自動列印功能已註解，若需恢復請將下方註解取消
+                    // ==========================================
+                    /*
                     data.new_ids.forEach((oid, index) => {
                         setTimeout(() => {
                             printViaIframe(`/kitchen/print_order/${oid}?type=all`);
                         }, index * 1200);
                     });
+                    */
                 }
 
                 // 4. 最後才更新最大序號
