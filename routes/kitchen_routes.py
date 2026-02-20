@@ -348,19 +348,19 @@ def print_order(oid):
             .table-row { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
             .table-label { font-size: 20px; font-weight: bold; }
             .table-val { font-size: 36px; font-weight: 900; line-height: 1; }
-            .time-row { font-size: 14px; text-align: center; margin-top: 2px; color: #333; }
+            .time-row { font-size: 14px; text-align: center; margin-top: 2px; color: #000; }
             .customer-info { border: 2px solid #000; padding: 6px; margin: 5px 0 10px 0; font-size: 18px; font-weight: bold; text-align: left; background: #f8f8f8; line-height: 1.3; }
             .cust-row { margin-bottom: 2px; }
-            .addr-row { margin-top: 4px; border-top: 1px dashed #666; padding-top: 4px; font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.2; }
+            .addr-row { margin-top: 4px; border-top: 1px dashed #000; padding-top: 4px; font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.2; }
             .schedule-row { font-size: 22px; font-weight: 900; text-align: center; background: #000; color: #fff; margin: 5px 0; padding: 5px; border-radius: 0; }
             .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px; line-height: 1.1; }
             .name-col { width: 85%; display: flex; flex-direction: column; }
             .item-name-main { font-size: 22px; font-weight: 900; word-wrap: break-word; }
-            .item-name-sub { font-size: 16px; font-weight: bold; color: #555; margin-top: 2px; }
+            .item-name-sub { font-size: 16px; font-weight: bold; color: #000; margin-top: 2px; }
             .item-qty { font-size: 22px; font-weight: 900; white-space: nowrap; }
-            .opt { font-size: 16px; font-weight: bold; padding-left: 10px; color: #333; }
+            .opt { font-size: 16px; font-weight: bold; padding-left: 10px; color: #000; }
             .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 10px; padding-top: 5px; border-top: 2px solid #000; }
-            .fee-row { text-align: right; font-size: 16px; font-weight: bold; color: #333; }
+            .fee-row { text-align: right; font-size: 16px; font-weight: bold; color: #000; }
         </style>
         """
 
@@ -691,6 +691,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
