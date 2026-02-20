@@ -681,7 +681,7 @@ def daily_report():
             </div>
 
             <div class="summary">
-                <div>[ Valid ] 有效營收</div>
+                <div>有效營收</div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px;">
                     <span>訂單: <span class="big-num">{v_count}</span> 單</span>
                     <span>總計: <span class="big-num">${v_total:,}</span></span>
@@ -689,7 +689,7 @@ def daily_report():
             </div>
 
             <div class="void-sum">
-                <div>[ Void ] 作廢統計</div>
+                <div>作廢統計</div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px;">
                     <span>作廢: {x_count} 單</span>
                     <span>作廢額: ${x_total:,}</span>
@@ -714,3 +714,4 @@ def daily_report():
     </body>
     </html>
     """
+
