@@ -47,12 +47,13 @@
         .cart-qty-sub { display: flex; align-items: center; justify-content: flex-end; gap: 15px; }
         .btn-edit-opt { background: #e3f2fd; color: #2196f3; border: 1px solid #2196f3; padding: 6px 12px; border-radius: 8px; font-size: 0.9em; font-weight: bold; cursor: pointer; }
 
-        /* [新增] 模式切換與時間選擇器樣式 */
+        /* 模式切換與時間選擇器樣式 */
+        .mode-section { background: #fff; padding: 15px 15px 5px 15px; border-bottom: 1px solid #eee; }
         .mode-switch { display: flex; background: #eee; border-radius: 10px; padding: 4px; margin-bottom: 10px; }
-        .mode-opt { flex: 1; text-align: center; padding: 8px; border-radius: 8px; cursor: pointer; transition: 0.3s; font-weight: bold; color: #666; }
+        .mode-opt { flex: 1; text-align: center; padding: 10px; border-radius: 8px; cursor: pointer; transition: 0.3s; font-weight: bold; color: #666; }
         .mode-opt.active { background: white; color: #28a745; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .takeout-time-box { margin-top: 10px; background: #fff3cd; padding: 10px; border-radius: 8px; border: 1px solid #ffeeba; }
-        .time-picker { width: 100%; padding: 10px; font-size: 1.2em; border: 1px solid #ccc; border-radius: 5px; margin-top: 5px; box-sizing: border-box; }
+        .takeout-time-box { margin-bottom: 10px; background: #fff3cd; padding: 10px; border-radius: 8px; border: 1px solid #ffeeba; }
+        .time-picker { width: 100%; padding: 12px; font-size: 1.2em; border: 1px solid #ccc; border-radius: 8px; margin-top: 5px; box-sizing: border-box; }
     </style>
 </head>
 <body>
@@ -60,11 +61,27 @@
     {% set session_delivery = session.get('delivery_data', {}) %}
     {% set session_table = session.get('table_num') %}
     
-    {# --- 2. 判斷邏輯：只要 Session 裡有電話，或桌號是外送，就認定為外送模式 --- #}
+    {# --- 2. 判斷邏輯 --- #}
     {% set is_delivery_mode = (session_delivery.get('phone')) or (session_table == '外送') %}
     
-    {# --- 3. 決定最終顯示的桌號 (如果是外送模式，強制顯示 '外送') --- #}
+    {# --- 3. 決定最終顯示的桌號 --- #}
     {% set final_table_num = '外送' if is_delivery_mode else (table_num or session_table or '') %}
+
+    {% if not is_delivery_mode %}
+    <div class="mode-section">
+        <div class="mode-switch">
+            <div class="mode-opt active" id="mode-dinein" onclick="setMode('dinein')">🍽️ 現場 (Dine-in)</div>
+            <div class="mode-opt" id="mode-takeout" onclick="setMode('takeout')">🛍️ 預約自取 (Takeout)</div>
+        </div>
+
+        <div id="sec-takeout" style="display: none;">
+            <div class="takeout-time-box">
+                <label style="font-weight:bold; color:#856404;">🕒 預計取餐時間 (Pickup Time)</label>
+                <input type="datetime-local" id="takeout_time" class="time-picker" step="60">
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="header">
         {% if edit_oid %}
@@ -75,36 +92,17 @@
         
         <h2 style="margin:0 0 10px 0;">{{ texts['welcome'] }}</h2>
 
-        {# --- 狀態顯示與輸入區 --- #}
-        {% if is_delivery_mode %}
-            {# --- 鎖定的外送桌號欄位 (唯讀) --- #}
-            <div style="margin-bottom: 10px;">
-                <label style="font-weight:bold; color:#1565c0;">{{ texts['table_placeholder'] }}</label>
-                <input type="text" id="visible_table" value="外送" readonly
-                       style="padding:12px;width:100%;box-sizing:border-box;border:2px solid #90caf9; background:#e3f2fd; color:#1565c0; border-radius:8px;font-size:1.2em;margin-top:5px; text-align:center; font-weight:bold;">
-            </div>
-        {% else %}
-            {# --- [修改] 現場/預約自取 模式切換區 --- #}
-            <div style="margin-bottom: 10px;">
-                <div class="mode-switch">
-                    <div class="mode-opt active" id="mode-dinein" onclick="setMode('dinein')">🍽️ 現場 (Dine-in)</div>
-                    <div class="mode-opt" id="mode-takeout" onclick="setMode('takeout')">🛍️ 預約自取 (Takeout)</div>
-                </div>
-
-                <div id="sec-dinein">
-                    <label style="font-weight:bold; color:#555;">{{ texts['table_placeholder'] }}</label>
-                    <input type="text" id="visible_table" value="{{ final_table_num }}" placeholder="請輸入桌號" 
-                           style="padding:12px;width:100%;box-sizing:border-box;border:2px solid #ddd;border-radius:8px;font-size:1.2em;margin-top:5px;">
-                </div>
-
-                <div id="sec-takeout" style="display: none;">
-                    <div class="takeout-time-box">
-                        <label style="font-weight:bold; color:#856404;">🕒 預計取餐時間 (Pickup Time)</label>
-                        <input type="datetime-local" id="takeout_time" class="time-picker" step="60">
-                    </div>
-                </div>
-            </div>
-        {% endif %}
+        {# --- 桌號輸入/顯示區 --- #}
+        <div id="sec-dinein">
+            <label style="font-weight:bold; color:{{ '#1565c0' if is_delivery_mode else '#555' }};">{{ texts['table_placeholder'] }}</label>
+            <input type="text" id="visible_table" value="{{ final_table_num }}" 
+                   placeholder="請輸入桌號" 
+                   {{ 'readonly' if is_delivery_mode else '' }}
+                   style="padding:12px;width:100%;box-sizing:border-box;border:2px solid {{ '#90caf9' if is_delivery_mode else '#ddd' }}; 
+                          background:{{ '#e3f2fd' if is_delivery_mode else '#fff' }}; 
+                          color:{{ '#1565c0' if is_delivery_mode else '#000' }}; 
+                          border-radius:8px;font-size:1.2em;margin-top:5px;{{ 'text-align:center; font-weight:bold;' if is_delivery_mode else '' }}">
+        </div>
 
         <div class="cat-bar" id="cat-nav"></div>
     </div>
@@ -137,21 +135,13 @@
         <input type="hidden" name="old_order_id" value="{{ edit_oid }}">
         {% endif %}
         
-        {# --- 這裡對應 database.py 的 orders 表 table_number 欄位 --- #}
         <input type="hidden" name="table_number" id="tbl_input">
-        
-        {# --- 外送資料欄位 --- #}
         <input type="hidden" name="order_type" value="{{ 'delivery' if is_delivery_mode else 'dine_in' }}">
-        
         <input type="hidden" name="customer_name" value="{{ session_delivery.get('name', '') }}">
         <input type="hidden" name="customer_phone" value="{{ session_delivery.get('phone', '') }}">
-        
         <input type="hidden" name="delivery_address" value="{{ session_delivery.get('address', '') }}">
         <input type="hidden" name="delivery_note" value="{{ session_delivery.get('note', '') }}">
-        
-        {# --- [關鍵] 這個欄位會被後端讀取並寫入 database.py 的 delivery_time --- #}
         <input type="hidden" name="scheduled_for" id="scheduled_for_input" value="{{ session_delivery.get('scheduled_for', '') }}">
-        
         <input type="hidden" name="delivery_fee" value="{{ session.get('delivery_info', {}).get('shipping_fee', 0) }}">
         
         <div class="cart-bar" id="bar">
@@ -166,7 +156,6 @@
         </div>
     </form>
 
-    {# --- Modal 區域 (保持原樣) --- #}
     <div class="modal" id="opt-m" onclick="closeModalByBg(event, 'opt-m')">
         <div class="modal-c" onclick="event.stopPropagation()">
             <h3 id="m-name" style="font-size:1.5em;margin-top:0;"></h3>
@@ -196,49 +185,43 @@
     const PRELOAD_CART = {{ preload_cart | safe }};
     const CUR_LANG = "{{ display_lang }}";
     
-    // --- JS 使用變數判定 (含低消) ---
     const IS_DELIVERY = {{ 'true' if is_delivery_mode else 'false' }};
     const DELIVERY_FEE = {{ session.get('delivery_info', {}).get('shipping_fee', 0) }};
     const DELIVERY_MIN = {{ session.get('delivery_info', {}).get('min_price', 500) }};
 
     let C = [], cur = null, selectedOptIndices = [], addP = 0, editIndex = -1;
-    let currentMode = 'dinein'; // 預設內用
+    let currentMode = 'dinein';
 
-    // [新增] 模式切換邏輯
     function setMode(mode) {
-        if(IS_DELIVERY) return; // 外送模式下不可切換
+        if(IS_DELIVERY) return;
 
         currentMode = mode;
         document.querySelectorAll('.mode-opt').forEach(el => el.classList.remove('active'));
         document.getElementById('mode-' + mode).classList.add('active');
 
+        const tableInput = document.getElementById('visible_table');
+
         if(mode === 'dinein') {
-            document.getElementById('sec-dinein').style.display = 'block';
+            tableInput.placeholder = "請輸入桌號";
+            if(tableInput.value === '外帶') tableInput.value = '';
             document.getElementById('sec-takeout').style.display = 'none';
         } else {
-            document.getElementById('sec-dinein').style.display = 'none';
+            tableInput.value = '外帶';
+            tableInput.placeholder = "外帶模式";
             document.getElementById('sec-takeout').style.display = 'block';
-            
-            // 初始化時間選擇器為當前時間往後 15 分鐘，方便使用者
             initTimePicker();
         }
     }
 
-    // [新增] 初始化時間選擇器
     function initTimePicker() {
         const now = new Date();
-        now.setMinutes(now.getMinutes() + 15); // 預設 15 分鐘後
+        now.setMinutes(now.getMinutes() + 15);
         now.setSeconds(0);
         now.setMilliseconds(0);
-        
-        // 轉換為 YYYY-MM-DDTHH:mm 格式 (本地時間)
         const offset = now.getTimezoneOffset() * 60000;
         const localISOTime = (new Date(now - offset)).toISOString().slice(0, 16);
-        
         const picker = document.getElementById('takeout_time');
-        if(!picker.value) {
-            picker.value = localISOTime;
-        }
+        if(!picker.value) picker.value = localISOTime;
     }
 
     function saveCache() { 
@@ -261,7 +244,6 @@
         }
     });
 
-    // 渲染商品列表 (保持原樣)
     let h = "", lastCatKey = "", cats = [];
     P.forEach(p => {
         let currentCatName = p['category_' + CUR_LANG] || p.category_zh;
@@ -367,18 +349,10 @@
 
     function addC() {
         let q = parseInt(document.getElementById('m-q').value) || 1;
-        
         let opts_zh = cur.custom_options_zh || [];
         if(typeof opts_zh === 'string') opts_zh = opts_zh.split(',').filter(x=>x);
-        
         let opts_en = cur.custom_options_en || opts_zh;
         if(typeof opts_en === 'string') opts_en = opts_en.split(',').filter(x=>x);
-
-        let opts_jp = cur.custom_options_jp || opts_zh;
-        if(typeof opts_jp === 'string') opts_jp = opts_jp.split(',').filter(x=>x);
-
-        let opts_kr = cur.custom_options_kr || opts_zh;
-        if(typeof opts_kr === 'string') opts_kr = opts_kr.split(',').filter(x=>x);
 
         let itemData = { 
             id: cur.id, 
@@ -387,14 +361,11 @@
             qty: q, 
             options_zh: selectedOptIndices.map(idx => (opts_zh[idx] || '').split('+')[0].trim()),
             options_en: selectedOptIndices.map(idx => (opts_en[idx] || opts_zh[idx] || '').split('+')[0].trim()),
-            options_jp: selectedOptIndices.map(idx => (opts_jp[idx] || opts_zh[idx] || '').split('+')[0].trim()),
-            options_kr: selectedOptIndices.map(idx => (opts_kr[idx] || opts_zh[idx] || '').split('+')[0].trim()),
             category: cur.category_zh, 
             print_category: cur.print_category 
         };
         
         if(editIndex > -1) C[editIndex] = itemData; else C.push(itemData);
-        
         document.getElementById('opt-m').style.display = 'none'; 
         saveCache(); 
         upd(); 
@@ -406,9 +377,7 @@
             document.getElementById('bar').style.display = 'flex';
             let foodTotal = C.reduce((a, b) => a + b.unit_price * b.qty, 0);
             let finalTotal = foodTotal;
-            if (IS_DELIVERY) {
-                finalTotal += DELIVERY_FEE;
-            }
+            if (IS_DELIVERY) finalTotal += DELIVERY_FEE;
             document.getElementById('tot').innerText = finalTotal;
             document.getElementById('cnt').innerText = C.reduce((a, b) => a + b.qty, 0);
         } else {
@@ -448,51 +417,33 @@
         });
         
         if (IS_DELIVERY && C.length > 0) {
-            h += `<div style="text-align:right; padding:15px 0; border-top:2px solid #333; color:#1565c0; font-weight:bold;">
-                    Delivery Fee (運費): $${DELIVERY_FEE}
-                  </div>`;
+            h += `<div style="text-align:right; padding:15px 0; border-top:2px solid #333; color:#1565c0; font-weight:bold;">Delivery Fee: $${DELIVERY_FEE}</div>`;
         }
-
         document.getElementById('c-list').innerHTML = h || `<p style="text-align:center;">${T.empty_cart}</p>`;
         document.getElementById('cart-m').style.display = 'flex';
     }
 
     function sub() {
-        // --- 1. 外送低消檢查 ---
         if (IS_DELIVERY) {
             let foodTotal = C.reduce((a, b) => a + (b.unit_price * b.qty), 0);
             if (foodTotal < DELIVERY_MIN) {
-                alert(`⚠️ 外送訂單金額未滿 $${DELIVERY_MIN} 元 (不含運費)\n請再加點商品。\n\nMinimum order for delivery is $${DELIVERY_MIN}.`);
+                alert(`⚠️ 外送低消為 $${DELIVERY_MIN}`);
                 return; 
             }
         }
 
         let tableVal = "";
-
-        // --- 2. 判斷桌號與時間 (外送 / 外帶 / 內用) ---
         if (IS_DELIVERY) {
-            // 外送：強制設定 '外送'
             tableVal = '外送';
-            // 外送時間已在 Session 中，不需要這裡額外處理，除非要讓使用者在結帳頁面改時間(通常是在前一個頁面設定)
-        } 
-        else if (currentMode === 'takeout') {
-            // [關鍵修改] 外帶模式：
-            // 1. 桌號設為 '外帶'
+        } else if (currentMode === 'takeout') {
             tableVal = '外帶';
-            
-            // 2. 取得時間選擇器的值
             const timeVal = document.getElementById('takeout_time').value;
             if(!timeVal) {
-                alert("⚠️ 請選擇取餐時間 (Please select pickup time)");
+                alert("⚠️ 請選擇取餐時間");
                 return;
             }
-            
-            // 3. 將時間值 (例如 2023-10-27T10:30) 格式化為易讀字串，填入 scheduled_for_input
-            // 替換 T 為 空格，使其符合 database 一般 datetime 格式
             document.getElementById('scheduled_for_input').value = timeVal.replace('T', ' ');
-        } 
-        else {
-            // 內用：讀取輸入框
+        } else {
             tableVal = document.getElementById('visible_table').value;
         }
 
@@ -500,9 +451,7 @@
             return alert(T.table_placeholder || '請輸入桌號');
         }
         
-        // 填入 hidden input (name="table_number")
         document.getElementById('tbl_input').value = tableVal;
-
         if(confirm(T.confirm_order)) {
             document.getElementById('cart_input').value = JSON.stringify(C);
             localStorage.removeItem('cart_cache');
@@ -514,4 +463,3 @@
     </script>
 </body>
 </html>
-
