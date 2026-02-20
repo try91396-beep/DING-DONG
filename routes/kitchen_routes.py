@@ -323,8 +323,9 @@ def print_order(oid):
         # 下單時間
         time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
-        # 分類邏輯 (用於分單列印)
-        noodle_items, soup_items, other_items = [], []
+        # 分類邏輯 (用於分單列印) - 修正這裡！補上第三個空串列 []
+        noodle_items, soup_items, other_items = [], [], []
+        
         for item in items:
             p_name = item.get('name_zh') or item.get('name')
             p_cat = product_map.get(p_name, 'Other') 
@@ -700,6 +701,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
