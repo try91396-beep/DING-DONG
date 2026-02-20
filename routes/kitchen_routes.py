@@ -54,6 +54,9 @@ def kitchen_panel():
 @kitchen_bp.route('/check_new_orders')
 def check_new_orders():
     try:
+        # 【關鍵修改 1】：接收前端傳來的最後一次看過的序號 (預設為 0)
+        last_seq = request.args.get('last_seq', 0, type=int)
+
         utc_start, utc_end = get_tw_time_range()
 
         conn = get_db_connection()
@@ -96,7 +99,6 @@ def check_new_orders():
         conn.close()
 
         html_content = ""
-        # 【關鍵修正】：建立一個陣列來收集未處理的新訂單 ID
         pending_ids = []
 
         if not orders: 
@@ -110,8 +112,8 @@ def check_new_orders():
             status_cls = status.lower()
             tw_time = created + timedelta(hours=8)
             
-            # 【關鍵修正】：如果狀態是 Pending，就將 ID 加入陣列交給前端觸發通知
-            if status == 'Pending':
+            # 【關鍵修改 2】：只有當狀態是 Pending，且單號「大於」前端已知的 last_seq 時，才視為真正的新訂單
+            if status == 'Pending' and seq_num > last_seq:
                 pending_ids.append(oid)
 
             # 資料預處理
@@ -159,7 +161,7 @@ def check_new_orders():
             if has_contact:
                 info_html += f"<div>📞 {c_phone}</div>"
             
-            # --- 地址顯示 (在此處處理) ---
+            # 地址顯示
             if has_addr:
                 info_html += f"<div style='margin-top:2px; line-height:1.2; border-top:1px dashed #aaa; padding-top:2px; font-weight:bold; color:#bf360c;'>📍 {c_addr}</div>"
 
@@ -233,7 +235,6 @@ def check_new_orders():
                 <div class="actions">{buttons}</div>
             </div>"""
             
-        # 【關鍵修正】：將收集好的 pending_ids 放進 new_ids 中回傳
         return jsonify({
             'html': html_content, 
             'max_seq': max_seq_val, 
@@ -753,6 +754,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
