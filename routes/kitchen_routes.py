@@ -471,19 +471,9 @@ def print_order(oid):
                     window.location.href = "{intent_url}";
                     setTimeout(function() {{ if(window.opener) window.close(); }}, 1500);
                 }} else {{
-                    // PC / Chrome Kiosk 模式加速
-                    // 1. 立即觸發列印
-                    window.print();
-                    
-                    // 2. 利用 onafterprint 作為第一道保險
-                    window.addEventListener('afterprint', function() {{
-                        if(window.opener) window.close();
-                    }});
-                    
-                    // 3. 將備用關閉機制極限壓縮至 100ms
-                    setTimeout(function() {{
-                        if(window.opener) window.close();
-                    }}, 100);
+                    // PC / Chrome Kiosk 模式
+                    // ⚠️ 將原本的 window.print() 和關閉視窗的程式碼通通刪除！
+                    // 現在統一由前端看板的 iframe.contentWindow.print() 來觸發列印，避免印兩次。
                 }}
             </script>
         </body>
@@ -701,6 +691,7 @@ def daily_report():
     </body>
     </html>
     """
+
 
 
 
