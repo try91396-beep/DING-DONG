@@ -241,35 +241,45 @@
         refreshOrders();
     }
 
-    // --- 【修正版】隱藏 iFrame 列印引擎 ---
+    // --- 【終極修正版】隱藏 iFrame 列印引擎 ---
     function printViaIframe(url) {
         const iframe = document.createElement('iframe');
         
-        // 關鍵修改：不要用 width:0 或 display:none，會被瀏覽器阻擋列印
-        // 改用 absolute 定位，把 iframe 推到畫面外遠遠的地方 (-9999px)
+        // 關鍵 1：給予一般視窗尺寸，讓 Chrome 認定這不是垃圾物件
+        iframe.style.width = '800px';
+        iframe.style.height = '800px';
+        
+        // 關鍵 2：推到螢幕外很遠的地方，絕對不影響使用者畫面
         iframe.style.position = 'absolute';
-        iframe.style.left = '-9999px';
-        iframe.style.top = '-9999px';
-        iframe.style.width = '1px';
-        iframe.style.height = '1px';
+        iframe.style.left = '-10000px';
+        iframe.style.top = '-10000px';
         iframe.style.border = 'none';
         
+        // 載入完成後的動作
         iframe.onload = function() {
             console.log("🖨️ 列印文件已載入: " + url);
+            
+            // 關鍵 3：延遲 0.5 秒，確保內容渲染完畢，然後由父層強制賦予焦點並觸發列印
+            setTimeout(() => {
+                try {
+                    iframe.contentWindow.focus();
+                    iframe.contentWindow.print();
+                } catch (e) {
+                    console.error("列印觸發失敗:", e);
+                }
+            }, 500);
         };
 
+        // 載入網址並塞入 DOM
         iframe.src = url;
-        
-        // 插入畫面，這會觸發背景載入與後端的 window.print()
         document.body.appendChild(iframe);
 
-        // 關鍵修改 2：時間延長到 5 分鐘 (300000ms) 再清理
-        // 避免在正常瀏覽器下，使用者操作列印預覽稍慢，iframe 被砍掉導致預覽視窗關閉或列印失敗
+        // 清理機制：10分鐘後再移除，確保使用者慢慢操作列印預覽時視窗不會崩潰關閉
         setTimeout(() => {
             if (document.body.contains(iframe)) {
                 document.body.removeChild(iframe);
             }
-        }, 300000); 
+        }, 600000); 
     }
 
     // --- 核心：定時刷新與自動列印 ---
@@ -292,11 +302,11 @@
                         .then(() => setTimeout(speakNewOrder, 800))
                         .catch(() => speakNewOrder());
 
-                    // 使用隱藏 iFrame 依序列印，完全背景執行
+                    // 依序列印
                     data.new_ids.forEach((oid, index) => {
                         setTimeout(() => {
                             printViaIframe(`/kitchen/print_order/${oid}?type=all`);
-                        }, index * 1200); // 每 1.2 秒印一張，避免印表機塞車
+                        }, index * 1200);
                     });
                 }
 
@@ -333,7 +343,7 @@
     function doPrint(type) {
         if (!currentPrintOid) return;
         
-        // 呼叫修正版的 iframe 列印取代舊的彈出視窗
+        // 呼叫修正版的 iframe 列印
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
         printViaIframe(printUrl);
         
