@@ -274,12 +274,13 @@
         iframe.src = url;
         document.body.appendChild(iframe);
 
-        // 清理機制：10分鐘後再移除，確保使用者慢慢操作列印預覽時視窗不會崩潰關閉
+        // 清理機制：20秒後移除 (因 TTFB 較高，保留 20 秒確保加載完成並執行列印)
         setTimeout(() => {
             if (document.body.contains(iframe)) {
                 document.body.removeChild(iframe);
+                console.log("🗑️ 隱藏列印元件已移除 (20s timeout)");
             }
-        }, 600000); 
+        }, 20000);
     }
 
     // --- 核心：定時刷新與自動列印 ---
@@ -438,5 +439,6 @@
 
 </body>
 </html>
+
 
 
