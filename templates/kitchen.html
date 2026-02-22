@@ -226,6 +226,7 @@
     // 初始化語音合成
     const synth = window.speechSynthesis;
 
+    // 播放語音函式
     function speakNewOrder() {
         if (synth.speaking) return;
         const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
@@ -234,63 +235,77 @@
         synth.speak(utterThis);
     }
 
+    // 手動測試與刷新
     function testAudioAndRefresh() {
         audio.play().catch(e => console.log("Audio block:", e));
         refreshOrders();
     }
 
-    // --- 極致隱藏無感列印版 ---
+    // --- 【終極修正版】隱藏 iFrame 列印引擎 ---
     function printViaIframe(url) {
         const iframe = document.createElement('iframe');
         
-        // 關鍵：將 iframe 縮到最小、透明，並固定在畫面外。
-        // 絕對不能使用 display: none 或 visibility: hidden，因為 Chrome 不會渲染隱藏元素的列印內容。
-        iframe.style.position = 'fixed';
-        iframe.style.right = '0';
-        iframe.style.bottom = '0';
-        iframe.style.width = '1px';
-        iframe.style.height = '1px';
-        iframe.style.opacity = '0';
-        iframe.style.pointerEvents = 'none';
+        // 關鍵 1：給予一般視窗尺寸，讓 Chrome 認定這不是垃圾物件
+        iframe.style.width = '800px';
+        iframe.style.height = '800px';
+        
+        // 關鍵 2：推到螢幕外很遠的地方，絕對不影響使用者畫面
+        iframe.style.position = 'absolute';
+        iframe.style.left = '-10000px';
+        iframe.style.top = '-10000px';
         iframe.style.border = 'none';
         
+        // 載入完成後的動作
         iframe.onload = function() {
             console.log("🖨️ 列印文件已載入: " + url);
+            
+            // 關鍵 3：延遲 0.5 秒，確保內容渲染完畢，然後由父層強制賦予焦點並觸發列印
             setTimeout(() => {
                 try {
-                    // 🚨 關鍵移除：絕對不要加上 iframe.contentWindow.focus()！
-                    // focus() 會把作業系統的焦點強制拉過去，這是造成畫面閃白的最大元凶。
+                    iframe.contentWindow.focus();
                     iframe.contentWindow.print();
                 } catch (e) {
                     console.error("列印觸發失敗:", e);
                 }
-            }, 300); // 縮短延遲至 0.3 秒，加快吐紙速度
+            }, 500);
         };
 
+        // 載入網址並塞入 DOM
         iframe.src = url;
         document.body.appendChild(iframe);
 
-        // 列印指令送出後 5 秒即可銷毀 iframe，釋放記憶體
+        // 清理機制：10分鐘後再移除，確保使用者慢慢操作列印預覽時視窗不會崩潰關閉
         setTimeout(() => {
             if (document.body.contains(iframe)) {
                 document.body.removeChild(iframe);
             }
-        }, 5000); 
+        }, 600000); 
     }
 
+    // --- 核心：定時刷新與自動列印 ---
     function refreshOrders() {
         fetch('/kitchen/check_new_orders?last_seq=' + lastMaxSeq)
             .then(res => res.json())
             .then(data => {
+                // 1. 更新訂單畫面
                 if (data.html) grid.innerHTML = data.html;
+                
+                // 2. 更新時間
                 updateTimeText.innerText = '最後更新: ' + new Date().toLocaleTimeString();
 
+                // 3. 偵測新訂單 -> 觸發列印與音效
                 if (data.new_ids && data.new_ids.length > 0) {
+                    console.log("🔔 新訂單 ID:", data.new_ids);
+                    
+                    // 播放音效
                     audio.play()
                         .then(() => setTimeout(speakNewOrder, 800))
                         .catch(() => speakNewOrder());
 
-                    // 自動列印已註解
+                    // 依序列印
+                     // ==========================================
+                    // ⚠️ 自動列印功能已註解，若需恢復請將下方註解取消
+                    // ==========================================
                     /*
                     data.new_ids.forEach((oid, index) => {
                         setTimeout(() => {
@@ -300,15 +315,18 @@
                     */
                 }
 
+                // 4. 最後才更新最大序號
                 if (data.max_seq && data.max_seq > lastMaxSeq) {
                     lastMaxSeq = data.max_seq;
                 }
             })
             .catch(err => { 
                 updateTimeText.innerText = '連線失敗'; 
+                console.error(err);
             });
     }
 
+    // --- 動作：完成與作廢 ---
     function action(url) {
         fetch(url).then(res => { 
             if (res.ok) refreshOrders(); 
@@ -316,6 +334,7 @@
         });
     }
 
+    // --- 手動列印相關 ---
     function askPrintType(oid) {
         currentPrintOid = oid;
         document.getElementById('printModal').style.display = "block";
@@ -328,11 +347,15 @@
 
     function doPrint(type) {
         if (!currentPrintOid) return;
+        
+        // 呼叫修正版的 iframe 列印
         const printUrl = `/kitchen/print_order/${currentPrintOid}?type=${type}`;
         printViaIframe(printUrl);
+        
         closePrintModal();
     }
 
+    // --- 銷售排行相關 ---
     function openSalesModal() {
         document.getElementById('salesModal').style.display = "block";
         setTodayRange();
@@ -346,9 +369,12 @@
         const now = new Date();
         const toLocalISO = (date) => {
             const offset = date.getTimezoneOffset() * 60000;
-            return (new Date(date - offset)).toISOString().slice(0, 16);
+            const localISOTime = (new Date(date - offset)).toISOString().slice(0, 16);
+            return localISOTime;
         };
+
         document.getElementById('rankEndTime').value = toLocalISO(now);
+        
         const start = new Date(now);
         start.setHours(0, 0, 0, 0);
         document.getElementById('rankStartTime').value = toLocalISO(start);
@@ -374,24 +400,34 @@
                     tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">無銷售數據</td></tr>';
                     return;
                 }
+
                 data.forEach((item, index) => {
-                    let rankClass = index === 0 ? 'rank-1' : index === 1 ? 'rank-2' : index === 2 ? 'rank-3' : '';
-                    tbody.innerHTML += `
+                    let rankClass = '';
+                    if (index === 0) rankClass = 'rank-1';
+                    else if (index === 1) rankClass = 'rank-2';
+                    else if (index === 2) rankClass = 'rank-3';
+
+                    const row = `
                         <tr>
                             <td style="text-align:center;"><span class="rank-badge ${rankClass}">${index + 1}</span></td>
                             <td>${item.name}</td>
                             <td style="text-align:right; font-weight:bold;">${item.count}</td>
                         </tr>`;
+                    tbody.innerHTML += row;
                 });
             })
             .catch(err => {
+                console.error(err);
                 tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:red;">讀取失敗</td></tr>';
             });
     }
 
+    // 啟動定時刷新 (每 3 秒)
     setInterval(refreshOrders, 3000);
+    // 頁面載入後立即執行一次
     refreshOrders();
 
+    // 點擊遮罩關閉彈窗
     window.onclick = function(event) {
         const pModal = document.getElementById('printModal');
         const sModal = document.getElementById('salesModal');
