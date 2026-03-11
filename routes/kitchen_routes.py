@@ -1,7 +1,11 @@
-from flask import Blueprint, render_template, request, jsonify
+from flask import Blueprint, render_template, request, jsonify, render_template_string, redirect, url_for, session
 import json
-import base64  # 用於 RawBT 編碼
-import traceback 
+import base64  
+import traceback  
+import bcrypt  # 💡 新增：引入 bcrypt 用來驗證密碼
+
+# 🛡️ 引入我們在 utils.py 寫好的雙重防護罩
+from utils import login_required, role_required
 from datetime import datetime, timedelta
 from database import get_db_connection
 
@@ -43,15 +47,72 @@ def get_tw_time_range(target_date_str=None, end_date_str=None):
         return now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=8), \
                now.replace(hour=23, minute=59, second=59, microsecond=999999) - timedelta(hours=8)
 
+# ==========================================
+# 🛡️ 登入與登出系統
+# ==========================================
+
+# ==========================================
+# 🛡️ 登入與登出系統
+# ==========================================
+
+@kitchen_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    """處理登入"""
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        if not username or not password:
+            return render_template('login.html', error="請輸入帳號和密碼")
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id, password_hash, role FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            
+            if user:
+                user_id, hashed_pw, role = user
+                
+                if bcrypt.checkpw(password.encode('utf-8'), hashed_pw.encode('utf-8')):
+                    session['user_id'] = user_id
+                    session['username'] = username
+                    session['role'] = role
+                    
+                    # 💡 修正：把「判斷是否為 admin」的囉嗦邏輯拿掉！
+                    # 只要是在廚房登入成功，通通導向廚房看板！
+                    return redirect(url_for('kitchen.kitchen_panel'))
+                else:
+                    return render_template('login.html', error="密碼錯誤")
+            else:
+                return render_template('login.html', error="找不到此帳號")
+                
+        except Exception as e:
+            print(f"Login Error: {e}")
+            return render_template('login.html', error="系統發生錯誤，請稍後再試")
+        finally:
+            cur.close()
+            conn.close()
+            
+    return render_template('login.html')
+
+@kitchen_bp.route('/logout')
+def logout():
+    """處理登出"""
+    session.clear() # 清除通行證
+    return redirect(url_for('kitchen.login'))
+
 
 # --- 1. 廚房看板主頁 ---
 @kitchen_bp.route('/')
+@login_required          # 🛡️ 防護 1：必須登入
 def kitchen_panel():
     return render_template('kitchen.html')
 
 
 # --- 2. 檢查新訂單 API ---
 @kitchen_bp.route('/check_new_orders')
+@login_required          # 🛡️ 防護 1：必須登入
 def check_new_orders():
     try:
         # 【關鍵修改 1】：接收前端傳來的最後一次看過的序號 (預設為 0)
@@ -72,7 +133,7 @@ def check_new_orders():
                 CASE WHEN status = 'Pending' THEN 0 
                      WHEN status = 'Completed' THEN 1 
                      ELSE 2 END, 
-                daily_seq DESC
+                daily_seq ASC
         """
         try:
             cur.execute(query, (utc_start, utc_end))
@@ -85,7 +146,7 @@ def check_new_orders():
                        customer_name, customer_phone, customer_address, scheduled_for, delivery_fee, 'unknown'
                 FROM orders 
                 WHERE created_at >= %s AND created_at <= %s
-                ORDER BY status, daily_seq DESC
+                ORDER BY status, daily_seq ASC
             """
             cur.execute(query_fallback, (utc_start, utc_end))
 
@@ -245,16 +306,18 @@ def check_new_orders():
         return jsonify({'html': f"載入錯誤: {str(e)}", 'max_seq': 0, 'new_ids': []})
 
 
-# --- 3. 核心列印路由 (已優化速度 + 多語系結帳單支援 + 資料庫動態翻譯) ---
+# --- 3. 核心列印路由 (支援 80mm & 精確字體控制) ---
 @kitchen_bp.route('/print_order/<int:oid>')
 def print_order(oid):
     try:
+        # 接收前端傳來的參數
         print_type = request.args.get('type', 'all')
+        output_format = request.args.get('format', 'html')
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # SQL 查詢：讀取 'lang' 欄位
+        # 1. 取得訂單資料
         query = """
             SELECT table_number, total_price, daily_seq, content_json, created_at, status,
                    customer_name, customer_phone, customer_address, delivery_fee, scheduled_for, 
@@ -266,8 +329,6 @@ def print_order(oid):
             order = cur.fetchone()
         except Exception as e:
             conn.rollback() 
-            print(f"SQL Fallback triggered (print_order): {e}")
-            # Fallback for missing columns (補上預設 'zh')
             cur.execute("""
                 SELECT table_number, total_price, daily_seq, content_json, created_at, status,
                        customer_name, customer_phone, customer_address, delivery_fee, scheduled_for, 
@@ -276,7 +337,7 @@ def print_order(oid):
             """, (oid,))
             order = cur.fetchone()
 
-        # --- 【關鍵修正】撈取資料庫中所有的客製化選項翻譯 ---
+        # 2. 取得產品分類與選項對照表
         cur.execute("""
             SELECT name, print_category, 
                    custom_options, custom_options_en, custom_options_jp, custom_options_kr 
@@ -285,12 +346,9 @@ def print_order(oid):
         product_map = {}
         for row in cur.fetchall():
             p_name = row[0]
-            
-            # 輔助函式：將以逗號分隔的字串轉為串列
             def split_opts(opt_str):
                 if not opt_str: return []
                 return [o.strip() for o in opt_str.split(',') if o.strip()]
-            
             product_map[p_name] = {
                 'cat': row[1] or 'Other',
                 'zh': split_opts(row[2]),
@@ -303,52 +361,34 @@ def print_order(oid):
         if not order:
             return "訂單不存在", 404
         
-        # 解包資料
         table_num, total_price, seq, content_json, created_at, status, \
         c_name, c_phone, c_addr, c_fee, c_schedule, c_type, c_lang = order
         
-        # 資料預處理
+        order_lang = str(c_lang).lower()
         c_fee = int(c_fee or 0)
         table_str = str(table_num).strip() if table_num else ""
         c_type = str(c_type).lower() if c_type else 'unknown'
-        c_lang = str(c_lang).lower() if c_lang else 'zh' # 確保有預設語系
         
-        # 判斷資訊存在
         has_contact = (c_phone and str(c_phone).strip() != '' and str(c_phone).lower() != 'none')
         has_addr = (c_addr and str(c_addr).strip() != '' and str(c_addr).lower() != 'none')
         has_schedule = (c_schedule and str(c_schedule).strip() != '' and str(c_schedule).lower() != 'none')
         
-        # 顯示名稱邏輯
-        if c_type == 'delivery':
-            display_tbl_name = "🛵 外送"
-            is_delivery = True
-        elif c_type == 'takeout':
-            display_tbl_name = "🥡 自取"
-            is_delivery = False
-        elif c_type == 'dine_in':
-            display_tbl_name = f"桌號 {table_str}"
-            is_delivery = False
-        else:
-            # Fallback logic
+        def get_display_table(is_en=False):
+            if c_type == 'delivery': return "🛵 Delivery" if is_en else "🛵 外送"
+            if c_type == 'takeout': return "🥡 Takeout" if is_en else "🥡 自取"
+            if c_type == 'dine_in': return f"Table {table_str}" if is_en else f"桌號 {table_str}"
             is_delivery = (table_str == '外送') or has_addr
-            display_tbl_name = "外送" if is_delivery else (table_str if table_str else "外帶")
+            return "Delivery" if is_delivery else (table_str if table_str else "Takeout")
 
         if isinstance(content_json, str):
-            try:
-                items = json.loads(content_json)
-            except:
-                items = []
-        elif isinstance(content_json, (list, dict)):
-            items = content_json if isinstance(content_json, list) else [content_json]
+            try: items = json.loads(content_json)
+            except: items = []
         else:
-            items = []
+            items = content_json if isinstance(content_json, list) else [content_json]
         
-        # 下單時間
         time_str = (created_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
-        # 分類邏輯 (用於分單列印)
         noodle_items, soup_items, other_items = [], [], []
-        
         for item in items:
             p_name = item.get('name_zh') or item.get('name')
             p_cat = product_map.get(p_name, {}).get('cat', 'Other') 
@@ -356,189 +396,196 @@ def print_order(oid):
             elif p_cat == 'Soup': soup_items.append(item)
             else: other_items.append(item)
 
-        # CSS 樣式 (輕量化處理)
-        style = """
-        <style>
-            @page { size: 80mm auto; margin: 0mm; }
-            body { font-family: 'Microsoft JhengHei', sans-serif; width: 78mm; margin: 0 auto; padding: 2px; color: #000; background: #fff; }
-            .ticket { border-bottom: 3px dashed #000; padding: 10px 0 30px 0; margin-bottom: 10px; page-break-after: always; position: relative; }
-            .ticket:last-child { page-break-after: auto; }
-            .void-watermark { position: absolute; top: 30%; left: 5%; font-size: 50px; color: #000; opacity: 0.2; transform: rotate(-30deg); border: 5px solid #000; padding: 10px; z-index: 100; font-weight: 900; }
-            .head { text-align: center; margin-bottom: 10px; }
-            .head h2 { font-size: 24px; margin: 0; border: 2px solid #000; padding: 4px 10px; border-radius: 4px; display: inline-block; font-weight: 900; }
-            .head h1 { font-size: 42px; margin: 5px 0; line-height: 1; font-weight: 900; }
-            .info-box { border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 5px; }
-            .table-row { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
-            .table-label { font-size: 20px; font-weight: bold; }
-            .table-val { font-size: 36px; font-weight: 900; line-height: 1; }
-            .time-row { font-size: 14px; text-align: center; margin-top: 2px; color: #000; }
-            .customer-info { border: 2px solid #000; padding: 6px; margin: 5px 0 10px 0; font-size: 18px; font-weight: bold; text-align: left; background: #f8f8f8; line-height: 1.3; }
-            .cust-row { margin-bottom: 2px; }
-            .addr-row { margin-top: 4px; border-top: 1px dashed #000; padding-top: 4px; font-size: 24px; font-weight: 900; word-wrap: break-word; line-height: 1.2; }
-            .schedule-row { font-size: 22px; font-weight: 900; text-align: center; background: #000; color: #fff; margin: 5px 0; padding: 5px; border-radius: 0; }
-            .item-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px; line-height: 1.1; }
-            .name-col { width: 85%; display: flex; flex-direction: column; }
-            .item-name-main { font-size: 22px; font-weight: 900; word-wrap: break-word; }
-            .item-name-sub { font-size: 16px; font-weight: bold; color: #000; margin-top: 2px; }
-            .item-qty { font-size: 22px; font-weight: 900; white-space: nowrap; }
-            .opt { font-size: 16px; font-weight: bold; padding-left: 10px; color: #000; }
-            .total { text-align: right; font-size: 24px; font-weight: 900; margin-top: 10px; padding-top: 5px; border-top: 2px solid #000; }
-            .fee-row { text-align: right; font-size: 16px; font-weight: bold; color: #000; }
-        </style>
-        """
-
-        # --- 根據資料庫 mapping 動態翻譯選項 ---
-        def translate_option(p_name, opt_str, target_lang):
-            if p_name not in product_map:
-                return opt_str
-            
+        def translate_option(p_name, opt_str, lang_code):
+            if p_name not in product_map: return opt_str
             p_data = product_map[p_name]
             found_idx = -1
-            
-            # 尋找該選項原本是在哪一個語言的陣列中，取得其 Index
-            for lang in ['zh', 'en', 'jp', 'kr']:
-                if opt_str in p_data[lang]:
-                    found_idx = p_data[lang].index(opt_str)
+            for l in ['zh', 'en', 'jp', 'kr']:
+                if opt_str in p_data[l]:
+                    found_idx = p_data[l].index(opt_str)
                     break
-            
-            # 如果有找到對應的 Index，就從目標語言的陣列中取出對應的翻譯
             if found_idx != -1:
-                target_list = p_data.get(target_lang, [])
-                if found_idx < len(target_list):
-                    return target_list[found_idx]
-            
-            # 找不到就回傳原字串
+                target_list = p_data.get(lang_code, [])
+                if found_idx < len(target_list): return target_list[found_idx]
             return opt_str
 
-        def generate_html(title, item_list, is_receipt=False):
-            if not item_list and not is_receipt: return "" 
-            if not item_list and is_receipt and c_fee == 0: return ""
+        # --- 預覽 HTML 生成邏輯 ---
+        if output_format == 'preview':
+            def generate_preview_html(title, item_list, is_receipt=False, lang_override='zh'):
+                if not item_list and not is_receipt: return ""
+                tbl_name = get_display_table(is_en=(lang_override == 'en'))
+                html = f"""
+                <div style="width: 400px; background: white; padding: 20px; border: 1px solid #ddd; font-family: 'Courier New', monospace; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin: 10px;">
+                    <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px;">
+                        <h1 style="margin: 5px 0; font-size: 2.5em;">{title}</h1>
+                        <div style="font-size: 2em; font-weight: bold;"># {seq:03d}</div>
+                        <div style="font-size: 1.8em;">{tbl_name}</div>
+                    </div>
+                    <div style="font-size: 1.2em; margin: 10px 0; line-height: 1.5;">
+                        TIME: {time_str}<br>
+                        {f'<span style="background: black; color: white; padding: 2px 5px;">PREORDER: {c_schedule}</span>' if has_schedule else ''}
+                    </div>
+                    <div style="border-top: 1px dashed #000; margin: 10px 0;"></div>
+                """
+                for i in item_list:
+                    name_zh = i.get('name_zh') or i.get('name')
+                    name_to_print = (i.get('name_en') if lang_override == 'en' else name_zh) or name_zh
+                    qty = i.get('qty', 1)
+                    html += f'<div style="font-weight: bold; font-size: 1.8em; display: flex; justify-content: space-between;"><span>{name_to_print}</span><span>x{qty}</span></div>'
+                    raw_opts = i.get('options') or i.get('options_zh') or []
+                    if not isinstance(raw_opts, list): raw_opts = [raw_opts]
+                    opts_translated = [translate_option(name_zh, str(opt), lang_override) for opt in raw_opts if opt]
+                    if opts_translated:
+                        html += f'<div style="font-size: 1.1em; padding-left: 10px; margin-bottom: 5px; color: #333;">+ {", ".join(opts_translated)}</div>'
+                    html += '<div style="border-top: 1px solid #eee; margin: 5px 0;"></div>'
+                if is_receipt:
+                    html += f'<div style="text-align: right; margin-top: 15px;">'
+                    if c_fee > 0: html += f'運費 Fee: ${c_fee}<br>'
+                    html += f'<span style="font-size: 2em; font-weight: bold;">TOTAL: ${int(total_price or 0)}</span>'
+                    if c_name: html += f'<br><span style="font-size: 1.2em;">Cust: {c_name}</span>'
+                    html += '</div>'
+                html += "</div>"
+                return html
 
-            void_mark = "<div class='void-watermark'>作廢單</div>" if status == 'Cancelled' else ""
+            receipt_lang = 'en' if order_lang == 'en' else 'zh'
+            preview_content = '<div style="display: flex; flex-wrap: wrap; justify-content: center; background: #f4f4f4; min-height: 100vh; padding: 20px;">'
+            if print_type in ['all', 'receipt']:
+                preview_content += generate_preview_html("結帳單", items, is_receipt=True, lang_override=receipt_lang)
+            if print_type in ['all', 'kitchen']:
+                if noodle_items: preview_content += generate_preview_html("廚房單-麵區", noodle_items)
+                if soup_items: preview_content += generate_preview_html("廚房單-湯區", soup_items)
+                if other_items: preview_content += generate_preview_html("廚房單-其他", other_items)
+            preview_content += '</div>'
+            return render_template_string(preview_content)
+
+        # --- 3. 核心 ESC/POS 生成函數 (80mm & 獨立字體控制) ---
+        def generate_content(title, item_list, is_receipt=False, lang_override='zh'):
+            if not item_list and not is_receipt: return b""
             
-            h = f"<div class='ticket'>{void_mark}<div class='head'><h2>{title}</h2><h1>#{seq:03d}</h1></div>"
-            h += f"<div class='info-box'><div class='table-row'><span class='table-label'>Type</span><span class='table-val'>{display_tbl_name}</span></div>"
-            h += f"<div class='time-row'>下單: {time_str}</div></div>"
+            ESC, GS = b'\x1b', b'\x1d'
+            RESET = ESC + b'@'
+            BOLD_ON, BOLD_OFF = ESC + b'E\x01', ESC + b'E\x00'
+            CENTER, LEFT = ESC + b'a\x01', ESC + b'a\x00'
+            CUT = GS + b'V\x42\x00'
+            ENCODE = 'big5-hkscs' # 確保印表機支援此編碼，或使用 'gb18030'
             
+            # 字體大小設定
+            SIZE_X22 = GS + b'!\x22'     # 3x3 標題
+            SIZE_X11 = GS + b'!\x11'     # 2x2 重要資訊
+            SIZE_X01 = GS + b'!\x01'     # 1x2 拉高字體 (適合閱讀)
+            SIZE_NORM = GS + b'!\x00'    # 標準
+            
+            res = RESET + CENTER
+            
+            # 1. 標題與序號
+            res += SIZE_X22 + BOLD_ON + title.encode(ENCODE, 'replace') + b"\n"
+            res += SIZE_X11 + f"NO: #{seq:03d}\n".encode(ENCODE)
+            
+            # 2. 桌號 / 訂單類型
+            tbl_name = get_display_table(is_en=(lang_override == 'en'))
+            res += BOLD_ON + tbl_name.encode(ENCODE, 'replace') + b"\n" + BOLD_OFF
+            
+            # 3. 基礎資訊區 (靠左)
+            res += LEFT + SIZE_X01
+            res += f"訂單時間: {time_str}\n".encode(ENCODE)
+            
+            # --- 這裡加入所有資料庫欄位的判斷 ---
             if has_schedule:
-                h += f"<div class='schedule-row'>🕒 預約: {c_schedule}</div>"
-
-            if is_delivery or has_contact or (c_name and str(c_name).strip()):
-                h += f"<div class='customer-info'>"
-                if c_name and str(c_name).strip(): h += f"<div class='cust-row'>👤 {c_name}</div>"
-                if has_contact: h += f"<div class='cust-row'>📞 {c_phone}</div>"
-                if has_addr: h += f"<div class='addr-row'>📍 {c_addr}</div>"
-                h += f"</div>"
+                res += BOLD_ON + f"取單時間: {c_schedule}\n".encode(ENCODE) + BOLD_OFF + SIZE_X01
             
+            if is_receipt:
+                if c_name:
+                    res += f"姓名: {c_name}\n".encode(ENCODE, 'replace') + SIZE_X01
+                if has_contact:
+                    res += f"電話: {c_phone}\n".encode(ENCODE) + SIZE_X01
+                if has_addr:
+                    # 地址通常較長，使用標準大小避免跑版
+                    res += SIZE_X01 + f"地址: {c_addr}\n".encode(ENCODE, 'replace')
+        
+            # 分隔線
+            res += SIZE_NORM + b"-"*48 + b"\n"
+            
+            # 4. 商品清單
             for i in item_list:
                 name_zh = i.get('name_zh') or i.get('name')
-                
-                # 結帳單依據客人的語系，廚房單強制中文
-                target_lang = c_lang if is_receipt else 'zh'
-                
-                main_name = name_zh
-                sub_name = ""
-
-                # 處理商品名稱多語系
-                if target_lang != 'zh':
-                    lang_name_key = f"name_{target_lang}"
-                    target_name = i.get(lang_name_key) or i.get('name_en')
-                    if target_name:
-                        main_name = target_name
-                        sub_name = name_zh 
-                
-                # --- 處理客製化選項多語系 ---
-                opts_display = []
-                # 1. 優先看前端是否有直接傳送對應語言的選項陣列
-                lang_opts = i.get(f"options_{target_lang}")
-                if lang_opts and isinstance(lang_opts, list) and len(lang_opts) > 0:
-                    opts_display = lang_opts
-                else:
-                    # 2. 如果沒有，抓取現存選項，丟入翻譯引擎翻譯
-                    raw_opts = i.get('options') or i.get('options_zh') or i.get('options_en') or []
-                    if isinstance(raw_opts, str): 
-                        raw_opts = [raw_opts]
-                    
-                    for opt in raw_opts:
-                        opt_str = str(opt).strip()
-                        translated = translate_option(name_zh, opt_str, target_lang)
-                        opts_display.append(translated)
-                
-                name_html = f"<div class='name-col'><span class='item-name-main'>{main_name}</span>"
-                if sub_name and sub_name != main_name:
-                    name_html += f"<span class='item-name-sub'>{sub_name}</span>"
-                name_html += "</div>"
-                
+                name_to_print = (i.get('name_en') if lang_override == 'en' else name_zh) or name_zh
                 qty = i.get('qty', 1)
-                h += f"<div class='item-row'>{name_html}<span class='item-qty'>x{qty}</span></div>"
-
-                if opts_display:
-                    h += f"<div class='opt'>└ {', '.join(opts_display)}</div>"
+                
+                # 商品名稱 (放大)
+                res += SIZE_X11 + BOLD_ON + f"{name_to_print} x{qty}\n".encode(ENCODE, 'replace') + BOLD_OFF
+                
+                # 客製化選項 (拉高)
+                raw_opts = i.get('options') or i.get('options_zh') or []
+                if not isinstance(raw_opts, list): raw_opts = [raw_opts]
+                opts_translated = [translate_option(name_zh, str(opt), lang_override) for opt in raw_opts if opt]
+                
+                if opts_translated:
+                    opt_str = " + " + ", ".join(opts_translated)
+                    res += SIZE_X01 + f"{opt_str}\n".encode(ENCODE, 'replace')
+                
+                # 商品間分隔線
+                res += SIZE_NORM + b"-"*48 + b"\n"
             
-            if is_receipt: 
-                subtotal = total_price - c_fee if total_price else 0
+            # 5. 結帳區 (僅收據)
+            if is_receipt:
+                res += LEFT + SIZE_X01
                 if c_fee > 0:
-                    h += f"<div class='fee-row'>小計: ${int(subtotal)}</div>"
-                    h += f"<div class='fee-row'>運費: ${c_fee}</div>"
-                h += f"<div class='total'>Total: ${int(total_price or 0)}</div>"
-            
-            return h + "</div>"
-
-        content = ""
-        has_content = False
+                    res += b"\n"
+                
+                # 總價放大
+                label_total = "TOTAL: " if lang_override == 'en' else "總計: "
+                res += SIZE_X22 + BOLD_ON + f"{label_total}${int(total_price or 0)}\n".encode(ENCODE) + BOLD_OFF
+                
+                # 底部備註 (如果是外送單，再次強調地址)
+                if has_addr:
+                    res += SIZE_NORM + b"*"*48 + b"\n"
+                    res += f"Deliver to: {c_addr}\n".encode(ENCODE, 'replace')
         
-        if print_type in ['all', 'receipt']:
-            content += generate_html("結帳單 Receipt", items, is_receipt=True)
-            has_content = True 
+            res += b"\n" + CUT # 少給一點空白
+            return res
+
             
-        if print_type in ['all', 'kitchen']:
-            if noodle_items: content += generate_html("廚房單 - 麵區", noodle_items); has_content = True
-            if soup_items: content += generate_html("廚房單 - 湯區", soup_items); has_content = True
-            if other_items: content += generate_html("廚房單 - 其他", other_items); has_content = True
+        # 4. 輸出處理 (Base64)
+        if output_format == 'base64':
+            # 初始化指令：重置 + 進入中文模式 + 設定字體代碼頁
+            init_cmds = b'\x1b\x40\x1c\x26\x1b\x74\x0d'
+            tasks = {}
+            receipt_lang = 'en' if order_lang == 'en' else 'zh'
+            receipt_title = "Receipt" if receipt_lang == 'en' else "結帳單"
+            kitchen_lang = 'zh'
+            
+            if print_type in ['all', 'receipt']:
+                tasks["receipt"] = base64.b64encode(
+                    init_cmds + generate_content(receipt_title, items, is_receipt=True, lang_override=receipt_lang)
+                ).decode('utf-8')
+            
+            if print_type in ['all', 'kitchen']:
+                if noodle_items:
+                    tasks["noodle"] = base64.b64encode(
+                        init_cmds + generate_content("廚房單-麵區", noodle_items, lang_override=kitchen_lang)
+                    ).decode('utf-8')
+                if soup_items:
+                    tasks["soup"] = base64.b64encode(
+                        init_cmds + generate_content("廚房單-湯區", soup_items, lang_override=kitchen_lang)
+                    ).decode('utf-8')
+                if other_items:
+                    tasks["other"] = base64.b64encode(
+                        init_cmds + generate_content("廚房單-其他", other_items, lang_override=kitchen_lang)
+                    ).decode('utf-8')
+            
+            return jsonify({"status": "success", "tasks": tasks})
 
-        if not has_content:
-            return "<script>alert('無內容可列印');window.close();</script>", 200
-
-        # RawBT 整合 (APP 列印)
-        rawbt_html_source = f"<html><head><meta charset='utf-8'>{style}</head><body>{content}</body></html>"
-        b64_data = base64.b64encode(rawbt_html_source.encode('utf-8')).decode('utf-8')
-        intent_url = (
-            f"intent:base64,{b64_data}#Intent;"
-            f"scheme=rawbt;package=ru.a402d.rawbtprinter;"
-            f"S.jobName=Order_{seq}_{print_type};S.editor=false;end;"
-        )
-
-        final_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Print Order</title>
-            {style}
-        </head>
-        <body>
-            {content}
-            <script>
-                var ua = navigator.userAgent || navigator.vendor || window.opera;
-                if (/android/i.test(ua)) {{
-                    var msg = document.createElement('div');
-                    msg.innerHTML = '<h2 style="text-align:center;color:green;margin-top:20px;">🖨️ 正在傳送至出單機...</h2>';
-                    document.body.appendChild(msg);
-                    window.location.href = "{intent_url}";
-                    setTimeout(function() {{ if(window.opener) window.close(); }}, 1500);
-                }}
-            </script>
-        </body>
-        </html>
-        """
-        return final_html
+        return "HTML Preview Mode (Not Base64)", 200
 
     except Exception as e:
         traceback.print_exc()
         return f"Print Error: {str(e)}", 500
+        
 
+        
 # --- 4. 狀態變更 (完成/作廢) ---
 @kitchen_bp.route('/complete/<int:oid>')
+@login_required          # 🛡️ 防護 1：必須登入
 def complete_order(oid):
     try:
         c=get_db_connection(); cur=c.cursor()
@@ -565,6 +612,8 @@ def cancel_order(oid):
 
 # --- 5. 銷售排名 API ---
 @kitchen_bp.route('/sales_ranking')
+@login_required          # 🛡️ 防護 1：必須登入
+@role_required('admin')  # 🛡️ 防護 2：必須是 admin 才能進後台
 def sales_ranking():
     start_time_str = request.args.get('start_time')
     end_time_str = request.args.get('end_time')
@@ -598,173 +647,332 @@ def sales_ranking():
 
 # --- 6. 日結報表 (HTML) - 補完部分 ---
 @kitchen_bp.route('/report')
+@login_required          # 🛡️ 防護 1：必須登入
+@role_required('admin')  # 🛡️ 防護 2：必須是 admin 才能進後台
 def daily_report():
-    target_date_str = request.args.get('date') or (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
-    utc_start, utc_end = get_tw_time_range(target_date_str)
+    # --- 1. 時間處理 (台灣時區 UTC+8) ---
+    now_tw = datetime.utcnow() + timedelta(hours=8)
+    target_date_str = request.args.get('date') or now_tw.strftime('%Y-%m-%d')
+    
+    # 取得資料庫查詢範圍
+    try:
+        utc_start, utc_end = get_tw_time_range(target_date_str)
+    except:
+        utc_start, utc_end = now_tw.replace(hour=0, minute=0), now_tw.replace(hour=23, minute=59)
+
+    output_format = request.args.get('format', 'html')
     
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # 取得產品價格表
+    # --- 2. 取得產品數據 ---
     cur.execute("SELECT name, price FROM products")
     price_map = {row[0]: row[1] for row in cur.fetchall()}
     
-    # 統計：有效訂單 (Pending + Completed)
-    cur.execute("""
-        SELECT COUNT(*), SUM(total_price), content_json 
-        FROM orders 
-        WHERE created_at >= %s AND created_at <= %s 
-        AND status IN ('Pending', 'Completed')
-        GROUP BY id
-    """, (utc_start, utc_end))
-    v_rows = cur.fetchall()
-    
-    v_count = len(v_rows)
-    v_total = sum([r[1] for r in v_rows if r[1]])
+    # 有效訂單
+    cur.execute("SELECT total_price, content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status IN ('Pending', 'Completed')", (utc_start, utc_end))
+    v_raw = cur.fetchall()
+    v_count, v_total = len(v_raw), sum([r[0] for r in v_raw if r[0]])
 
-    # 統計：作廢訂單 (Cancelled)
-    cur.execute("""
-        SELECT COUNT(*), SUM(total_price), content_json 
-        FROM orders 
-        WHERE created_at >= %s AND created_at <= %s 
-        AND status = 'Cancelled'
-        GROUP BY id
-    """, (utc_start, utc_end))
-    x_rows = cur.fetchall()
-
-    x_count = len(x_rows)
-    x_total = sum([r[1] for r in x_rows if r[1]])
+    # 作廢訂單
+    cur.execute("SELECT total_price, content_json FROM orders WHERE created_at >= %s AND created_at <= %s AND status = 'Cancelled'", (utc_start, utc_end))
+    x_raw = cur.fetchall()
+    x_count, x_total = len(x_raw), sum([r[0] for r in x_raw if r[0]])
     conn.close()
 
-    # 聚合商品統計函式
     def agg(rows):
-        res = {}
+        result = {}
         for r in rows:
-            if not r[2]: continue
+            if not r[1]: continue
             try:
-                items = json.loads(r[2]) if isinstance(r[2], str) else r[2]
-                if not isinstance(items, list): items = []
+                items = json.loads(r[1]) if isinstance(r[1], str) else r[1]
                 for i in items:
                     name = i.get('name_zh', i.get('name', '商品'))
                     qty = int(float(i.get('qty', 1)))
-                    price_val = i.get('price')
-                    # 如果訂單內沒存價格，查價格表
-                    price = int(float(price_val)) if price_val is not None else price_map.get(name, 0)
-                    
-                    if name not in res: res[name] = {'qty':0, 'amt':0}
-                    res[name]['qty'] += qty
-                    res[name]['amt'] += (qty * price)
+                    p_val = i.get('price')
+                    price = int(float(p_val)) if p_val is not None else price_map.get(name, 0)
+                    if name not in result: result[name] = {'qty':0, 'amt':0}
+                    result[name]['qty'] += qty
+                    result[name]['amt'] += (qty * price)
             except: continue
-        return res
+        return result
 
-    v_stats = agg(v_rows)
-    x_stats = agg(x_rows)
+    v_stats = agg(v_raw)
+    x_stats = agg(x_raw)
 
-    # 產生表格 HTML 函式 (移除所有顏色，改為純黑白線條)
-    def tbl(stats_dict):
-        if not stats_dict: return "<p style='text-align:center; color:#000; font-weight:bold;'>無數據</p>"
-        h = "<table class='report-table'><thead><tr><th style='text-align:left;'>品項</th><th style='text-align:right;'>數量</th><th style='text-align:right;'>金額</th></tr></thead><tbody>"
-        for k, v in sorted(stats_dict.items(), key=lambda x:x[1]['qty'], reverse=True):
-            h += f"<tr><td>{k}</td><td style='text-align:right;'>{v['qty']}</td><td style='text-align:right;'>${v['amt']:,}</td></tr>"
-        return h + "</tbody></table>"
+    # --- 3. 生成 ESC/POS 二進制 (所有文字放大至 x11) ---
+    if output_format == 'blob':
+        ESC, GS = b'\x1b', b'\x1d'
+        ENCODE = 'cp950'
+        SIZE_LARGE = GS + b'!\x11' # 倍寬倍高 (x11)
+        
+        res = ESC + b'@' # 初始化
+        res += SIZE_LARGE # 設定全域最小尺寸為 x11
+        
+        # 標題區 (置中)
+        res += ESC + b'a\x01'
+        res += "日結營收報表\n".encode(ENCODE)
+        res += f"{target_date_str}\n".encode(ENCODE)
+        res += f"時間:{now_tw.strftime('%H:%M:%S')}\n".encode(ENCODE)
+        res += b"="*16 + b"\n"  # 字體變大，分隔線縮短為 16 個
+        
+        # 有效營收 (靠左)
+        res += b"\n" + ESC + b'a\x00'
+        res += ESC + b'E\x01' + "有效營收\n".encode(ENCODE) + ESC + b'E\x00'
+        res += f"單數: {v_count}\n".encode(ENCODE)
+        res += f"總計: ${v_total:,}\n".encode(ENCODE)
+        res += b"\n" + ESC + b'a\x01' + b"-"*20 + b"\n"
+        
+        # 作廢統計
+        res += ESC + b'a\x00'
+        res += ESC + b'E\x01' + "作廢統計\n".encode(ENCODE) + ESC + b'E\x00'
+        res += f"單數: {x_count}\n".encode(ENCODE)
+        res += f"額度: ${x_total:,}\n".encode(ENCODE)
+        res += ESC + b'a\x01' + b"="*16 + b"\n"
+        
+        # 商品銷售明細 (字大，建議名稱與數據分行或截短)
+        res += b"\n" + ESC + b'a\x00'
+        res += ESC + b'E\x01' + "銷售明細\n".encode(ENCODE) + ESC + b'E\x00'
+        if not v_stats:
+            res += "無\n".encode(ENCODE)
+        else:
+            for k, v in sorted(v_stats.items(), key=lambda x:x[1]['qty'], reverse=True):
+                # 因為字體大，採「名稱」一行，「數量金額」一行
+                res += f"{k[:16]}\n".encode(ENCODE, 'replace')
+                res += f"  x{v['qty']:>2} ${v['amt']:,}\n".encode(ENCODE)
+        res += b"\n" + ESC + b'a\x01' + b"-"*20 + b"\n"
+        
+        # 作廢商品明細
+        res += ESC + b'a\x00'
+        res += ESC + b'E\x01' + "作廢明細\n".encode(ENCODE) + ESC + b'E\x00'
+        if not x_stats:
+            res += "無\n".encode(ENCODE)
+        else:
+            for k, v in sorted(x_stats.items(), key=lambda x:x[1]['qty'], reverse=True):
+                res += f"{k[:16]}\n".encode(ENCODE, 'replace')
+                res += f"  x{v['qty']:>2} ${v['amt']:,}\n".encode(ENCODE)
+        res += b"\n" + ESC + b'a\x01' + b"="*16 + b"\n"
+        
+        # 簽名區
+        res += b"\n" + ESC + b'a\x00'
+        res += "經手人簽名:\n\n\n".encode(ENCODE)
+        res += "________________\n".encode(ENCODE)
+        res += "- End Report -\n\n".encode(ENCODE)
+        res += b"\n\n\n" + GS + b'V\x42\x00' # 切刀
+        
+        return jsonify({"status": "success", "blob": base64.b64encode(res).decode('utf-8')})
 
-    # 最終 HTML 輸出 (純黑白 + 80mm 自動長度設定)
+   # --- 4. HTML 頁面渲染 ---
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>日結報表_{target_date_str}</title>
         <style>
-            /* 螢幕預覽時的背景 (列印時會隱藏) */
-            body {{ font-family: 'Microsoft JhengHei', sans-serif; background: #f4f4f4; display:flex; flex-direction:column; align-items:center; padding:20px; color: #000; }}
-            
-            /* 單據本體設定 */
-            .ticket {{ background: white; width: 78mm; padding: 0; color: #000; }}
-            
-            /* 黑白化區塊設定 */
-            .summary {{ padding: 10px; margin: 10px 0; border: 2px solid #000; font-weight: bold; }}
-            .void-sum {{ padding: 10px; margin: 10px 0; border: 2px dashed #000; font-weight: bold; }}
-            .header {{ text-align:center; border-bottom: 2px dashed #000; padding-bottom:10px; margin-bottom:10px; }}
-            .section-title {{ font-size:18px; font-weight:bold; margin-top:15px; border-bottom: 2px solid #000; padding-bottom:5px; margin-bottom: 5px; color: #000; }}
-            
-            h1 {{ margin:0; font-size:24px; font-weight: 900; }}
-            p {{ margin:5px 0; color: #000; }}
-            .big-num {{ font-size:20px; font-weight:900; }}
-            
-            /* 表格黑白線條設定 */
-            .report-table {{ width:100%; border-collapse:collapse; margin-top:10px; color: #000; }}
-            .report-table th {{ border-bottom: 2px solid #000; padding-bottom: 5px; font-weight: bold; }}
-            .report-table td {{ border-bottom: 1px dashed #000; padding: 5px 0; }}
-            
-            /* --- 關鍵：專為熱感出單機設計的列印設定 --- */
-            @page {{ 
-                size: 80mm auto; /* 80mm 寬度，長度自動延伸 */
-                margin: 0mm;     /* 消除印表機預設邊界 */
+            body {{ 
+                font-family: "Microsoft JhengHei", sans-serif; 
+                background: #eee; 
+                display: flex; 
+                flex-direction: column; 
+                align-items: center; 
+                padding: 20px; 
+            }}
+            .ticket {{ 
+                background: white; 
+                width: 80mm; 
+                padding: 20px; 
+                text-align: center; 
+                border: 1px solid #ccc; 
+                box-sizing: border-box; 
+                box-shadow: 0 4px 10px rgba(0,0,0,0.1);
             }}
             
-            @media print {{ 
-                .no-print {{ display: none !important; }} 
-                body {{ background: transparent; padding: 0; margin: 0; }} 
-                .ticket {{ width: 80mm; box-shadow: none; border: none; }}
-                
-                /* 強制所有內容為純黑白，避免印表機灰階化導致字體變淡 */
-                * {{ color: #000 !important; background: transparent !important; }}
+            /* 按鈕容器 */
+            .no-print {{ 
+                margin-bottom: 20px; 
+                display: flex; 
+                align-items: center; 
+                justify-content: center; 
+                gap: 15px; 
+                flex-wrap: wrap;
+            }}
+            
+            /* 日期選擇器樣式優化 */
+            #dateInput {{
+                padding: 8px;
+                border-radius: 6px;
+                border: 1px solid #ccc;
+                font-size: 16px;
+                height: 40px;
+                box-sizing: border-box;
+            }}
+            
+            /* 基礎按鈕樣式 - 確保所有按鈕結構完全一致 */
+            .btn-base {{ 
+                height: 40px;
+                padding: 0 25px; 
+                font-weight: bold; 
+                font-size: 16px;
+                cursor: pointer; 
+                border-radius: 8px; 
+                border: none; 
+                transition: all 0.2s ease;
+                text-decoration: none;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                outline: none;
+                white-space: nowrap;
+            }}
+
+            .btn-base:active {{ transform: translateY(1px); box-shadow: none; }}
+            .btn-base:hover {{ opacity: 0.9; box-shadow: 0 4px 8px rgba(0,0,0,0.15); }}
+
+            /* 列印報表按鈕 - 綠色 */
+            .btn-print {{ background: #27ae60; color: white; }}
+
+            /* 返回看板按鈕 - 深灰色 (樣式已與列印按鈕完全對齊) */
+            .btn-close {{ background: #555; color: white; }}
+
+            .detail-list {{ font-size: 13px; text-align: left; line-height: 1.6; }}
+            .section-title {{ text-align: left; border-bottom: 1px solid #000; margin-top: 15px; font-weight: bold; }}
+            .line-divider {{ margin: 10px 0; overflow: hidden; white-space: nowrap; }}
+
+            /* 列印時隱藏不需要的元件 */
+            @media print {{
+                .no-print, #usbStatus {{ display: none; }}
+                body {{ background: white; padding: 0; }}
+                .ticket {{ border: none; box-shadow: none; width: 100%; }}
             }}
         </style>
     </head>
-    <body>
-        <div class="no-print" style="margin-bottom:20px; text-align:center;">
-            <div style="margin-bottom:10px;">
-                <label style="font-weight:bold;">選擇日期：</label>
-                <input type="date" id="dateInput" value="{target_date_str}" onchange="location.href='/kitchen/report?date='+this.value" style="padding: 5px; font-size: 16px;">
-            </div>
-            <button onclick="window.print()" style="padding:10px 20px; font-size:16px; background:#000; color:#fff; border:2px solid #000; font-weight:bold; cursor:pointer;">🖨️ 列印報表</button>
-            <button onclick="location.href='/kitchen'" style="padding:10px 20px; font-size:16px; background:#fff; color:#000; border:2px solid #000; font-weight:bold; cursor:pointer; margin-left:10px;">🔙 返回看板</button>
+    <body onload="autoConnectUSB()">
+        <div class="no-print">
+            <input type="date" id="dateInput" value="{target_date_str}" onchange="location.href='?date='+this.value">
+            <button id="btnPrint" class="btn-base btn-print" onclick="handlePrintClick()">🖨️ 列印報表</button>
+            <button class="btn-base btn-close" onclick="window.close()">🔙 返回看板</button>
         </div>
+        
+        <div id="usbStatus" style="font-size:12px; margin-bottom:15px; color:#666; font-weight: bold;">偵測印表機中...</div>
 
         <div class="ticket">
-            <div class="header">
-                <h1>日結營收報表</h1>
-                <p style="font-size: 18px; font-weight: bold;">{target_date_str}</p>
-                <p style="font-size:12px;">列印時間: {datetime.now().strftime('%H:%M:%S')}</p>
-            </div>
-
-            <div class="summary">
-                <div>有效營收</div>
-                <div style="display:flex; justify-content:space-between; margin-top:5px;">
-                    <span>訂單: <span class="big-num">{v_count}</span> 單</span>
-                    <span>總計: <span class="big-num">${v_total:,}</span></span>
-                </div>
-            </div>
-
-            <div class="void-sum">
-                <div>作廢統計</div>
-                <div style="display:flex; justify-content:space-between; margin-top:5px;">
-                    <span>作廢: {x_count} 單</span>
-                    <span>作廢額: ${x_total:,}</span>
-                </div>
-            </div>
-
+            <h2 style="margin:0;">日結營收報表</h2>
+            <div style="font-size:14px;">{target_date_str}</div>
+            <div style="font-size:12px;">列印時間: {now_tw.strftime('%H:%M:%S')}</div>
+            <div class="line-divider">==========================</div>
+            
+            <div style="text-align:left;"><b>有效營收</b></div>
+            <div style="text-align:left;">訂單: {v_count} 單  總計: ${v_total:,}</div>
+            <div class="line-divider">--------------------------</div>
+            
+            <div style="text-align:left;"><b>作廢統計</b></div>
+            <div style="text-align:left;">作廢: {x_count} 單  作廢額: ${x_total:,}</div>
+            <div class="line-divider">==========================</div>
+            
             <div class="section-title">商品銷售明細</div>
-            {tbl(v_stats)}
-
-            <div class="section-title" style="margin-top:30px;">作廢商品明細</div>
-            <div>
-                {tbl(x_stats)}
+            <div class="detail-list">
+                {"".join([f"<div>{k} x{v['qty']} ${v['amt']:,}</div>" for k, v in v_stats.items()]) if v_stats else "<div>無</div>"}
             </div>
-
-            <div style="margin-top:40px; text-align:center; border-top:2px solid #000; padding-top:10px;">
-                <p style="font-weight: bold;">經手人簽名</p>
-                <br><br>
-                <p>____________________</p>
-                <p style="font-size: 12px; margin-top: 20px;">- End of Report -</p>
+            
+            <div class="line-divider">--------------------------</div>
+            <div class="section-title">作廢商品明細</div>
+            <div class="detail-list">
+                {"".join([f"<div>{k} x{v['qty']} ${v['amt']:,}</div>" for k, v in x_stats.items()]) if x_stats else "<div>無</div>"}
             </div>
+            <div class="line-divider">==========================</div>
+            
+            <br><br><div>經手人簽名</div><br><br>
+            <div>____________________</div>
+            <div style="font-size:12px; margin-top:10px;">- End of Report -</div>
         </div>
+
+        <script>
+            let device = null;
+
+            // --- 重要修復：關閉或離開頁面時釋放 USB 資源 ---
+            window.addEventListener('beforeunload', async () => {{
+                if (device && device.opened) {{
+                    try {{
+                        await device.releaseInterface(device.configuration.interfaces[0].interfaceNumber);
+                        await device.close();
+                        console.log("USB 資源已釋放");
+                    }} catch (err) {{
+                        console.error("釋放失敗", err);
+                    }}
+                }}
+            }});
+
+            async function autoConnectUSB() {{
+                const statusDiv = document.getElementById('usbStatus');
+                try {{
+                    const devices = await navigator.usb.getDevices();
+                    if (devices.length > 0) {{
+                        device = devices[0];
+                        if (!device.opened) await device.open();
+                        await device.selectConfiguration(1);
+                        await device.claimInterface(device.configuration.interfaces[0].interfaceNumber);
+                        statusDiv.innerText = "✅ 已自動連接: " + (device.productName || "USB 印表機");
+                        statusDiv.style.color = "green";
+                    }} else {{
+                        statusDiv.innerText = "ℹ️ 尚未授權印表機，請點擊列印按鈕進行選取";
+                    }}
+                }} catch (err) {{
+                    statusDiv.innerText = "⚠️ 連線異常: " + err.message;
+                    statusDiv.style.color = "red";
+                }}
+            }}
+
+            async function handlePrintClick() {{
+                const statusDiv = document.getElementById('usbStatus');
+                if (!device) {{
+                    try {{
+                        device = await navigator.usb.requestDevice({{ filters: [] }});
+                        await device.open();
+                        await device.selectConfiguration(1);
+                        await device.claimInterface(device.configuration.interfaces[0].interfaceNumber);
+                        statusDiv.innerText = "✅ 已連線: " + device.productName;
+                        statusDiv.style.color = "green";
+                    }} catch (e) {{ 
+                        return alert("未選擇或無法使用裝置: " + e.message); 
+                    }}
+                }}
+
+                try {{
+                    const date = document.getElementById('dateInput').value;
+                    const res = await fetch(`/kitchen/report?date=${{date}}&format=blob`);
+                    if (!res.ok) throw new Error("後端產生報表失敗");
+                    
+                    const data = await res.json();
+                    if (!data.blob) throw new Error("未收到列印數據");
+                    
+                    const binaryString = window.atob(data.blob);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {{
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }}
+
+                    // 自動尋找 OUT 節點
+                    const interface = device.configuration.interfaces[0];
+                    const endpoint = interface.alternate.endpoints.find(e => e.direction === 'out').endpointNumber;
+                    
+                    await device.transferOut(endpoint, bytes);
+                    statusDiv.innerText = "✨ 報表列印中...";
+                    setTimeout(() => {{ 
+                        statusDiv.innerText = "✅ 已連線: " + (device.productName || "USB 印表機"); 
+                    }}, 3000);
+
+                }} catch (err) {{
+                    alert("列印失敗: " + err.message);
+                    console.error(err);
+                }}
+            }}
+        </script>
     </body>
     </html>
     """
+
 
 
 

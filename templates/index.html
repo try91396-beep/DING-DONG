@@ -5,168 +5,212 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <style>
+        /* --- 基礎設定：確保撐滿全螢幕 --- */
+        html, body {
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             font-family: 'Microsoft JhengHei', -apple-system, sans-serif;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            background: #fdfdfd;
-            padding: 20px;
+            justify-content: space-between;
+            
+            /* 【修改重點】為了讓背景圖片透明度不影響內容，我們將背景移到偽元素 */
+            position: relative; /* 必須設定 relative */
+            z-index: 1; /* 確保內容在偽元素之上 */
+
+            padding: 10px 15px; 
             box-sizing: border-box;
+            color: #333;
+            height: 100vh; 
+            height: 100dvh; 
         }
+
+        /* 【新增重點】利用偽元素製作 80% 透明的背景圖片 */
+        body::after {
+            content: "";
+            /* 圖片固定全螢幕 */
+            position: fixed; 
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            
+            /* 背景圖片設定 */
+            background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
+            /*background-size: cover;  滿版並裁切*/ 
+            background-size: contain; /*縮放至完整*/ 
+            
+            /* 【核心】設定背景圖片透明度 (0.2 表示 20% 可見，即 80% 透明) */
+            opacity: 0.6; 
+            
+            z-index: -1; /* 放在所有內容的最下方 */
+        }
+
+        /* --- 共用白邊效果 --- */
+        /* 利用 8 個方向的純色無模糊陰影，來製造乾淨的白邊效果 */
+        .text-outline {
+            text-shadow: 
+                -1px -1px 0 #fff,  
+                 1px -1px 0 #fff,
+                -1px  1px 0 #fff,
+                 1px  1px 0 #fff,
+                 0   -1px 0 #fff,
+                 0    1px 0 #fff,
+                -1px  0   0 #fff,
+                 1px  0   0 #fff;
+        }
+
+        /* --- 頁首 --- */
         .header-info {
             text-align: center;
-            margin-bottom: 20px;
-            margin-top: 10px;
+            margin-top: 5px;
+            background: transparent;
+            padding: 10px;
         }
         h2 {
-            color: #333;
-            font-size: 1.8em;
-            margin: 0 0 5px 0;
+            font-size: 1.55em; 
+            margin: 0 0 4px 0;
             font-weight: 900;
         }
         .sub-title {
-            color: #666;
-            font-size: 1em;
+            color: #333;
+            font-size: 0.95em;
+            font-weight: bold;
         }
 
-        /* --- 容器樣式 --- */
+        /* --- 主容器：自動垂直置中 --- */
         .main-container {
             width: 100%;
             max-width: 500px;
+            margin: auto; 
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 16px; 
         }
 
-        /* --- 點餐區塊 (卡片式設計) --- */
+        /* --- 點餐區塊 --- */
         .order-section {
-            background: #fff;
-            border-radius: 20px;
-            padding: 20px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-            border: 1px solid #eee;
+            background: transparent;
+            padding: 5px 14px; 
             text-align: center;
         }
         
         .section-title {
-            font-size: 1.4em;
+            font-size: 1.25em;
             font-weight: bold;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 6px;
         }
         
-        .dine-in-title { color: #007bff; }
-        .takeout-title { color: #e91e63; }
+        .dine-in-title { color: #0056b3; }
+        .takeout-title { color: #c2185b; }
 
         /* --- 語言按鈕網格 --- */
         .lang-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr; /* 兩欄 */
-            gap: 12px;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px; 
         }
 
         .btn-lang {
-            padding: 15px 0;
+            padding: 14px 0;
             text-align: center;
             text-decoration: none;
-            font-size: 1.1em;
+            font-size: 1.15em; 
             font-weight: bold;
-            border-radius: 12px;
+            border-radius: 12px; 
             color: white;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
             transition: transform 0.1s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            /* 按鈕內的文字維持微微的深色下陰影，增加立體感 */
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
-        .btn-lang:active { transform: scale(0.95); }
+        .btn-lang:active { transform: scale(0.97); }
 
-        /* 語言顏色 */
+        /* 顏色漸層 */
         .zh { background: linear-gradient(135deg, #e91e63, #c2185b); } 
         .en { background: linear-gradient(135deg, #007bff, #0056b3); } 
         .jp { background: linear-gradient(135deg, #ff9800, #f57c00); } 
         .kr { background: linear-gradient(135deg, #20c997, #17a2b8); }
 
-        /* --- 外送區塊 (獨立) --- */
+        /* --- 外送區塊 --- */
         .delivery-btn {
             display: block;
             width: 100%;
-            padding: 18px;
-            margin-top: 10px;
+            padding: 15px 0;
             text-align: center;
             text-decoration: none;
-            font-size: 1.3em;
+            font-size: 1.2em;
             font-weight: bold;
             color: white;
-            border-radius: 60px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            border-radius: 50px;
+            margin-top: 5px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
         .delivery-internal { background: linear-gradient(135deg, #ff5722, #d84315); }
         .delivery-panda { background: linear-gradient(135deg, #D70F64, #C20D5A); }
 
-        /* --- 休息中樣式 --- */
-        .closed-notice {
-            background: #f8f9fa;
-            color: #666;
-            padding: 40px;
-            border-radius: 15px;
-            font-size: 1.5em;
-            font-weight: bold;
-            border: 2px solid #ddd;
-            text-align: center;
-        }
-
+        /* --- 頁尾 --- */
         .footer-info {
-            margin-top: 30px;
             text-align: center;
-            color: #555;
+            padding-top: 8px;
+            padding-bottom: 5px;
+            background: transparent;
+            margin-bottom: 5px;
         }
-        .footer-info h3, .footer-info h4 { margin: 5px 0; font-weight: normal; font-size: 0.9em; }
+        .footer-info h3 { 
+            margin: 2px 0; 
+            font-size: 1.15em; 
+            color: #111; 
+            font-weight: 900; 
+        }
+        .footer-info h4 { 
+            margin: 2px 0; 
+            font-size: 0.9em; 
+            font-weight: bold; 
+            color: #333; 
+        }
 
-        /* 桌號提示小字 */
         .table-hint {
-            font-size: 0.8em;
-            color: #888;
+            font-size: 0.85em;
+            color: #333;
+            font-weight: bold;
             margin-bottom: 10px;
-            font-weight: normal;
+        }
+
+        /* 如果是休息中 */
+        .closed-notice {
+            background: transparent;
+            padding: 30px;
+            text-align: center;
+            font-size: 1.4em;
+            font-weight: bold;
+            color: #111;
         }
     </style>
 </head>
 <body>
-    <div class="header-info">
+    <div class="header-info text-outline">
         <h2>龍江路大鼎豬血湯</h2>
-        <div class="sub-title">請選擇用餐方式 / Select Order Type</div>
+        <div class="sub-title">請選擇用餐方式 / Select Type</div>
     </div>
 
     <div class="main-container">
-        {# --- 判斷全店營業狀態 (shop_open) --- #}
         {% if shop_open %}
             
-            {# =================================================== #}
-            {#  關鍵修改邏輯：設定內用與外帶的 table 參數字串         #}
-            {# =================================================== #}
-            
-            {# 1. 內用參數: 如果有 table_num 則帶入 &table=4桌 #}
             {% set table_param = "&table=" + table_num if table_num else "" %}
-
-            {# 2. 外帶參數: #}
-            {#    如果有 table_num (例如4桌)，則組合為 "&table=外帶4桌" #}
-            {#    如果沒有 table_num，則維持單純的 "&table=外帶" #}
             {% set takeout_param = "&table=外帶" + table_num if table_num else "&table=外帶" %}
 
-
             <div class="order-section">
-                <div class="section-title dine-in-title">🏠 內用 (Dine In)</div>
-                {% if table_num %}
-                    <div class="table-hint">目前桌號: {{ table_num }}</div>
-                {% endif %}
-                
+                <div class="section-title dine-in-title text-outline">內用 (Dine In)</div>
+                {% if table_num %}<div class="table-hint text-outline">目前桌號: {{ table_num }}</div>{% endif %}
                 <div class="lang-grid">
                     <a href="/menu?lang=zh{{ table_param }}" class="btn-lang zh">中文</a>
                     <a href="/menu?lang=en{{ table_param }}" class="btn-lang en">English</a>
@@ -176,16 +220,8 @@
             </div>
 
             <div class="order-section">
-                <div class="section-title takeout-title">👜 外帶 (Takeout)</div>
-                
-                {# 顯示提示文字，讓使用者知道現在是用什麼身份外帶 #}
-                {% if table_num %}
-                    <div class="table-hint">外帶 (桌號: {{ table_num }})</div>
-                {% else %}
-                    <div class="table-hint">Takeout Order</div>
-                {% endif %}
-
-                {# 使用上面定義好的 takeout_param 變數 #}
+                <div class="section-title takeout-title text-outline">外帶 (Takeout)</div>
+                <div class="table-hint text-outline">{% if table_num %} 外帶 (桌號: {{ table_num }}) {% else %} Takeout Order {% endif %}</div>
                 <div class="lang-grid">
                     <a href="/menu?lang=zh{{ takeout_param }}" class="btn-lang zh">中文</a>
                     <a href="/menu?lang=en{{ takeout_param }}" class="btn-lang en">English</a>
@@ -194,30 +230,26 @@
                 </div>
             </div>
 
-            <div style="margin-top: 10px;">
+            <div style="text-align: center; padding: 0 14px;">
                 {% if delivery_enabled %}
-                    <a href="/delivery/setup" class="delivery-btn delivery-internal">
-                        🛵 外送服務 (Delivery)
-                    </a>
+                    <h6 class="text-outline" style="margin: 0 0 8px 0; color: #d84315; font-size: 0.95em; background: transparent; display: inline-block; font-weight: 900;">滿1000可外送 1.6km以內</h6>
+                    <a href="/delivery/setup" class="delivery-btn delivery-internal">🛵 外送服務 (Delivery)</a>
                 {% else %}
-                    <a href="https://www.foodpanda.com.tw/restaurant/uf01/hong-xing-xiao-chi-dian" target="_blank" class="delivery-btn delivery-panda">
-                        🐼 Foodpanda 外送
-                    </a>
+                    <a href="https://www.foodpanda.com.tw/restaurant/uf01/hong-xing-xiao-chi-dian" target="_blank" class="delivery-btn delivery-panda">🐼 Foodpanda 外送</a>
                 {% endif %}
             </div>
 
         {% else %}
-            {# --- 全店休息中 --- #}
-            <div class="closed-notice">
-                😴 本店目前休息中<br>
-                <small style="font-size:0.6em; color:#999;">Shop Closed</small>
-            </div>
+            <div class="closed-notice text-outline">😴 本店目前休息中<br><small>Shop Closed</small></div>
         {% endif %}
     </div>
 
-    <div class="footer-info">
+    <div class="footer-info text-outline">
         <h3>📞 02-2515-2519</h3>
-        <h4>📍 10491臺北市中山區龍江路164號</h4>
+        <h4>📍 台北市中山區龍江路164號</h4>
     </div>
 </body>
 </html>
+
+
+
