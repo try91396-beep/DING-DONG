@@ -38,7 +38,7 @@ def create_app():
 
     # --- 新增註冊：資料庫檢視頁面 (路徑 /try) ---
     # 這讓我們可以透過網址 /try 來查看資料庫欄位
-    app.register_blueprint(try_bp)
+    app.register_blueprint(try_bp, url_prefix='/try')
 
     # 3. 啟動背景任務 (排程發信、防休眠 Ping)
     start_background_tasks(app)
@@ -50,3 +50,4 @@ app = create_app()
 if __name__ == '__main__':
     # 這裡的設定適合 Render 部署與本地測試
     app.run(host='0.0.0.0', port=10000, debug=False)
+
