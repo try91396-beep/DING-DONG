@@ -1,124 +1,123 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🍳 廚房出餐看板 Pro (多機 USB 自動列印版)</title>
-    <script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding-indexes.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding.js"></script>
-    <style>
-        :root {
-            --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
-            --main-text: #333; --accent-purple: #673ab7; --accent-blue: #2196f3;
-            --accent-green: #4caf50; --accent-orange: #ff9800; --accent-red: #f44336;
-            --delivery-color: #ff5722;
-        }
-        body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
+{% extends "base.html" %}
 
-        /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
-        body::before {
-            content: "";
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
-            /*background-size: cover;  滿版並裁切*/ 
-            background-size: contain; /*縮放至完整*/ 
-            opacity: 0.6; 
-            z-index: -1; 
-        }
-        
-        header { 
-            display: flex; justify-content: space-between; align-items: center; 
-            background: #fff; padding: 10px 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
-        }
-        .nav-links { display: flex; gap: 10px; flex-wrap: wrap; }
+{% block title %}🍳 廚房出餐看板 Pro (多機 USB 自動列印版){% endblock %}
 
-        .order-grid { 
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
-            gap: 20px; 
-            align-items: flex-start; 
-        }
-        
-        .card { 
-            background: white; border-radius: 12px; border: 1px solid #ddd;
-            display: flex; flex-direction: column; overflow: hidden;
-            transition: transform 0.2s; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            height: auto;
-        }
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding-indexes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding.js"></script>
 
-        .card.pending { border-left: 8px solid var(--accent-orange); background: var(--pending); }
-        .card.completed { border-left: 8px solid var(--accent-green); background: var(--completed); opacity: 0.8; background-color: #f9f9f9; }
-        .card.cancelled {
-            background-color: var(--cancelled) !important; 
-            border: 2px solid rgba(244, 67, 54, 0.3) !important; border-left: 8px solid var(--accent-red);
-            opacity: 0.75; filter: grayscale(0.4); overflow: hidden;
-        }
-        .card.cancelled::after {
-            content: "CANCELLED"; position: absolute; top: 50%; left: 50%;
-            transform: translate(-50%, -50%) rotate(-15deg); font-size: 2.2em; font-weight: 900;
-            color: rgba(244, 67, 54, 0.25); pointer-events: none; z-index: 1; letter-spacing: 2px;
-        }
+<style>
+    :root {
+        --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
+        --main-text: #333; --accent-purple: #673ab7; --accent-blue: #2196f3;
+        --accent-green: #4caf50; --accent-orange: #ff9800; --accent-red: #f44336;
+        --delivery-color: #ff5722;
+    }
+    body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
 
-        .card-header { padding: 12px; border-bottom: 1px dashed #ccc; display: flex; justify-content: space-between; z-index: 2; align-items: flex-start; }
-        .seq-num { font-size: 26px; font-weight: 900; color: #d32f2f; line-height: 1; }
-        .time-stamp { font-size: 0.8em; color: #666; margin-top: 4px; }
-        
-        .badge-table { font-size: 20px; font-weight: bold; background: #333; color: white; padding: 4px 10px; border-radius: 4px; }
-        .badge-delivery { font-size: 18px; font-weight: bold; background: var(--delivery-color); color: white; padding: 4px 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; }
-        
-        .delivery-details {
-            font-size: 0.9rem; background: #fff3e0; color: #bf360c;
-            padding: 8px; margin: 0 12px 5px 12px; border-radius: 4px;
-            border: 1px dashed #ffb74d; display: flex; flex-direction: column; gap: 2px;
-            word-break: break-all; white-space: normal; overflow-wrap: break-word; 
-        }
+    /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
+    body::before {
+        content: "";
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
+        background-size: contain; /*縮放至完整*/ 
+        opacity: 0.6; 
+        z-index: -1; 
+    }
+    
+    header { 
+        display: flex; justify-content: space-between; align-items: center; 
+        background: #fff; padding: 10px 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
+    }
+    .nav-links { display: flex; gap: 10px; flex-wrap: wrap; }
 
-        .items { padding: 12px; flex-grow: 1; z-index: 2; min-height: 80px; }
-        .item-row { margin-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.05); padding-bottom: 6px; }
-        .item-name { display: flex; justify-content: space-between; font-size: 19px; font-weight: 600; }
-        .item-qty { font-weight: 900; font-size: 1.1em; }
-        .item-opts { font-size: 14px; color: #666; margin-left: 10px; margin-top: 2px; }
+    .order-grid { 
+        display: grid; 
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
+        gap: 20px; 
+        align-items: flex-start; 
+    }
+    
+    .card { 
+        background: white; border-radius: 12px; border: 1px solid #ddd;
+        display: flex; flex-direction: column; overflow: hidden;
+        transition: transform 0.2s; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        height: auto;
+    }
 
-        .actions { padding: 12px; background: rgba(0,0,0,0.03); display: flex; flex-direction: column; gap: 8px; z-index: 2; }
-        
-        .btn { 
-            padding: 10px; border: none; border-radius: 6px; cursor: pointer; 
-            font-size: 14px; font-weight: bold; text-align: center; display: inline-block; text-decoration: none;
-        }
-        .btn-main { background: var(--accent-green); color: white; }
-        .btn-print { background: var(--accent-blue); color: white; }
-        .btn-void { background: var(--accent-red); color: white; }
-        
-        .printer-status-group { display: flex; gap: 5px; }
-        .btn-conn { background: #eee; color: #666; border: 1px solid #ccc; font-size: 12px; padding: 5px 8px; }
-        .btn-conn.online { background: #4caf50; color: white; border-color: #4caf50; }
-        .btn-conn.offline { background: #f44336; color: white; animation: pulse 2s infinite; }
+    .card.pending { border-left: 8px solid var(--accent-orange); background: var(--pending); }
+    .card.completed { border-left: 8px solid var(--accent-green); background: var(--completed); opacity: 0.8; background-color: #f9f9f9; }
+    .card.cancelled {
+        background-color: var(--cancelled) !important; 
+        border: 2px solid rgba(244, 67, 54, 0.3) !important; border-left: 8px solid var(--accent-red);
+        opacity: 0.75; filter: grayscale(0.4); overflow: hidden;
+    }
+    .card.cancelled::after {
+        content: "CANCELLED"; position: absolute; top: 50%; left: 50%;
+        transform: translate(-50%, -50%) rotate(-15deg); font-size: 2.2em; font-weight: 900;
+        color: rgba(244, 67, 54, 0.25); pointer-events: none; z-index: 1; letter-spacing: 2px;
+    }
 
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+    .card-header { padding: 12px; border-bottom: 1px dashed #ccc; display: flex; justify-content: space-between; z-index: 2; align-items: flex-start; }
+    .seq-num { font-size: 26px; font-weight: 900; color: #d32f2f; line-height: 1; }
+    .time-stamp { font-size: 0.8em; color: #666; margin-top: 4px; }
+    
+    .badge-table { font-size: 20px; font-weight: bold; background: #333; color: white; padding: 4px 10px; border-radius: 4px; }
+    .badge-delivery { font-size: 18px; font-weight: bold; background: var(--delivery-color); color: white; padding: 4px 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; }
+    
+    .delivery-details {
+        font-size: 0.9rem; background: #fff3e0; color: #bf360c;
+        padding: 8px; margin: 0 12px 5px 12px; border-radius: 4px;
+        border: 1px dashed #ffb74d; display: flex; flex-direction: column; gap: 2px;
+        word-break: break-all; white-space: normal; overflow-wrap: break-word; 
+    }
 
-        .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); backdrop-filter: blur(3px); }
-        .modal-content { background-color: #fff; margin: 10% auto; padding: 25px; border-radius: 12px; width: 90%; max-width: 350px; text-align: center; box-shadow: 0 5px 20px rgba(0,0,0,0.3); position: relative; }
-        .modal-content.wide { max-width: 600px; }
-        .modal-btn { width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; }
+    .items { padding: 12px; flex-grow: 1; z-index: 2; min-height: 80px; }
+    .item-row { margin-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.05); padding-bottom: 6px; }
+    .item-name { display: flex; justify-content: space-between; font-size: 19px; font-weight: 600; }
+    .item-qty { font-weight: 900; font-size: 1.1em; }
+    .item-opts { font-size: 14px; color: #666; margin-left: 10px; margin-top: 2px; }
 
-        .sales-controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee; }
-        .date-group { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
-        .date-input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1; font-family: inherit; }
-        .btn-query { background: var(--accent-purple); color: white; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        .btn-today { background: transparent; border: 1px solid var(--accent-orange); color: var(--accent-orange); padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-bottom: 5px; }
-        .sales-table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: left; }
-        .sales-table th { background: #eee; padding: 10px; border-bottom: 2px solid #ddd; color: #555; font-size: 14px; position: sticky; top: 0; }
-        .sales-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; font-size: 16px; font-weight: 500; }
-        .rank-badge { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%; font-size: 12px; font-weight: bold; color: white; background: #ccc; }
-        .rank-1 { background: #FFD700; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-        .rank-2 { background: #C0C0C0; }
-        .rank-3 { background: #CD7F32; }
-    </style>
-</head>
-<body>
+    .actions { padding: 12px; background: rgba(0,0,0,0.03); display: flex; flex-direction: column; gap: 8px; z-index: 2; }
+    
+    .btn { 
+        padding: 10px; border: none; border-radius: 6px; cursor: pointer; 
+        font-size: 14px; font-weight: bold; text-align: center; display: inline-block; text-decoration: none;
+    }
+    .btn-main { background: var(--accent-green); color: white; }
+    .btn-print { background: var(--accent-blue); color: white; }
+    .btn-void { background: var(--accent-red); color: white; }
+    
+    .printer-status-group { display: flex; gap: 5px; }
+    .btn-conn { background: #eee; color: #666; border: 1px solid #ccc; font-size: 12px; padding: 5px 8px; }
+    .btn-conn.online { background: #4caf50; color: white; border-color: #4caf50; }
+    .btn-conn.offline { background: #f44336; color: white; animation: pulse 2s infinite; }
 
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+
+    .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); backdrop-filter: blur(3px); }
+    .modal-content { background-color: #fff; margin: 10% auto; padding: 25px; border-radius: 12px; width: 90%; max-width: 350px; text-align: center; box-shadow: 0 5px 20px rgba(0,0,0,0.3); position: relative; }
+    .modal-content.wide { max-width: 600px; }
+    .modal-btn { width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; }
+
+    .sales-controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee; }
+    .date-group { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
+    .date-input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1; font-family: inherit; }
+    .btn-query { background: var(--accent-purple); color: white; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    .btn-today { background: transparent; border: 1px solid var(--accent-orange); color: var(--accent-orange); padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-bottom: 5px; }
+    .sales-table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: left; }
+    .sales-table th { background: #eee; padding: 10px; border-bottom: 2px solid #ddd; color: #555; font-size: 14px; position: sticky; top: 0; }
+    .sales-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; font-size: 16px; font-weight: 500; }
+    .rank-badge { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%; font-size: 12px; font-weight: bold; color: white; background: #ccc; }
+    .rank-1 { background: #FFD700; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+    .rank-2 { background: #C0C0C0; }
+    .rank-3 { background: #CD7F32; }
+</style>
+{% endblock %}
+
+{% block content %}
 <header>
     <div>
         <h1 style="margin:0;">🍳 廚房出餐看板 Pro</h1>
@@ -173,7 +172,9 @@
 </div>
 
 <audio id="newOrderSound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+{% endblock %}
 
+{% block scripts %}
 <script>
     let lastMaxSeq = 0;
     let currentPrintOid = null;
@@ -402,7 +403,4 @@
         }
     }
 </script>
-
-</body>
-</html>
-
+{% endblock %}
