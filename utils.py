@@ -244,7 +244,7 @@ def run_maintenance_tasks(app):
             if now_obj >= next_ping_time:
                 # 1. Ping 網站
                 try:
-                    urllib.request.urlopen("https://qr-mbdv.onrender.com/", timeout=5)
+                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com/", timeout=5)
                     print(f"[{now_str}] ✅ Web Ping 成功")
                 except Exception: 
                     pass 
@@ -268,4 +268,5 @@ def run_maintenance_tasks(app):
 def start_background_tasks(app):
     t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
     t.start()
+
 
