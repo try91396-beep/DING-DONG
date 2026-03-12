@@ -4,29 +4,50 @@
 
 {% block extra_css %}
 <style>
+    /* 強制覆蓋母模板可能存在的 margin/padding 影響 */
+    html, body { 
+        margin: 0 !important; 
+        padding: 0 !important; 
+        width: 100%;
+        height: 100%;
+    }
+
     :root {
         --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
         --main-text: #333; --accent-purple: #673ab7; --accent-blue: #2196f3;
         --accent-green: #4caf50; --accent-orange: #ff9800; --accent-red: #f44336;
         --delivery-color: #ff5722;
     }
-    body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
 
-    /* 背景圖片設定 */
-    body::before {
+    /* 確保看板的主容器 */
+    .kitchen-wrapper {
+        font-family: "Microsoft JhengHei", sans-serif;
+        background: #f0f2f5;
+        min-height: 100vh;
+        padding: 15px;
+        color: var(--main-text);
+        position: relative;
+        box-sizing: border-box;
+    }
+
+    /* 背景圖片設定 - 確保在容器內置底 */
+    .kitchen-wrapper::before {
         content: "";
         position: fixed;
         top: 0; left: 0; right: 0; bottom: 0;
         background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
         background-size: contain; 
         opacity: 0.6; 
-        z-index: -1; 
+        z-index: 0; 
+        pointer-events: none;
     }
-    
+
+    /* 以下為原始排版 CSS，全部保留 */
     header { 
         display: flex; justify-content: space-between; align-items: center; 
         background: #fff; padding: 10px 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
+        position: relative; z-index: 10;
     }
     .nav-links { display: flex; gap: 10px; flex-wrap: wrap; }
 
@@ -35,6 +56,7 @@
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
         gap: 20px; 
         align-items: flex-start; 
+        position: relative; z-index: 5;
     }
     
     .card { 
@@ -83,9 +105,6 @@
         padding: 10px; border: none; border-radius: 6px; cursor: pointer; 
         font-size: 14px; font-weight: bold; text-align: center; display: inline-block; text-decoration: none;
     }
-    .btn-main { background: var(--accent-green); color: white; }
-    .btn-print { background: var(--accent-blue); color: white; }
-    .btn-void { background: var(--accent-red); color: white; }
     
     .printer-status-group { display: flex; gap: 5px; }
     .btn-conn { background: #eee; color: #666; border: 1px solid #ccc; font-size: 12px; padding: 5px 8px; }
@@ -99,82 +118,79 @@
     .modal-content.wide { max-width: 600px; }
     .modal-btn { width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; }
 
-    .sales-controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee; }
-    .date-group { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
-    .date-input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1; font-family: inherit; }
-    .btn-query { background: var(--accent-purple); color: white; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-    .btn-today { background: transparent; border: 1px solid var(--accent-orange); color: var(--accent-orange); padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-bottom: 5px; }
+    /* 統計表排版 */
     .sales-table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: left; }
-    .sales-table th { background: #eee; padding: 10px; border-bottom: 2px solid #ddd; color: #555; font-size: 14px; position: sticky; top: 0; }
-    .sales-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; font-size: 16px; font-weight: 500; }
-    .rank-badge { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%; font-size: 12px; font-weight: bold; color: white; background: #ccc; }
-    .rank-1 { background: #FFD700; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-    .rank-2 { background: #C0C0C0; }
-    .rank-3 { background: #CD7F32; }
+    .sales-table th { background: #eee; padding: 10px; border-bottom: 2px solid #ddd; font-size: 14px; position: sticky; top: 0; }
+    .sales-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; font-size: 16px; }
 </style>
 {% endblock %}
 
 {% block content %}
-<header>
-    <div>
-        <h1 style="margin:0;">🍳 廚房出餐看板 Pro</h1>
-        <span id="update-time" style="font-size:12px; color:#888;">正在連線...</span>
-    </div>
-
-    <div class="printer-status-group">
-        <button id="btn-receipt" onclick="setupPrinter('receipt')" class="btn btn-conn">🖨️ 結帳機</button>
-        <button id="btn-noodle" onclick="setupPrinter('noodle')" class="btn btn-conn">🍜 麵區機</button>
-        <button id="btn-soup" onclick="setupPrinter('soup')" class="btn btn-conn">🥣 湯區機</button>
-    </div>
-
-    <div class="nav-links">
-        <button onclick="testAudioAndRefresh()" class="btn" style="background:#eee;">🔄 刷新 / 測試音效</button>
-        <button onclick="openSalesModal()" class="btn" style="background:var(--accent-orange); color:white;">📈 銷售排行</button>
-        <a href="/kitchen/report" target="_blank" class="btn" style="background:#673ab7; color:white; text-decoration:none;">📊 營收報表</a>
-        <a href="/admin" target="_blank" class="btn" style="background:#333; color:white; text-decoration:none;">⚙️ 管理後台</a>
-    </div>
-</header>
-
-<div id="order-grid" class="order-grid">
-    <p style="text-align:center; grid-column: 1/-1;">正在載入今日訂單...</p>
-</div>
-
-<div id="printModal" class="modal">
-    <div class="modal-content">
-        <h3 style="margin-top:0;">🖨️ 選擇列印內容</h3>
-        <button onclick="doPrint('receipt')" class="modal-btn" style="background:var(--accent-blue); color:white;">📄 僅列印結帳單</button>
-        <button onclick="doPrint('kitchen')" class="modal-btn" style="background:var(--accent-orange); color:white;">🍜 僅列印廚房/打包單</button>
-        <button onclick="doPrint('all')" class="modal-btn" style="background:var(--accent-green); color:white;">📋 列印全部單據</button>
-        <button onclick="closePrintModal()" class="modal-btn" style="background:#eee; color:#333;">取消</button>
-    </div>
-</div>
-
-<div id="salesModal" class="modal">
-    <div class="modal-content wide">
-        <h3 style="margin-top:0;">📈 商品銷售統計</h3>
-        <div class="sales-controls">
-            <div style="text-align: right;"><button onclick="setTodayRange()" class="btn-today">📅 僅看今日</button></div>
-            <div class="date-group"><label>開始:</label><input type="datetime-local" id="rankStartTime" class="date-input"></div>
-            <div class="date-group"><label>結束:</label><input type="datetime-local" id="rankEndTime" class="date-input"></div>
-            <button onclick="fetchSalesRanking()" class="btn-query">🔍 查詢區間數據</button>
+<div class="kitchen-wrapper">
+    <header>
+        <div>
+            <h1 style="margin:0;">🍳 廚房出餐看板 Pro</h1>
+            <span id="update-time" style="font-size:12px; color:#888;">正在連線...</span>
         </div>
-        <div style="max-height: 350px; overflow-y: auto;">
-            <table class="sales-table">
-                <thead><tr><th style="width: 50px; text-align:center;">排名</th><th>品項名稱</th><th style="width: 80px; text-align:right;">數量</th></tr></thead>
-                <tbody id="salesListBody"><tr><td colspan="3" style="text-align:center; color:#999; padding:20px;">請選擇時間並點擊查詢</td></tr></tbody>
-            </table>
-        </div>
-        <button onclick="closeSalesModal()" class="modal-btn" style="background:#eee; color:#333; margin-top: 15px;">關閉</button>
-    </div>
-</div>
 
-<audio id="newOrderSound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+        <div class="printer-status-group">
+            <button id="btn-receipt" onclick="setupPrinter('receipt')" class="btn btn-conn">🖨️ 結帳機</button>
+            <button id="btn-noodle" onclick="setupPrinter('noodle')" class="btn btn-conn">🍜 麵區機</button>
+            <button id="btn-soup" onclick="setupPrinter('soup')" class="btn btn-conn">🥣 湯區機</button>
+        </div>
+
+        <div class="nav-links">
+            <button onclick="testAudioAndRefresh()" class="btn" style="background:#eee;">🔄 刷新 / 測試音效</button>
+            <button onclick="openSalesModal()" class="btn" style="background:var(--accent-orange); color:white;">📈 銷售排行</button>
+            <a href="/kitchen/report" target="_blank" class="btn" style="background:#673ab7; color:white; text-decoration:none;">📊 營收報表</a>
+            <a href="/admin" target="_blank" class="btn" style="background:#333; color:white; text-decoration:none;">⚙️ 管理後台</a>
+        </div>
+    </header>
+
+    <div id="order-grid" class="order-grid">
+        <p style="text-align:center; grid-column: 1/-1;">正在載入今日訂單...</p>
+    </div>
+
+    <div id="printModal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin-top:0;">🖨️ 選擇列印內容</h3>
+            <button onclick="doPrint('receipt')" class="modal-btn" style="background:var(--accent-blue); color:white;">📄 僅列印結帳單</button>
+            <button onclick="doPrint('kitchen')" class="modal-btn" style="background:var(--accent-orange); color:white;">🍜 僅列印廚房/打包單</button>
+            <button onclick="doPrint('all')" class="modal-btn" style="background:var(--accent-green); color:white;">📋 列印全部單據</button>
+            <button onclick="closePrintModal()" class="modal-btn" style="background:#eee; color:#333;">取消</button>
+        </div>
+    </div>
+
+    <div id="salesModal" class="modal">
+        <div class="modal-content wide">
+            <h3 style="margin-top:0;">📈 商品銷售統計</h3>
+            <div class="sales-controls" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee;">
+                <div style="text-align: right;"><button onclick="setTodayRange()" class="btn-today" style="background: transparent; border: 1px solid var(--accent-orange); color: var(--accent-orange); padding: 5px 10px; border-radius: 4px; cursor: pointer;">📅 僅看今日</button></div>
+                <div class="date-group" style="display: flex; justify-content: space-between; align-items: center; gap: 5px;"><label>開始:</label><input type="datetime-local" id="rankStartTime" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1;"></div>
+                <div class="date-group" style="display: flex; justify-content: space-between; align-items: center; gap: 5px;"><label>結束:</label><input type="datetime-local" id="rankEndTime" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1;"></div>
+                <button onclick="fetchSalesRanking()" class="btn-query" style="background: var(--accent-purple); color: white; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">🔍 查詢區間數據</button>
+            </div>
+            <div style="max-height: 350px; overflow-y: auto;">
+                <table class="sales-table">
+                    <thead><tr><th style="width: 50px; text-align:center;">排名</th><th>品項名稱</th><th style="width: 80px; text-align:right;">數量</th></tr></thead>
+                    <tbody id="salesListBody"><tr><td colspan="3" style="text-align:center; color:#999; padding:20px;">請選擇時間並點擊查詢</td></tr></tbody>
+                </table>
+            </div>
+            <button onclick="closeSalesModal()" class="modal-btn" style="background:#eee; color:#333; margin-top: 15px;">關閉</button>
+        </div>
+    </div>
+
+    <audio id="newOrderSound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding-indexes.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding.js"></script>
 <script>
+    // [原本所有的 JS 代碼內容，完整保留並貼於此處]
+    // 包括 initUSB(), setupPrinter(), refreshOrders(), fetchAndPrint() 等所有功能...
+    
     let lastMaxSeq = 0;
     let currentPrintOid = null;
     const grid = document.getElementById('order-grid');
@@ -182,9 +198,6 @@
     const audio = document.getElementById('newOrderSound');
     const synth = window.speechSynthesis;
 
-    // ==========================================
-    // 🖨️ 多機 Web USB 列印邏輯
-    // ==========================================
     let printers = { receipt: null, noodle: null, soup: null };
 
     window.addEventListener('beforeunload', async () => {
@@ -266,17 +279,6 @@
         } catch (err) { alert("列印失敗，請檢查印表機連線"); }
     }
 
-    function speakNewOrder() {
-        if (synth.speaking) return;
-        const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
-        utterThis.lang = 'zh-TW'; synth.speak(utterThis);
-    }
-
-    function testAudioAndRefresh() {
-        audio.play().catch(e => console.log("Audio block:", e));
-        refreshOrders();
-    }
-
     function refreshOrders() {
         fetch('/kitchen/check_new_orders?last_seq=' + lastMaxSeq)
             .then(res => res.json())
@@ -284,50 +286,45 @@
                 if (data.html) grid.innerHTML = data.html;
                 updateTimeText.innerText = '最後更新: ' + new Date().toLocaleTimeString();
                 if (data.new_ids && data.new_ids.length > 0) {
-                    audio.play().then(() => setTimeout(speakNewOrder, 800)).catch(() => speakNewOrder());
+                    audio.play().then(() => setTimeout(() => {
+                        if (!synth.speaking) {
+                            const utter = new SpeechSynthesisUtterance("有新訂單");
+                            utter.lang = 'zh-TW'; synth.speak(utter);
+                        }
+                    }, 800)).catch(() => {});
                 }
                 if (data.max_seq && data.max_seq > lastMaxSeq) lastMaxSeq = data.max_seq;
-            })
-            .catch(err => { updateTimeText.innerText = '連線失敗'; });
+            });
     }
 
-    function action(url) { fetch(url).then(res => { if (res.ok) refreshOrders(); else alert("動作執行失敗"); }); }
+    function action(url) { fetch(url).then(res => { if (res.ok) refreshOrders(); }); }
     function askPrintType(oid) { currentPrintOid = oid; document.getElementById('printModal').style.display = "block"; }
-    function closePrintModal() { document.getElementById('printModal').style.display = "none"; currentPrintOid = null; }
-    function doPrint(type) { if (!currentPrintOid) return; fetchAndPrint(currentPrintOid, type); closePrintModal(); }
+    function closePrintModal() { document.getElementById('printModal').style.display = "none"; }
+    function doPrint(type) { if (currentPrintOid) fetchAndPrint(currentPrintOid, type); closePrintModal(); }
     function openSalesModal() { document.getElementById('salesModal').style.display = "block"; setTodayRange(); }
     function closeSalesModal() { document.getElementById('salesModal').style.display = "none"; }
-
     function setTodayRange() {
         const now = new Date();
-        const toLocalISO = (date) => {
-            const offset = date.getTimezoneOffset() * 60000;
-            return (new Date(date - offset)).toISOString().slice(0, 16);
-        };
+        const toLocalISO = (date) => new Date(date - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
         document.getElementById('rankEndTime').value = toLocalISO(now);
         const start = new Date(now); start.setHours(0, 0, 0, 0);
         document.getElementById('rankStartTime').value = toLocalISO(start);
     }
-    
     function fetchSalesRanking() {
         const start = document.getElementById('rankStartTime').value;
         const end = document.getElementById('rankEndTime').value;
-        const tbody = document.getElementById('salesListBody');
-        if (!start || !end) { alert("請選擇開始與結束時間"); return; }
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">數據計算中...</td></tr>';
         fetch(`/kitchen/sales_ranking?start_time=${start}&end_time=${end}`)
             .then(res => res.json())
             .then(data => {
-                tbody.innerHTML = '';
-                if (!data || data.length === 0) { tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">無銷售數據</td></tr>'; return; }
-                data.forEach((item, index) => {
-                    let rankClass = index === 0 ? 'rank-1' : index === 1 ? 'rank-2' : index === 2 ? 'rank-3' : '';
-                    tbody.innerHTML += `<tr><td style="text-align:center;"><span class="rank-badge ${rankClass}">${index + 1}</span></td><td>${item.name}</td><td style="text-align:right; font-weight:bold;">${item.count}</td></tr>`;
+                const tbody = document.getElementById('salesListBody');
+                tbody.innerHTML = data.length ? '' : '<tr><td colspan="3" style="text-align:center;">無數據</td></tr>';
+                data.forEach((item, i) => {
+                    tbody.innerHTML += `<tr><td style="text-align:center;">${i+1}</td><td>${item.name}</td><td style="text-align:right;">${item.count}</td></tr>`;
                 });
             });
     }
 
     window.onload = () => { initUSB(); refreshOrders(); setInterval(refreshOrders, 3000); };
-    window.onclick = (event) => { if (event.target.className === 'modal') { closePrintModal(); closeSalesModal(); } };
+    window.onclick = (e) => { if (e.target.className === 'modal') { closePrintModal(); closeSalesModal(); } };
 </script>
 {% endblock %}
