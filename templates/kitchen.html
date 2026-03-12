@@ -2,10 +2,7 @@
 
 {% block title %}🍳 廚房出餐看板 Pro (多機 USB 自動列印版){% endblock %}
 
-{% block head %}
-<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding-indexes.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding.js"></script>
-
+{% block extra_css %}
 <style>
     :root {
         --pending: #fff4e5; --completed: #e8f5e9; --cancelled: rgba(244, 67, 54, 0.15);
@@ -15,13 +12,13 @@
     }
     body { font-family: "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: var(--main-text); }
 
-    /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
+    /* 背景圖片設定 */
     body::before {
         content: "";
         position: fixed;
         top: 0; left: 0; right: 0; bottom: 0;
         background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
-        background-size: contain; /*縮放至完整*/ 
+        background-size: contain; 
         opacity: 0.6; 
         z-index: -1; 
     }
@@ -174,7 +171,9 @@
 <audio id="newOrderSound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 {% endblock %}
 
-{% block scripts %}
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding-indexes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/text-encoding-utf-8@1.0.2/lib/encoding.js"></script>
 <script>
     let lastMaxSeq = 0;
     let currentPrintOid = null;
@@ -184,24 +183,17 @@
     const synth = window.speechSynthesis;
 
     // ==========================================
-    // 🖨️ 多機 Web USB 列印邏輯 (含修復切換頁面衝突)
+    // 🖨️ 多機 Web USB 列印邏輯
     // ==========================================
-    let printers = {
-        receipt: null,
-        noodle: null,
-        soup: null
-    };
+    let printers = { receipt: null, noodle: null, soup: null };
 
-    // --- 新增：優雅釋放 USB 裝置 (解決跳轉頁面衝突) ---
     window.addEventListener('beforeunload', async () => {
         for (let key in printers) {
             if (printers[key] && printers[key].opened) {
                 try {
                     await printers[key].releaseInterface(0);
                     await printers[key].close();
-                } catch (err) {
-                    console.error("釋放裝置失敗:", err);
-                }
+                } catch (err) { console.error("釋放裝置失敗:", err); }
             }
         }
     });
@@ -209,12 +201,8 @@
     async function initUSB() {
         try {
             const devices = await navigator.usb.getDevices();
-            for (let device of devices) {
-                await autoAssignDevice(device);
-            }
-        } catch (err) {
-            console.warn("自動喚回 USB 失敗:", err);
-        }
+            for (let device of devices) { await autoAssignDevice(device); }
+        } catch (err) { console.warn("自動喚回 USB 失敗:", err); }
     }
 
     async function autoAssignDevice(device) {
@@ -222,61 +210,39 @@
             if (!device.opened) await device.open();
             await device.selectConfiguration(1);
             await device.claimInterface(0);
-            
             const sn = device.serialNumber || device.productName;
-            if (localStorage.getItem('usb_receipt') === sn) {
-                printers.receipt = device;
-                updatePrinterUI('receipt', true);
-            } else if (localStorage.getItem('usb_noodle') === sn) {
-                printers.noodle = device;
-                updatePrinterUI('noodle', true);
-            } else if (localStorage.getItem('usb_soup') === sn) {
-                printers.soup = device;
-                updatePrinterUI('soup', true);
-            }
-        } catch (e) {
-            console.error("分配裝置失敗", e);
-        }
+            if (localStorage.getItem('usb_receipt') === sn) { printers.receipt = device; updatePrinterUI('receipt', true); }
+            else if (localStorage.getItem('usb_noodle') === sn) { printers.noodle = device; updatePrinterUI('noodle', true); }
+            else if (localStorage.getItem('usb_soup') === sn) { printers.soup = device; updatePrinterUI('soup', true); }
+        } catch (e) { console.error("分配裝置失敗", e); }
     }
 
     async function setupPrinter(type) {
         try {
             const device = await navigator.usb.requestDevice({ filters: [] });
-            
-            // 修復：如果裝置已開啟，先嘗試關閉它
             if (device.opened) await device.close();
-
             await device.open();
             await device.selectConfiguration(1);
-            
-            try {
-                await device.claimInterface(0);
-            } catch (claimErr) {
-                alert("⚠️ 無法佔用裝置：裝置可能正被其他頁面使用。請關閉所有報表分頁後重試。");
+            try { await device.claimInterface(0); } catch (claimErr) {
+                alert("⚠️ 無法佔用裝置：裝置可能正被其他頁面使用。");
                 return;
             }
-            
             printers[type] = device;
             const sn = device.serialNumber || device.productName;
             localStorage.setItem('usb_' + type, sn);
-            
             updatePrinterUI(type, true);
             alert(`${type} 印表機設定成功！`);
-        } catch (err) {
-            alert("設定失敗: " + err.message);
-        }
+        } catch (err) { alert("設定失敗: " + err.message); }
     }
 
     function updatePrinterUI(type, isOnline) {
         const btn = document.getElementById('btn-' + type);
         if (isOnline) {
-            btn.classList.add('online');
-            btn.classList.remove('offline');
+            btn.classList.add('online'); btn.classList.remove('offline');
             const sn = printers[type].serialNumber || "已連線";
             btn.innerText = `✅ ${type === 'receipt' ? '結帳' : type === 'noodle' ? '麵區' : '湯區'} (${sn.slice(-4)})`;
         } else {
-            btn.classList.remove('online');
-            btn.classList.add('offline');
+            btn.classList.remove('online'); btn.classList.add('offline');
             btn.innerText = `🔌 設定${type === 'receipt' ? '結帳' : type === 'noodle' ? '麵區' : '湯區'}`;
         }
     }
@@ -286,38 +252,24 @@
         try {
             const response = await fetch(url);
             const data = await response.json();
-
             if (data.status === "success" && data.tasks) {
                 for (let [role, b64] of Object.entries(data.tasks)) {
                     if (!b64) continue;
                     const bytes = new Uint8Array(atob(b64).split("").map(c => c.charCodeAt(0)));
-                    
-                    let targetDevice = null;
-                    if (role === 'receipt') targetDevice = printers.receipt;
-                    else if (role === 'noodle') targetDevice = printers.noodle || printers.receipt;
-                    else if (role === 'soup') targetDevice = printers.soup || printers.receipt;
-                    else targetDevice = printers.receipt;
-
+                    let targetDevice = role === 'receipt' ? printers.receipt : (role === 'noodle' ? (printers.noodle || printers.receipt) : (printers.soup || printers.receipt));
                     if (targetDevice && targetDevice.opened) {
                         const endpoint = targetDevice.configuration.interfaces[0].alternates[0].endpoints.find(e => e.direction === 'out').endpointNumber;
                         await targetDevice.transferOut(endpoint, bytes);
                     }
                 }
             }
-        } catch (err) {
-            console.error("列印失敗:", err);
-            alert("列印失敗，請檢查印表機連線");
-        }
+        } catch (err) { alert("列印失敗，請檢查印表機連線"); }
     }
 
-    // ==========================================
-    // 🔊 音效、播報與刷新 (功能完整保留)
-    // ==========================================
     function speakNewOrder() {
         if (synth.speaking) return;
         const utterThis = new SpeechSynthesisUtterance("有新訂單，請注意");
-        utterThis.lang = 'zh-TW'; utterThis.rate = 1; 
-        synth.speak(utterThis);
+        utterThis.lang = 'zh-TW'; synth.speak(utterThis);
     }
 
     function testAudioAndRefresh() {
@@ -339,28 +291,13 @@
             .catch(err => { updateTimeText.innerText = '連線失敗'; });
     }
 
-    function action(url) {
-        fetch(url).then(res => { if (res.ok) refreshOrders(); else alert("動作執行失敗"); });
-    }
-
-    function askPrintType(oid) {
-        currentPrintOid = oid;
-        document.getElementById('printModal').style.display = "block";
-    }
-
-    function closePrintModal() {
-        document.getElementById('printModal').style.display = "none";
-        currentPrintOid = null;
-    }
-
-    function doPrint(type) {
-        if (!currentPrintOid) return;
-        fetchAndPrint(currentPrintOid, type);
-        closePrintModal();
-    }
-
+    function action(url) { fetch(url).then(res => { if (res.ok) refreshOrders(); else alert("動作執行失敗"); }); }
+    function askPrintType(oid) { currentPrintOid = oid; document.getElementById('printModal').style.display = "block"; }
+    function closePrintModal() { document.getElementById('printModal').style.display = "none"; currentPrintOid = null; }
+    function doPrint(type) { if (!currentPrintOid) return; fetchAndPrint(currentPrintOid, type); closePrintModal(); }
     function openSalesModal() { document.getElementById('salesModal').style.display = "block"; setTodayRange(); }
     function closeSalesModal() { document.getElementById('salesModal').style.display = "none"; }
+
     function setTodayRange() {
         const now = new Date();
         const toLocalISO = (date) => {
@@ -390,17 +327,7 @@
             });
     }
 
-    window.onload = () => {
-        initUSB();
-        refreshOrders();
-        setInterval(refreshOrders, 3000);
-    };
-
-    window.onclick = function(event) {
-        if (event.target.className === 'modal') {
-            closePrintModal();
-            closeSalesModal();
-        }
-    }
+    window.onload = () => { initUSB(); refreshOrders(); setInterval(refreshOrders, 3000); };
+    window.onclick = (event) => { if (event.target.className === 'modal') { closePrintModal(); closeSalesModal(); } };
 </script>
 {% endblock %}
