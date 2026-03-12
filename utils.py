@@ -275,11 +275,11 @@ def start_background_tasks(app):
 # ==========================================
 def inject_user_info():
     """
-    上下文處理器：自動將當前登入者名稱與對應的登出網址，注入到所有 HTML 模板中。
-    這樣就不必在每個 render_template 手動傳遞了！
+    上下文處理器：自動將當前登入者名稱、角色與對應的登出網址，注入到所有 HTML 模板中。
     """
-    # 1. 取得當前登入的帳號 (如果沒登入就是 None)
+    # 1. 取得當前登入的帳號與角色 (如果沒登入就是 None)
     current_username = session.get('username')
+    current_role = session.get('role', '未知角色') # 💡 新增：取得角色，若無則顯示 '未知角色'
     
     # 2. 自動判斷現在使用者在哪個藍圖 (admin, kitchen, 或是 try_debug)
     current_bp = request.blueprint
@@ -297,5 +297,6 @@ def inject_user_info():
     # 回傳的字典，裡面的 Key 就是可以在 HTML 裡直接使用的變數名稱
     return {
         'current_username': current_username,
+        'current_role': current_role,  # 💡 新增：將 current_role 傳遞給前端 HTML
         'logout_url': logout_url
     }
