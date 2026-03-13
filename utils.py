@@ -89,7 +89,8 @@ def send_daily_report(app, manual_config=None, is_test=False):
             today_str = tw_now.strftime('%Y-%m-%d')
 
             if is_test:
-                # ... (省略測試信內容)
+                subject = f"【測試】Resend API 設定確認 ({today_str})"
+                email_content = f"✅ Resend API 連線成功！\n\n寄件者: {sender_email}\n收件者: {to_email}\n此為測試信件。"
             else:
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 utc_start = tw_start - timedelta(hours=8)
@@ -245,6 +246,7 @@ def inject_user_info():
         'current_role': current_role,
         'logout_url': logout_url
     }
+
 
 
 
