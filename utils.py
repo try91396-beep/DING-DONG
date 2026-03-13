@@ -58,7 +58,7 @@ def role_required(*allowed_roles):
     return decorator
 
 # ==========================================
-# 1. Email 報告發送核心 (新增作廢明細版)
+# 1. Email 報告發送核心 (完整 Resend API 版)
 # ==========================================
 def send_daily_report(app, manual_config=None, is_test=False):
     """發送日結報告，包含有效與作廢明細"""
@@ -70,7 +70,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
             conn = get_db_connection()
             cur = conn.cursor()
             
-            # --- (省略：讀取 config 與 api_key 邏輯，同原版) ---
+            # --- 讀取 config 與 api_key 邏輯 ---
             if manual_config:
                 config = manual_config
             else:
@@ -82,6 +82,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
             sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
 
             if not api_key or not to_email:
+                print("❌ Email 發送失敗：缺少 API Key 或 收件人設定")
                 return "❌ 設定不完整"
 
             utc_now = datetime.utcnow()
@@ -94,7 +95,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
             else:
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 utc_start = tw_start - timedelta(hours=8)
-                utc_end = utc_start + timedelta(hours=24) # 簡化計算
+                utc_end = utc_start + timedelta(hours=24) 
                 time_filter = f"created_at >= '{utc_start}' AND created_at < '{utc_end}'"
 
                 # 1. 計算有效訂單總計與明細
@@ -116,14 +117,14 @@ def send_daily_report(app, manual_config=None, is_test=False):
                             v_stats[name] = v_stats.get(name, 0) + qty
                     except: pass
 
-                # 2. 【新增】計算作廢訂單總計與明細
+                # 2. 計算作廢訂單總計與明細
                 cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
                 x_res = cur.fetchone()
                 x_count, x_total = (x_res[0] or 0), (x_res[1] or 0)
 
                 cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status = 'Cancelled'")
                 x_rows = cur.fetchall()
-                x_stats = {} # 儲存作廢明細
+                x_stats = {} 
                 for r in x_rows:
                     if not r[0]: continue
                     try:
@@ -135,7 +136,7 @@ def send_daily_report(app, manual_config=None, is_test=False):
                             x_stats[name] = x_stats.get(name, 0) + qty
                     except: pass
 
-                # 格式化輸出文字
+                # 格式化文字
                 v_sorted = sorted(v_stats.items(), key=lambda x: x[1], reverse=True)
                 v_text = "\n".join([f"• {k}: {v}" for k, v in v_sorted]) if v_sorted else "(無銷量)"
                 
@@ -155,14 +156,33 @@ def send_daily_report(app, manual_config=None, is_test=False):
                     f"※ 總計實收: ${int(v_total):,}"
                 )
 
-            # --- (發送 API 請求邏輯，同原版) ---
-            # ... payload, headers, urllib.request ...
+            # --- Resend API 發送邏輯 ---
+            url = "https://api.resend.com/emails"
+            payload = {
+                "from": sender_email,
+                "to": to_email,
+                "subject": subject,
+                "text": email_content
+            }
             
-            # (此處省略重複的 urllib 發送程式碼)
-            return "✅ 發送成功"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+            
+            # 處理 SSL (Render/Aiven 環境建議)
+            gcontext = ssl.create_default_context()
+            
+            with urllib.request.urlopen(req, context=gcontext) as response:
+                res_body = response.read().decode('utf-8')
+                print(f"✅ Email 發送成功: {response.getcode()}")
+                return "✅ 發送成功"
 
         except Exception as e:
             print(f"❌ Email 任務出錯: {e}")
+            traceback.print_exc()
             return f"❌ 錯誤: {str(e)}"
         finally:
             if cur: cur.close()
@@ -185,7 +205,7 @@ def run_maintenance_tasks(app):
             now_obj = datetime.now()
             now_str = now_obj.strftime("%H:%M:%S")
 
-            # --- A. 自動發信檢查 ---
+            # --- A. 自動發信檢查 (台灣時間) ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
             target_times = ["13:00", "18:00", "20:30", "11:33"]
@@ -199,16 +219,16 @@ def run_maintenance_tasks(app):
             if now_obj >= next_ping_time:
                 # 1. Ping 網站
                 try:
-                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
+                    urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=10)
                     print(f"[{now_str}] ✅ Web Ping 成功")
-                except Exception: 
+                except Exception as e: 
                     print(f"[{now_str}] ⚠️ Web Ping 失敗: {e}")
                 
-                # 2. Ping Aiven 資料庫 (發送真實指令維持連線)
+                # 2. Ping Aiven 資料庫
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
-                        cur.execute("SELECT 1;") # Aiven 需要實際 Query 才能保活
+                        cur.execute("SELECT 1;") 
                         cur.fetchone()
                     conn.close()
                     print(f"[{now_str}] 💓 Aiven DB Heartbeat 成功 (SELECT 1)")
@@ -217,7 +237,7 @@ def run_maintenance_tasks(app):
                 
                 next_ping_time = now_obj + timedelta(seconds=300)
 
-            time.sleep(30) # 縮短掃描間隔，確保不漏掉 target_times
+            time.sleep(30) 
         except Exception as e:
             print(f"⚠️ 背景任務主要迴圈錯誤: {e}")
             time.sleep(60)
@@ -246,9 +266,3 @@ def inject_user_info():
         'current_role': current_role,
         'logout_url': logout_url
     }
-
-
-
-
-
-
