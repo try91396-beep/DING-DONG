@@ -208,7 +208,7 @@ def run_maintenance_tasks(app):
             # --- A. 自動發信檢查 (台灣時間) ---
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
-            target_times = ["13:00", "18:00", "20:30", "11:33"]
+            target_times = ["13:00", "18:00", "20:30"]
             
             if current_hm in target_times and current_hm != last_sent_time:
                 print(f"[{current_hm}] ⏰ 執行自動發信...")
@@ -266,3 +266,4 @@ def inject_user_info():
         'current_role': current_role,
         'logout_url': logout_url
     }
+
