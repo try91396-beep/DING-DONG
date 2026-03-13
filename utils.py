@@ -9,25 +9,22 @@ from datetime import datetime, timedelta
 from database import get_db_connection
 
 # === 🛡️ 引入 Flask 相關工具 ===
-from flask import session, redirect, url_for, request, jsonify
+from flask import session, redirect, url_for, request, jsonify, has_request_context
 from functools import wraps
 from werkzeug.routing import BuildError
 
 # ==========================================
-# 0. 🛡️ 多重權限防護罩系統 (Decorators)
+# 0. 🛡️ 權限防護罩
 # ==========================================
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
             if request.is_json or request.path.startswith('/api/'):
-                return jsonify({'success': False, 'error': 'Unauthorized: 請先登入'}), 401
+                return jsonify({'success': False, 'error': 'Unauthorized'}), 401
             bp = request.blueprint or ''
-            if bp in ['admin', 'kitchen', 'try', 'try_debug']:
-                # 修正：try 藍圖通常對應 try_debug.login
-                target = 'try_debug.login' if bp in ['try', 'try_debug'] else f'{bp}.login'
-                return redirect(url_for(target))
-            return redirect(url_for('admin.login'))
+            target = 'try_debug.login' if bp in ['try', 'try_debug'] else f'{bp}.login'
+            return redirect(url_for(target) if bp else url_for('admin.login'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -37,25 +34,32 @@ def role_required(*allowed_roles):
         def decorated_function(*args, **kwargs):
             if 'user_id' not in session:
                 bp = request.blueprint or ''
-                login_route = f'{bp}.login' if bp in ['kitchen', 'try_debug'] else 'admin.login'
-                return redirect(url_for(login_route))
+                return redirect(url_for(f'{bp}.login' if bp else 'admin.login'))
             if session.get('role') not in allowed_roles:
-                return "<h3>❌ 權限不足</h3> <a href='javascript:history.back()'>回上一頁</a>", 403
+                return "<h3>❌ 權限不足</h3>", 403
             return f(*args, **kwargs)
         return decorated_function
     return decorator
 
 # ==========================================
-# 1. Email 報告發送核心 (加入值班人員資訊)
+# 1. Email 報告發送核心 (穩定版)
 # ==========================================
 def send_daily_report(app, manual_config=None, is_test=False):
     conn, cur = None, None
+    # 建立一個應用的上下文，確保資料庫連線正常
     with app.app_context():
         try:
-            # 取得當前操作者 (如果是手動觸發才有 session)
-            operator_name = session.get('username', '系統自動發送')
-            operator_role = session.get('role', 'System')
+            # 💡 安全抓取人員資訊：判斷是否在 Request 上下文中
+            operator_name = "系統自動發送"
+            operator_role = "System"
             
+            if has_request_context():
+                try:
+                    operator_name = session.get('username', '系統自動發送')
+                    operator_role = session.get('role', 'System')
+                except Exception:
+                    pass
+
             conn = get_db_connection()
             cur = conn.cursor()
             
@@ -71,13 +75,14 @@ def send_daily_report(app, manual_config=None, is_test=False):
             sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
 
             if not api_key or not to_email:
+                print("⚠️ Email 設定不完整，取消任務")
                 return "❌ 設定不完整"
 
             tw_now = datetime.utcnow() + timedelta(hours=8)
             today_str = tw_now.strftime('%Y-%m-%d')
 
             if is_test:
-                subject = f"【測試】Resend API 設定確認 ({today_str})"
+                subject = f"【測試】Resend API 連線確認 ({today_str})"
                 email_content = (
                     f"👤 值班人員: {operator_name} ({operator_role})\n"
                     f"------------------------\n"
@@ -86,18 +91,22 @@ def send_daily_report(app, manual_config=None, is_test=False):
                     f"收件者: {to_email}"
                 )
             else:
-                # 時間過濾器 (台灣當日 00:00 ~ 23:59)
+                # 修正時間區間：確保涵蓋整天
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 utc_start = tw_start - timedelta(hours=8)
                 utc_end = utc_start + timedelta(hours=24)
-                time_filter = f"created_at >= '{utc_start}' AND created_at < '{utc_end}'"
+                
+                # 使用參數化查詢防止潛在錯誤
+                time_filter = "created_at >= %s AND created_at < %s"
+                params = (utc_start, utc_end)
 
-                # 1. 有效訂單統計
-                cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+                # 1. 有效訂單
+                cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'", params)
                 v_res = cur.fetchone()
-                v_count, v_total = (v_res[0] or 0), (v_res[1] or 0)
+                v_count = v_res[0] or 0
+                v_total = float(v_res[1] or 0)
 
-                cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'")
+                cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'", params)
                 v_rows = cur.fetchall()
                 v_stats = {}
                 for r in v_rows:
@@ -107,14 +116,15 @@ def send_daily_report(app, manual_config=None, is_test=False):
                         for i in items:
                             name = i.get('name_zh', i.get('name', '未知'))
                             v_stats[name] = v_stats.get(name, 0) + int(i.get('qty', 0))
-                    except: pass
+                    except: continue
 
-                # 2. 作廢訂單統計
-                cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'")
+                # 2. 作廢訂單
+                cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'", params)
                 x_res = cur.fetchone()
-                x_count, x_total = (x_res[0] or 0), (x_res[1] or 0)
+                x_count = x_res[0] or 0
+                x_total = float(x_res[1] or 0)
 
-                cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status = 'Cancelled'")
+                cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status = 'Cancelled'", params)
                 x_rows = cur.fetchall()
                 x_stats = {}
                 for r in x_rows:
@@ -124,14 +134,11 @@ def send_daily_report(app, manual_config=None, is_test=False):
                         for i in items:
                             name = i.get('name_zh', i.get('name', '未知'))
                             x_stats[name] = x_stats.get(name, 0) + int(i.get('qty', 0))
-                    except: pass
+                    except: continue
 
-                # 格式化品項文字
-                v_list = sorted(v_stats.items(), key=lambda x:x[1], reverse=True)
-                v_text = "\n".join([f"• {k}: {v}" for k, v in v_list]) if v_list else "(無銷量)"
-                
-                x_list = sorted(x_stats.items(), key=lambda x:x[1], reverse=True)
-                x_text = "\n".join([f"• {k}: {v}" for k, v in x_list]) if x_list else "(無作廢)"
+                # 格式化文字
+                v_text = "\n".join([f"• {k}: {v}" for k, v in sorted(v_stats.items(), key=lambda x:x[1], reverse=True)]) or "(無銷量)"
+                x_text = "\n".join([f"• {k}: {v}" for k, v in sorted(x_stats.items(), key=lambda x:x[1], reverse=True)]) or "(無作廢)"
 
                 subject = f"【日結單】{today_str} 營業報告"
                 email_content = (
@@ -147,28 +154,28 @@ def send_daily_report(app, manual_config=None, is_test=False):
                     f"💰 實收總計: ${int(v_total):,}"
                 )
 
-            # --- API 發送邏輯 ---
+            # --- 發送 ---
             payload = {"from": sender_email, "to": [to_email], "subject": subject, "text": email_content}
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                "User-Agent": "Mozilla/5.0"
             }
+            
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
 
             req = urllib.request.Request("https://api.resend.com/emails", 
                                           data=json.dumps(payload).encode('utf-8'), 
                                           headers=headers, method='POST')
             
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
-                print(f"✅ Email 發送成功: {res.status}")
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as res:
+                print(f"✅ Email 任務成功送達 Resend API")
                 return "✅ 發送成功"
 
         except Exception as e:
-            print(f"❌ Email 任務出錯: {e}")
+            print(f"❌ Email 任務嚴重錯誤: {str(e)}")
             traceback.print_exc()
             return f"❌ 錯誤: {str(e)}"
         finally:
@@ -176,10 +183,10 @@ def send_daily_report(app, manual_config=None, is_test=False):
             if conn: conn.close()
 
 # ==========================================
-# 2. 背景維護工作
+# 2. 背景任務
 # ==========================================
 def run_maintenance_tasks(app):
-    time.sleep(30)
+    time.sleep(10)
     print("🚀 背景維護執行緒啟動")
     last_sent_time = ""
     next_ping_time = datetime.now()
@@ -190,12 +197,13 @@ def run_maintenance_tasks(app):
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
             
-            # 定時發信時間點
+            # 檢查發信時間點
             if current_hm in ["13:00", "18:00", "20:30", "09:25"] and current_hm != last_sent_time:
+                print(f"⏰ 到達發信時間 {current_hm}，啟動任務...")
                 send_daily_report(app)
                 last_sent_time = current_hm
 
-            # 每 5 分鐘執行保活 Ping
+            # 每 5 分鐘保活
             if now_obj >= next_ping_time:
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
@@ -203,27 +211,27 @@ def run_maintenance_tasks(app):
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1;")
                     conn.close()
-                    print(f"[{now_obj.strftime('%H:%M')}] 💓 Heartbeat Success")
                 except: pass
                 next_ping_time = now_obj + timedelta(seconds=300)
 
             time.sleep(30)
         except Exception as e:
-            print(f"⚠️ 背景錯誤: {e}")
+            print(f"⚠️ 背景迴圈異常: {e}")
             time.sleep(60)
 
 def start_background_tasks(app):
-    threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True).start()
+    t = threading.Thread(target=run_maintenance_tasks, args=(app,), daemon=True)
+    t.start()
 
 # ==========================================
-# 3. 👤 Context Processor (自動注入導航欄資訊)
+# 3. Context Processor
 # ==========================================
 def inject_user_info():
     current_username = session.get('username')
     current_bp = request.blueprint
     try:
         logout_url = url_for(f'{current_bp}.logout') if current_username and current_bp else '#'
-    except BuildError:
+    except:
         logout_url = '#'
     return {
         'current_username': current_username,
