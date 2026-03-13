@@ -42,23 +42,28 @@ def role_required(*allowed_roles):
     return decorator
 
 # ==========================================
-# 1. Email 報告發送核心 (穩定版)
+# 1. Email 報告發送核心 (參數優先版)
 # ==========================================
-def send_daily_report(app, manual_config=None, is_test=False):
+def send_daily_report(app, manual_config=None, is_test=False, operator_name=None, operator_role=None):
+    """
+    發送日結報表。
+    :param operator_name: 手動傳入的操作者姓名，若無則嘗試從 session 抓取，再無則顯示系統發送。
+    """
     conn, cur = None, None
-    # 建立一個應用的上下文，確保資料庫連線正常
+    
     with app.app_context():
         try:
-            # 💡 安全抓取人員資訊：判斷是否在 Request 上下文中
-            operator_name = "系統自動發送"
-            operator_role = "System"
-            
-            if has_request_context():
-                try:
-                    operator_name = session.get('username', '系統自動發送')
-                    operator_role = session.get('role', 'System')
-                except Exception:
-                    pass
+            # 💡 判定值班人員：優先順序 (參數 > Session > 系統)
+            final_name = operator_name
+            final_role = operator_role
+
+            if not final_name:
+                if has_request_context():
+                    final_name = session.get('username', '系統自動發送')
+                    final_role = session.get('role', 'System')
+                else:
+                    final_name = "系統自動發送"
+                    final_role = "System"
 
             conn = get_db_connection()
             cur = conn.cursor()
@@ -82,85 +87,63 @@ def send_daily_report(app, manual_config=None, is_test=False):
             today_str = tw_now.strftime('%Y-%m-%d')
 
             if is_test:
-                subject = f"【測試】Resend API 連線確認 ({today_str})"
+                subject = f"【測試】Resend API 設定確認 ({today_str})"
                 email_content = (
-                    f"👤 值班人員: {operator_name} ({operator_role})\n"
+                    f"👤 值班人員: {final_name} ({final_role})\n"
                     f"------------------------\n"
                     f"✅ 連線測試成功！\n"
                     f"寄件者: {sender_email}\n"
                     f"收件者: {to_email}"
                 )
             else:
-                # 修正時間區間：確保涵蓋整天
+                # 取得今日有效與作廢資料
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 utc_start = tw_start - timedelta(hours=8)
                 utc_end = utc_start + timedelta(hours=24)
                 
-                # 使用參數化查詢防止潛在錯誤
                 time_filter = "created_at >= %s AND created_at < %s"
                 params = (utc_start, utc_end)
 
-                # 1. 有效訂單
+                # 有效訂單
                 cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status != 'Cancelled'", params)
                 v_res = cur.fetchone()
-                v_count = v_res[0] or 0
-                v_total = float(v_res[1] or 0)
+                v_count, v_total = (v_res[0] or 0), (float(v_res[1] or 0))
 
+                # 品項統計 (有效)
                 cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status != 'Cancelled'", params)
-                v_rows = cur.fetchall()
                 v_stats = {}
-                for r in v_rows:
+                for r in cur.fetchall():
                     try:
                         items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
                         if isinstance(items, dict): items = [items]
                         for i in items:
-                            name = i.get('name_zh', i.get('name', '未知'))
-                            v_stats[name] = v_stats.get(name, 0) + int(i.get('qty', 0))
+                            n = i.get('name_zh', i.get('name', '未知'))
+                            v_stats[n] = v_stats.get(n, 0) + int(i.get('qty', 0))
                     except: continue
 
-                # 2. 作廢訂單
+                # 作廢訂單
                 cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'", params)
                 x_res = cur.fetchone()
-                x_count = x_res[0] or 0
-                x_total = float(x_res[1] or 0)
+                x_count, x_total = (x_res[0] or 0), (float(x_res[1] or 0))
 
-                cur.execute(f"SELECT content_json FROM orders WHERE {time_filter} AND status = 'Cancelled'", params)
-                x_rows = cur.fetchall()
-                x_stats = {}
-                for r in x_rows:
-                    try:
-                        items = json.loads(r[0]) if isinstance(r[0], str) else r[0]
-                        if isinstance(items, dict): items = [items]
-                        for i in items:
-                            name = i.get('name_zh', i.get('name', '未知'))
-                            x_stats[name] = x_stats.get(name, 0) + int(i.get('qty', 0))
-                    except: continue
-
-                # 格式化文字
                 v_text = "\n".join([f"• {k}: {v}" for k, v in sorted(v_stats.items(), key=lambda x:x[1], reverse=True)]) or "(無銷量)"
-                x_text = "\n".join([f"• {k}: {v}" for k, v in sorted(x_stats.items(), key=lambda x:x[1], reverse=True)]) or "(無作廢)"
-
+                
                 subject = f"【日結單】{today_str} 營業報告"
                 email_content = (
-                    f"👤 值班人員: {operator_name} ({operator_role})\n"
+                    f"👤 值班人員: {final_name} ({final_role})\n"
                     f"🍴 餐廳日結 ({today_str})\n"
                     f"------------------------\n"
                     f"✅ 有效: {v_count} 筆 (${int(v_total):,})\n"
                     f"{v_text}\n"
                     f"------------------------\n"
                     f"❌ 作廢: {x_count} 筆 (${int(x_total):,})\n"
-                    f"{x_text}\n"
                     f"------------------------\n"
                     f"💰 實收總計: ${int(v_total):,}"
                 )
 
-            # --- 發送 ---
+            # --- API 發送 ---
             payload = {"from": sender_email, "to": [to_email], "subject": subject, "text": email_content}
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0"
-            }
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
             
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -171,11 +154,9 @@ def send_daily_report(app, manual_config=None, is_test=False):
                                           headers=headers, method='POST')
             
             with urllib.request.urlopen(req, context=ctx, timeout=15) as res:
-                print(f"✅ Email 任務成功送達 Resend API")
                 return "✅ 發送成功"
 
         except Exception as e:
-            print(f"❌ Email 任務嚴重錯誤: {str(e)}")
             traceback.print_exc()
             return f"❌ 錯誤: {str(e)}"
         finally:
@@ -238,3 +219,4 @@ def inject_user_info():
         'current_role': session.get('role', '未知角色'),
         'logout_url': logout_url
     }
+
