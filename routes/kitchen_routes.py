@@ -652,14 +652,23 @@ def sales_ranking():
 def daily_report():
     # --- 1. 時間處理 (台灣時區 UTC+8) ---
     now_tw = datetime.utcnow() + timedelta(hours=8)
-    target_date_str = request.args.get('date') or now_tw.strftime('%Y-%m-%d')
+    today_str = now_tw.strftime('%Y-%m-%d')
+    
+    # 接收起始與結束日期，若無則預設為今天
+    start_date_str = request.args.get('start_date') or request.args.get('date') or today_str
+    end_date_str = request.args.get('end_date') or start_date_str
     
     # 取得資料庫查詢範圍
     try:
-        utc_start, utc_end = get_tw_time_range(target_date_str)
+        utc_start, _ = get_tw_time_range(start_date_str)
+        _, utc_end = get_tw_time_range(end_date_str)
     except:
-        utc_start, utc_end = now_tw.replace(hour=0, minute=0), now_tw.replace(hour=23, minute=59)
+        utc_start = now_tw.replace(hour=0, minute=0, second=0)
+        utc_end = now_tw.replace(hour=23, minute=59, second=59)
 
+    # 判斷要顯示「單日」還是「區間」字樣
+    display_range = start_date_str if start_date_str == end_date_str else f"{start_date_str} ~ {end_date_str}"
+    
     output_format = request.args.get('format', 'html')
     
     conn = get_db_connection()
@@ -711,8 +720,8 @@ def daily_report():
         
         # 標題區 (置中)
         res += ESC + b'a\x01'
-        res += "日結營收報表\n".encode(ENCODE)
-        res += f"{target_date_str}\n".encode(ENCODE)
+        res += "營收統計報表\n".encode(ENCODE)
+        res += f"{display_range}\n".encode(ENCODE)
         res += f"時間:{now_tw.strftime('%H:%M:%S')}\n".encode(ENCODE)
         res += b"="*16 + b"\n"  # 字體變大，分隔線縮短為 16 個
         
@@ -768,7 +777,7 @@ def daily_report():
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>日結報表_{target_date_str}</title>
+        <title>營收報表_{display_range}</title>
         <style>
             body {{ 
                 font-family: "Microsoft JhengHei", sans-serif; 
@@ -788,18 +797,22 @@ def daily_report():
                 box-shadow: 0 4px 10px rgba(0,0,0,0.1);
             }}
             
-            /* 按鈕容器 */
+            /* 按鈕容器，已優化外觀以容納更多元件 */
             .no-print {{ 
                 margin-bottom: 20px; 
                 display: flex; 
                 align-items: center; 
                 justify-content: center; 
-                gap: 15px; 
+                gap: 10px; 
                 flex-wrap: wrap;
+                background: white;
+                padding: 15px 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
             }}
             
             /* 日期選擇器樣式優化 */
-            #dateInput {{
+            input[type="date"] {{
                 padding: 8px;
                 border-radius: 6px;
                 border: 1px solid #ccc;
@@ -808,10 +821,10 @@ def daily_report():
                 box-sizing: border-box;
             }}
             
-            /* 基礎按鈕樣式 - 確保所有按鈕結構完全一致 */
+            /* 基礎按鈕樣式 */
             .btn-base {{ 
                 height: 40px;
-                padding: 0 25px; 
+                padding: 0 20px; 
                 font-weight: bold; 
                 font-size: 16px;
                 cursor: pointer; 
@@ -830,10 +843,11 @@ def daily_report():
             .btn-base:active {{ transform: translateY(1px); box-shadow: none; }}
             .btn-base:hover {{ opacity: 0.9; box-shadow: 0 4px 8px rgba(0,0,0,0.15); }}
 
+            /* 查詢按鈕 - 藍色 */
+            .btn-search {{ background: #3498db; color: white; }}
             /* 列印報表按鈕 - 綠色 */
             .btn-print {{ background: #27ae60; color: white; }}
-
-            /* 返回看板按鈕 - 深灰色 (樣式已與列印按鈕完全對齊) */
+            /* 返回看板按鈕 - 深灰色 */
             .btn-close {{ background: #555; color: white; }}
 
             .detail-list {{ font-size: 13px; text-align: left; line-height: 1.6; }}
@@ -850,16 +864,21 @@ def daily_report():
     </head>
     <body onload="autoConnectUSB()">
         <div class="no-print">
-            <input type="date" id="dateInput" value="{target_date_str}" onchange="location.href='?date='+this.value">
-            <button id="btnPrint" class="btn-base btn-print" onclick="handlePrintClick()">🖨️ 列印報表</button>
-            <button class="btn-base btn-close" onclick="window.close()">🔙 返回看板</button>
+            <span style="font-weight:bold; color:#333;">📅 區間：</span>
+            <input type="date" id="startDateInput" value="{start_date_str}">
+            <span style="font-weight:bold; color:#666;">至</span>
+            <input type="date" id="endDateInput" value="{end_date_str}">
+            <button class="btn-base btn-search" onclick="refreshWithRange()">🔍 查詢</button>
+            <div style="width:1px; height:30px; background:#ccc; margin:0 5px;"></div>
+            <button id="btnPrint" class="btn-base btn-print" onclick="handlePrintClick()">🖨️ 列印</button>
+            <button class="btn-base btn-close" onclick="window.close()">🔙 返回</button>
         </div>
         
         <div id="usbStatus" style="font-size:12px; margin-bottom:15px; color:#666; font-weight: bold;">偵測印表機中...</div>
 
         <div class="ticket">
-            <h2 style="margin:0;">日結營收報表</h2>
-            <div style="font-size:14px;">{target_date_str}</div>
+            <h2 style="margin:0;">營收統計報表</h2>
+            <div style="font-size:14px; margin-top:5px;">{display_range}</div>
             <div style="font-size:12px;">列印時間: {now_tw.strftime('%H:%M:%S')}</div>
             <div class="line-divider">==========================</div>
             
@@ -883,7 +902,7 @@ def daily_report():
             </div>
             <div class="line-divider">==========================</div>
             
-            <br><br><div>經手人簽名</div><br><br>
+            <br><br><div style="text-align:left;">經手人簽名</div><br><br>
             <div>____________________</div>
             <div style="font-size:12px; margin-top:10px;">- End of Report -</div>
         </div>
@@ -903,6 +922,18 @@ def daily_report():
                     }}
                 }}
             }});
+
+            // 處理查詢區間事件
+            function refreshWithRange() {{
+                const start = document.getElementById('startDateInput').value;
+                const end = document.getElementById('endDateInput').value;
+                
+                if (start > end && end !== '') {{
+                    alert("起始日期不能晚於結束日期唷！");
+                    return;
+                }}
+                location.href = `?start_date=${{start}}&end_date=${{end}}`;
+            }}
 
             async function autoConnectUSB() {{
                 const statusDiv = document.getElementById('usbStatus');
@@ -940,8 +971,11 @@ def daily_report():
                 }}
 
                 try {{
-                    const date = document.getElementById('dateInput').value;
-                    const res = await fetch(`/kitchen/report?date=${{date}}&format=blob`);
+                    const start = document.getElementById('startDateInput').value;
+                    const end = document.getElementById('endDateInput').value;
+                    
+                    // 傳送所選取的區間參數給後端產生列印 Blob
+                    const res = await fetch(`/kitchen/report?start_date=${{start}}&end_date=${{end}}&format=blob`);
                     if (!res.ok) throw new Error("後端產生報表失敗");
                     
                     const data = await res.json();
@@ -972,7 +1006,3 @@ def daily_report():
     </body>
     </html>
     """
-
-
-
-
