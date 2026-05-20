@@ -367,6 +367,20 @@
         closePrintModal();
     }
 
+    function completeAndPrint(oid) {
+        // 1. 直接呼叫你底層的列印核心，傳入當前點擊的 oid 與廚房單型態 'kitchen'
+        // 這樣會直接觸發後端的 /print_order/<oid>?type=kitchen&format=base64
+        if (typeof fetchAndPrint === "function") {
+            fetchAndPrint(oid, 'kitchen');
+        }
+    
+        // 2. 延遲 0.5 秒後再執行出餐動作
+        // 這是為了防止 action() 如果會引發網頁重整（reload），會不小心把上面的 fetch 列印請求打斷
+        setTimeout(function() {
+            action('/kitchen/complete/' + oid);
+        }, 500);
+    }
+
     function openSalesModal() { document.getElementById('salesModal').style.display = "block"; setTodayRange(); }
     function closeSalesModal() { document.getElementById('salesModal').style.display = "none"; }
     function setTodayRange() {
