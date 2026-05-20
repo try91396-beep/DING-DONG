@@ -268,15 +268,15 @@ def check_new_orders():
                         <div>{fee_html}<span style="font-size:22px; color:#d32f2f; font-weight:900;">${formatted_total}</span></div>
                     </div>
                 """
-                buttons += f"<button onclick='action(\"/kitchen/complete/{oid}\")' class='btn btn-main' style='width:100%; margin-bottom:8px;'>✅ 出餐 / 付款</button>"
+                buttons += f"<button onclick='completeAndPrint({oid})' class='btn btn-main' style='width:100%; margin-bottom:8px;'>出餐/付款</button>"
                 buttons += f"""<div class="btn-group" style="display:flex; gap:5px;">
                     {print_btn_html}
-                    <a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn' style='flex:1; background:#ff9800; color:white;'>✏️ 修改</a>
+                    <a href='/menu?edit_oid={oid}&lang=zh' target='_blank' class='btn' style='flex:1; background:#ff9800; color:white;'>修改</a>
                     <button onclick='if(confirm(\"⚠️ 確定作廢此單？\")) action(\"/kitchen/cancel/{oid}\")' class='btn btn-void' style='width:50px;'>🗑️</button>
                 </div>"""
             elif status == 'Cancelled':
                 buttons += f"<div style='text-align:center; color:#d32f2f; font-weight:bold; margin-bottom:5px;'>【此單已作廢】</div>"
-                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; opacity:0.6;'>🖨️ 補印作廢單</button>"
+                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; opacity:0.6;'>補印作廢單</button>"
             else: # Completed
                 buttons += f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px; opacity:0.7;">
@@ -284,7 +284,7 @@ def check_new_orders():
                         <div>{fee_html}<span style="font-size:18px; color:#333; font-weight:bold;">${formatted_total}</span></div>
                     </div>
                 """
-                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%;'>🖨️ 補印單據</button>"
+                buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%;'>補印單據</button>"
 
             html_content += f"""
             <div class="card {status_cls}" data-id="{oid}">
