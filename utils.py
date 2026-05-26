@@ -182,7 +182,7 @@ def run_maintenance_tasks(app):
     print("🚀 背景維護執行緒已正式啟動")
     
     last_sent_time = ""
-    last_shop_toggle_time = ""  # 💡 紀錄上一次切換營業狀態的時間，防止重複執行
+    last_shop_toggle_time = ""  # 紀錄上一次更新狀態的時間，防止在同一個分鐘內重複塞入 SQL
     next_ping_time = datetime.now()
 
     while True:
@@ -193,6 +193,7 @@ def run_maintenance_tasks(app):
             # 取得台灣時間 (UTC+8)
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
+            current_weekday = tw_time.weekday()  # 💡 0=週一, 1=週二, ..., 5=週六, 6=週日
 
             # --- A. 自動發信檢查 ---
             target_times = ["13:00", "18:00", "20:30"]
@@ -201,32 +202,42 @@ def run_maintenance_tasks(app):
                 send_daily_report(app)
                 last_sent_time = current_hm
 
-            # --- 💡 新增：B. 店鋪自動開關門檢查 (AM 9:00 / PM 9:00) ---
-            shop_toggle_times = ["11:00", "21:00"]
-            if current_hm in shop_toggle_times and current_hm != last_shop_toggle_time:
-                # 判定現在是要開還是關
-                target_status = "1" if current_hm == "09:00" else "0"
-                status_text = "開啟 (1)" if target_status == "1" else "關閉 (0)"
+            # --- 🏪 B. 每日定時強寫 shop_open 狀態 ---
+            if current_hm == "09:00" and current_hm != last_shop_toggle_time:
+                # 💡 判斷：如果是週六(5)，強制寫入 '0'；其他日子強制寫入 '1'
+                target_val = '0' if current_weekday == 5 else '1'
+                log_text = "台灣時間週六，強制設定 shop_open = 0 (不開門)" if current_weekday == 5 else "強制設定 shop_open = 1"
                 
-                print(f"[{current_hm}] 🏪 觸發定時店鋪切換 -> 正在設定 shop_open 為 {status_text}...")
-                
+                print(f"[{current_hm}] 🏪 時間到！{log_text}")
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
-                        # 使用 UPSERT 語法（適用於 PostgreSQL / Aiven），如果 key 不存在就寫入，存在就更新
                         cur.execute("""
-                            INSERT INTO settings (key, value) 
-                            VALUES ('shop_open', %s)
-                            ON CONFLICT (key) 
-                            DO UPDATE SET value = EXCLUDED.value;
-                        """, (target_status,))
+                            INSERT INTO settings (key, value) VALUES ('shop_open', %s)
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+                        """, (target_val,))
                     conn.commit()
                     conn.close()
-                    print(f"[{now_str}] 🏪 店鋪狀態已成功更新為：{status_text}")
+                    last_shop_toggle_time = current_hm
+                    print(f"[{now_str}] 🏪 已成功寫入 shop_open = {target_val}")
                 except Exception as db_err:
-                    print(f"[{now_str}] ❌ 自動切換店鋪狀態失敗: {db_err}")
-                
-                last_shop_toggle_time = current_hm
+                    print(f"[{now_str}] ❌ 更新 shop_open={target_val} 失敗: {db_err}")
+
+            elif current_hm == "21:00" and current_hm != last_shop_toggle_time:
+                print(f"[{current_hm}] 🏪 時間到！強制設定 shop_open = 0")
+                try:
+                    conn = get_db_connection()
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO settings (key, value) VALUES ('shop_open', '0')
+                            ON CONFLICT (key) DO UPDATE SET value = '0';
+                        """)
+                    conn.commit()
+                    conn.close()
+                    last_shop_toggle_time = current_hm
+                    print(f"[{now_str}] 🏪 已寫入 shop_open = 0")
+                except Exception as db_err:
+                    print(f"[{now_str}] ❌ 更新 shop_open=0 失敗: {db_err}")
 
             # --- C. 防休眠 Ping (Web + Aiven DB) ---
             if now_obj >= next_ping_time:
@@ -234,23 +245,23 @@ def run_maintenance_tasks(app):
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
                     print(f"[{now_str}] ✅ Web Ping 成功")
-                except Exception as e: 
-                    print(f"[{now_str}] ⚠️ Web Ping 失敗: {e}")
+                except Exception as web_err: 
+                    print(f"[{now_str}] ⚠️ Web Ping 失敗: {web_err}")
                 
                 # 2. Ping Aiven 資料庫 (發送真實指令維持連線)
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
-                        cur.execute("SELECT 1;") # Aiven 需要實際 Query 才能保活
+                        cur.execute("SELECT 1;") 
                         cur.fetchone()
                     conn.close()
                     print(f"[{now_str}] 💓 Aiven DB Heartbeat 成功 (SELECT 1)")
-                except Exception as e: 
-                    print(f"[{now_str}] ⚠️ DB Heartbeat 失敗: {e}")
+                except Exception as db_ping_err: 
+                    print(f"[{now_str}] ⚠️ DB Heartbeat 失敗: {db_ping_err}")
                 
                 next_ping_time = now_obj + timedelta(seconds=300)
 
-            time.sleep(30) # 掃描間隔 30 秒，確保精準捕捉到 09:00 與 21:00
+            time.sleep(30) 
         except Exception as e:
             print(f"⚠️ 背景任務主要迴圈錯誤: {e}")
             time.sleep(60)
