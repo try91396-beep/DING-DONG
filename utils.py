@@ -202,7 +202,7 @@ def run_maintenance_tasks(app):
                 last_sent_time = current_hm
 
             # --- 💡 新增：B. 店鋪自動開關門檢查 (AM 9:00 / PM 9:00) ---
-            shop_toggle_times = ["09:00", "21:00"]
+            shop_toggle_times = ["11:00", "21:00"]
             if current_hm in shop_toggle_times and current_hm != last_shop_toggle_time:
                 # 判定現在是要開還是關
                 target_status = "1" if current_hm == "09:00" else "0"
