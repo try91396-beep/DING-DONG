@@ -182,6 +182,7 @@ def run_maintenance_tasks(app):
     print("🚀 背景維護執行緒已正式啟動")
     
     last_sent_time = ""
+    last_shop_toggle_time = ""  # 💡 紀錄上一次切換營業狀態的時間，防止重複執行
     next_ping_time = datetime.now()
 
     while True:
@@ -189,23 +190,51 @@ def run_maintenance_tasks(app):
             now_obj = datetime.now()
             now_str = now_obj.strftime("%H:%M:%S")
 
-            # --- A. 自動發信檢查 ---
+            # 取得台灣時間 (UTC+8)
             tw_time = datetime.utcnow() + timedelta(hours=8)
             current_hm = tw_time.strftime("%H:%M")
+
+            # --- A. 自動發信檢查 ---
             target_times = ["13:00", "18:00", "20:30"]
-            
             if current_hm in target_times and current_hm != last_sent_time:
                 print(f"[{current_hm}] ⏰ 執行自動發信...")
                 send_daily_report(app)
                 last_sent_time = current_hm
 
-            # --- B. 防休眠 Ping (Web + Aiven DB) ---
+            # --- 💡 新增：B. 店鋪自動開關門檢查 (AM 9:00 / PM 9:00) ---
+            shop_toggle_times = ["09:00", "21:00"]
+            if current_hm in shop_toggle_times and current_hm != last_shop_toggle_time:
+                # 判定現在是要開還是關
+                target_status = "1" if current_hm == "09:00" else "0"
+                status_text = "開啟 (1)" if target_status == "1" else "關閉 (0)"
+                
+                print(f"[{current_hm}] 🏪 觸發定時店鋪切換 -> 正在設定 shop_open 為 {status_text}...")
+                
+                try:
+                    conn = get_db_connection()
+                    with conn.cursor() as cur:
+                        # 使用 UPSERT 語法（適用於 PostgreSQL / Aiven），如果 key 不存在就寫入，存在就更新
+                        cur.execute("""
+                            INSERT INTO settings (key, value) 
+                            VALUES ('shop_open', %s)
+                            ON CONFLICT (key) 
+                            DO UPDATE SET value = EXCLUDED.value;
+                        """, (target_status,))
+                    conn.commit()
+                    conn.close()
+                    print(f"[{now_str}] 🏪 店鋪狀態已成功更新為：{status_text}")
+                except Exception as db_err:
+                    print(f"[{now_str}] ❌ 自動切換店鋪狀態失敗: {db_err}")
+                
+                last_shop_toggle_time = current_hm
+
+            # --- C. 防休眠 Ping (Web + Aiven DB) ---
             if now_obj >= next_ping_time:
                 # 1. Ping 網站
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
                     print(f"[{now_str}] ✅ Web Ping 成功")
-                except Exception: 
+                except Exception as e: 
                     print(f"[{now_str}] ⚠️ Web Ping 失敗: {e}")
                 
                 # 2. Ping Aiven 資料庫 (發送真實指令維持連線)
@@ -221,7 +250,7 @@ def run_maintenance_tasks(app):
                 
                 next_ping_time = now_obj + timedelta(seconds=300)
 
-            time.sleep(30) # 縮短掃描間隔，確保不漏掉 target_times
+            time.sleep(30) # 掃描間隔 30 秒，確保精準捕捉到 09:00 與 21:00
         except Exception as e:
             print(f"⚠️ 背景任務主要迴圈錯誤: {e}")
             time.sleep(60)
@@ -245,4 +274,3 @@ def inject_user_info():
         'current_role': session.get('role', '未知角色'),
         'logout_url': logout_url
     }
-
