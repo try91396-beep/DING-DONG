@@ -422,19 +422,27 @@ def edit_product(pid):
 # ==========================================
 
 @admin_bp.route('/export_menu')
-@login_required
-@role_required('admin')  
+@login_required          # 必須登入
+@role_required('admin')  # 限制只有 admin 角色可以存取
 def export_menu():
+    """
+    將目前的產品菜單匯出為 Excel 檔案。
+    """
     try:
+        # 1. 從資料庫撈取所有產品，並依照排序欄位 (sort_order) 升序排列
         conn = get_db_connection()
         df = pd.read_sql("SELECT * FROM products ORDER BY sort_order ASC", conn)
         conn.close()
         
+        # 2. 建立一個在記憶體中的二進位串流 (BytesIO)，用來暫存 Excel 檔案內容
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # 將 Pandas DataFrame 寫入 Excel，且不包含索引列 (index=False)
             df.to_excel(writer, index=False)
-        output.seek(0)
+        output.seek(0) # 將游標移回檔案開頭，以便後續讀取
         
+        # 3. 將記憶體中的 Excel 檔案作為附件回傳給使用者下載
+        # 檔名會動態加上當前日期，例如: menu_export_20231025.xlsx
         return send_file(
             output, 
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
@@ -442,31 +450,43 @@ def export_menu():
             download_name=f"menu_export_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx"
         )
     except Exception as e:
+         # 若發生錯誤，導回後台首頁並顯示錯誤訊息
          return redirect(url_for('admin.admin_panel', msg=f"❌ 匯出失敗: {e}"))
 
 @admin_bp.route('/import_menu', methods=['POST'])
 @login_required          
 @role_required('admin')  
 def import_menu():
+    """
+    讀取使用者上傳的 Excel 檔案，並將資料批次匯入至產品菜單。
+    """
     try:
+        # 1. 獲取上傳的檔案，若無檔案則直接返回錯誤提示
         file = request.files.get('menu_file')
         if not file: return redirect(url_for('admin.admin_panel', msg="❌ 無檔案"))
         
+        # 2. 使用 Pandas 讀取 Excel 檔案
         df = pd.read_excel(file, engine='openpyxl')
+        # 將 DataFrame 中的 NaN 或 NaT 取代為 None，確保存入資料庫時為 NULL
         df = df.where(pd.notnull(df), None)
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cnt = 0
+        cnt = 0 # 記錄成功匯入的筆數
+        
+        # 3. 逐列迭代 Excel 資料並寫入資料庫
         for _, p in df.iterrows():
-            if not p.get('name'): continue
+            if not p.get('name'): continue # 略過沒有商品名稱的無效資料
             
+            # 處理上下架狀態 (is_available) 的布林值轉換
+            # 支援辨識 '1', 'true', 'yes', 't' 作為上架狀態
             is_avail = True
             if p.get('is_available') is not None:
                 val = str(p.get('is_available')).lower()
                 is_avail = val in ['1', 'true', 'yes', 't']
 
+            # 定義插入產品的 SQL 語法 (包含多國語系與客製化選項)
             sql = """
                 INSERT INTO products (
                     name, price, category, image_url, is_available, custom_options, sort_order,
@@ -483,12 +503,13 @@ def import_menu():
                 )
             """
             
+            # 整理要對應 SQL 變數的參數組
             params = (
                 str(p.get('name')), p.get('price', 0), p.get('category'), p.get('image_url'),
                 is_avail, p.get('custom_options'), p.get('sort_order', 0),
                 p.get('name_en'), p.get('name_jp'), p.get('name_kr'),
                 p.get('custom_options_en'), p.get('custom_options_jp'), p.get('custom_options_kr'),
-                p.get('print_category', 'Noodle'),
+                p.get('print_category', 'Noodle'), # 預設列印分類為 Noodle
                 p.get('category_en'), p.get('category_jp'), p.get('category_kr')
             )
             
@@ -500,6 +521,7 @@ def import_menu():
         return redirect(url_for('admin.admin_panel', msg=f"✅ 完整匯入成功！共 {cnt} 筆資料"))
         
     except Exception as e:
+        # 印出詳細錯誤堆疊，並將簡要錯誤訊息回傳給前端
         traceback.print_exc()
         return redirect(url_for('admin.admin_panel', msg=f"❌ 匯入失敗: {e}"))
 
@@ -507,7 +529,13 @@ def import_menu():
 @login_required
 @role_required('admin')  
 def reset_menu():
+    """
+    清空整個產品菜單 (危險操作)。
+    """
     conn = get_db_connection(); cur = conn.cursor()
+    # 使用 TRUNCATE 清空資料表
+    # RESTART IDENTITY: 重置自增主鍵 (ID) 回到 1
+    # CASCADE: 一併刪除或清空與此表有外部鍵 (Foreign Key) 關聯的資料
     cur.execute("TRUNCATE TABLE products RESTART IDENTITY CASCADE")
     conn.commit(); cur.close(); conn.close()
     return redirect(url_for('admin.admin_panel', msg="🗑️ 菜單已清空"))
@@ -516,33 +544,41 @@ def reset_menu():
 @login_required
 @role_required('admin')  
 def reset_orders():
+    """
+    清空歷史訂單資料，支援「全部清空」或「依照日期範圍清空」。
+    """
     conn = get_db_connection()
     cur = conn.cursor()
     
     try:
-        delete_mode = request.form.get('delete_mode')
+        delete_mode = request.form.get('delete_mode') # 取得刪除模式 (all 或 range)
         
         if delete_mode == 'all':
+            # 模式 1: 全部清空，並重置訂單 ID
             cur.execute("TRUNCATE TABLE orders RESTART IDENTITY CASCADE")
             msg = "💥 已清空所有歷史訂單，流水號已重置！"
             
         elif delete_mode == 'range':
+            # 模式 2: 指定區間刪除
             start_date = request.form.get('start_date')
             end_date = request.form.get('end_date')
             
             if not start_date or not end_date:
                 return redirect(url_for('admin.admin_panel', msg="❌ 請選擇完整的開始與結束日期"))
             
+            # 將日期字串補上時間，涵蓋一整天
             start_ts = f"{start_date} 00:00:00"
             end_ts = f"{end_date} 23:59:59"
             
+            # 執行範圍刪除
+            # 注意: 這裡將 UTC 創建時間加上 8 小時 ('8 hours')，以轉換為台灣時區 (UTC+8) 進行準確的日期比對
             cur.execute("""
                 DELETE FROM orders 
                 WHERE (created_at + interval '8 hours') >= %s 
                   AND (created_at + interval '8 hours') <= %s
             """, (start_ts, end_ts))
             
-            deleted_count = cur.rowcount
+            deleted_count = cur.rowcount # 取得受影響的資料筆數
             msg = f"🗑️ 已刪除 {start_date} 至 {end_date} 期間的訂單，共 {deleted_count} 筆。"
             
         else:
@@ -550,7 +586,7 @@ def reset_orders():
 
         conn.commit()
     except Exception as e:
-        conn.rollback()
+        conn.rollback() # 發生錯誤時撤銷資料庫變更
         msg = f"❌ 刪除失敗: {str(e)}"
     finally:
         cur.close()
@@ -562,18 +598,26 @@ def reset_orders():
 @login_required
 @role_required('admin')  
 def toggle_product(pid):
+    """
+    切換單一產品的上下架狀態 (is_available)
+    主要設計給前端 AJAX 呼叫使用。
+    """
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        # 先查詢目前的狀態
         cur.execute("SELECT is_available FROM products WHERE id = %s", (pid,))
         row = cur.fetchone()
         
         if row:
-            new_s = not row[0]
+            new_s = not row[0] # 反轉狀態 (True 變 False，False 變 True)
+            # 更新狀態回資料庫
             cur.execute("UPDATE products SET is_available = %s WHERE id = %s", (new_s, pid))
             conn.commit()
+            # 回傳 JSON 格式給前端，更新 UI
             return jsonify({'status': 'success', 'is_available': new_s})
         
+        # 若找不到該產品 ID
         return jsonify({'status': 'error', 'message': 'Product not found'}), 404
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -585,6 +629,9 @@ def toggle_product(pid):
 @login_required          
 @role_required('admin')  
 def delete_product(pid):
+    """
+    刪除單一產品。
+    """
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("DELETE FROM products WHERE id = %s", (pid,))
     conn.commit(); cur.close(); conn.close()
@@ -594,15 +641,20 @@ def delete_product(pid):
 @login_required          
 @role_required('admin')  
 def reorder_products():
-    data = request.json
+    """
+    更新產品的排列順序。
+    前端通常會透過拖曳 (Drag and Drop) 介面發送包含最新順序的產品 ID 陣列。
+    """
+    data = request.json # 接收前端傳來的 JSON 資料 (例如: {'order': [3, 1, 5, 2]})
     conn = get_db_connection(); cur = conn.cursor()
     try:
+        # 使用 enumerate 取得陣列索引 (idx) 作為新的排序權重
         for idx, pid in enumerate(data.get('order', [])):
             cur.execute("UPDATE products SET sort_order = %s WHERE id = %s", (idx, pid))
         conn.commit()
-        return jsonify({'status': 'success'})
+        return jsonify({'stat': 'success'})
     except Exception as e:
-        conn.rollback()
+        conn.rollback() # 出錯則復原交易，避免部分排序更新造成資料混亂
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         cur.close(); conn.close()
