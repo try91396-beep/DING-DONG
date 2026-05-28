@@ -323,7 +323,7 @@ def check_new_orders():
                     <div><div class="seq-num">#{seq_num:03d}</div><div class="time-stamp">{tw_time.strftime('%H:%M')} ({order_lang})</div></div>
                     {table_html}
                 </div>
-                <div class="items" style="max-height: 150px; overflow-y: auto; padding-right: 5px;">{items_html}</div>
+                <div class="items" style="max-height: 180px; overflow-y: auto; padding-right: 5px;">{items_html}</div>
                 <div class="actions">{buttons}</div>
             </div>"""
             
