@@ -116,14 +116,19 @@ def kitchen_panel():
 def check_new_orders():
     try:
         # 【關鍵修改 1】：接收前端傳來的最後一次看過的序號 (預設為 0)
+        # 用於判斷哪些是「新」訂單，以便前端可以觸發通知或音效
         last_seq = request.args.get('last_seq', 0, type=int)
 
+        # 取得台灣時間的今日起訖時間 (轉換為 UTC 時間以便與資料庫比對)
         utc_start, utc_end = get_tw_time_range()
 
+        # 建立資料庫連線與游標
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # SQL 查詢：確保包含 customer_address
+        # 主要 SQL 查詢：撈取今日訂單的所有詳細資訊
+        # 排序邏輯：優先顯示處理中 (Pending) -> 再顯示已完成 (Completed) -> 其他狀態
+        # 同狀態下，依每日序號 (daily_seq) 遞增排序
         query = """
             SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json,
                    customer_name, customer_phone, customer_address, scheduled_for, delivery_fee, order_type
@@ -136,11 +141,15 @@ def check_new_orders():
                 daily_seq ASC
         """
         try:
+            # 嘗試執行主要查詢
             cur.execute(query, (utc_start, utc_end))
         except Exception as e:
+            # 如果發生錯誤 (例如舊版資料庫缺少 order_type 欄位)，則觸發回滾
             conn.rollback() 
             print(f"SQL Fallback triggered (check_new_orders): {e}")
-            # Fallback (防止舊資料庫結構缺少 order_type 報錯)
+            
+            # 降級方案 (Fallback)：使用不包含 order_type 的查詢語句，並將其預設為 'unknown'
+            # 確保即使資料庫尚未更新結構，系統也不會直接崩潰
             query_fallback = """
                 SELECT id, table_number, items, total_price, status, created_at, lang, daily_seq, content_json,
                        customer_name, customer_phone, customer_address, scheduled_for, delivery_fee, 'unknown'
@@ -150,44 +159,54 @@ def check_new_orders():
             """
             cur.execute(query_fallback, (utc_start, utc_end))
 
+        # 取出所有符合條件的訂單記錄
         orders = cur.fetchall()
         
-        # 取得目前最大序號
+        # 取得目前今日訂單中的最大序號 (daily_seq)
+        # 準備回傳給前端，讓前端更新其 last_seq 狀態
         cur.execute("SELECT MAX(daily_seq) FROM orders WHERE created_at >= %s AND created_at <= %s", (utc_start, utc_end))
         res_max = cur.fetchone()
         max_seq_val = res_max[0] if res_max and res_max[0] else 0
         
+        # 關閉資料庫連線
         conn.close()
 
+        # 初始化前端要顯示的 HTML 字串與新訂單 ID 列表
         html_content = ""
         pending_ids = []
 
+        # 若無任何訂單，直接生成「目前沒有訂單」的提示 UI
         if not orders: 
             html_content = "<div id='loading-msg' style='grid-column:1/-1;text-align:center;padding:100px;font-size:1.5em;color:#888;'>🍽️ 目前沒有訂單</div>"
         
+        # 開始逐筆處理訂單資料並組裝成 HTML 卡片
         for o in orders:
-            # 解包變數 (確保變數數量 = 15)
+            # 將資料列解包至對應的 15 個變數 (需確保與 SQL SELECT 欄位數量一致)
             oid, table, raw_items, total, status, created, order_lang, seq_num, c_json, \
             c_name, c_phone, c_addr, c_schedule, c_fee, c_type = o
             
+            # 將狀態轉為小寫，作為 HTML CSS class 使用 (例如： pending, completed)
             status_cls = status.lower()
+            
+            # 將資料庫的 UTC 創建時間轉回台灣時間 (UTC+8)
             tw_time = created + timedelta(hours=8)
             
-            # 【關鍵修改 2】：只有當狀態是 Pending，且單號「大於」前端已知的 last_seq 時，才視為真正的新訂單
+            # 【關鍵修改 2】：篩選出真正的新訂單
+            # 條件：狀態必須是「未處理 (Pending)」且「序號大於前端最後一次請求的序號」
             if status == 'Pending' and seq_num > last_seq:
                 pending_ids.append(oid)
 
-            # 資料預處理
+            # --- 資料清理與預處理 ---
             table_str = str(table).strip() if table else ""
-            c_fee = int(c_fee or 0)
-            c_type = str(c_type).lower() if c_type else 'unknown'
+            c_fee = int(c_fee or 0) # 確保運費為整數
+            c_type = str(c_type).lower() if c_type else 'unknown' # 統一訂單類型格式
             
-            # 判斷是否為外送/外帶/預約
+            # 判斷是否擁有聯絡人資訊、地址與預約時間 (排除空值或 'none' 字串)
             has_contact = (c_phone and str(c_phone).strip() != '' and str(c_phone).strip().lower() != 'none')
             has_addr = (c_addr and str(c_addr).strip() != '' and str(c_addr).strip().lower() != 'none')
             has_schedule = (c_schedule and str(c_schedule).strip() != '' and str(c_schedule).lower() != 'none')
 
-            # 邏輯判斷
+            # --- 判斷訂單類型 (外送 / 自取 / 內用) 與顯示標題 ---
             if c_type == 'delivery':
                 is_delivery = True
                 display_table = "🛵 外送"
@@ -198,7 +217,7 @@ def check_new_orders():
                 is_delivery = False
                 display_table = f"桌號 {table_str}"
             else:
-                # 舊邏輯 Fallback
+                # 若 c_type 未知，則使用舊版的 Fallback 邏輯來猜測訂單類型
                 is_delivery = (table_str == '外送') or has_addr
                 if is_delivery:
                     display_table = "🛵 外送"
@@ -207,34 +226,35 @@ def check_new_orders():
                 else:
                     display_table = "🥡 外帶"
 
-            # 組合詳細資訊 (HTML)
+            # --- 組合客戶詳細資訊 HTML (預約、姓名、電話、地址) ---
             info_html = ""
             
-            # 預約時間顯示 (醒目)
+            # 1. 預約時間顯示 (使用醒目的黃色背景)
             if has_schedule:
                 info_html += f"<div style='background:#fff9c4; color:#f57f17; padding:4px; border-radius:4px; margin-bottom:4px; font-weight:bold; border:1px solid #fbc02d;'>🕒 預約: {c_schedule}</div>"
 
-            # 姓名
+            # 2. 客戶姓名
             if c_name and str(c_name).strip() and str(c_name).lower() != 'none': 
                 info_html += f"<div>👤 {c_name}</div>"
             
-            # 電話
+            # 3. 客戶電話
             if has_contact:
                 info_html += f"<div>📞 {c_phone}</div>"
             
-            # 地址顯示
+            # 4. 外送地址 (使用虛線分隔與醒目顏色)
             if has_addr:
                 info_html += f"<div style='margin-top:2px; line-height:1.2; border-top:1px dashed #aaa; padding-top:2px; font-weight:bold; color:#bf360c;'>📍 {c_addr}</div>"
 
-            # 將詳細資訊嵌入桌號區塊
+            # 將客戶詳細資訊嵌入桌號/訂單類型區塊中
             if info_html:
                 table_html = f"<div class='table-num' style='flex-direction:column; padding:5px;'><div>{display_table}</div><div style='font-size:0.5em; font-weight:normal; text-align:left; width:100%; margin-top:5px; color:#333; word-break:break-all;'>{info_html}</div></div>"
             else:
                 table_html = f"<div class='table-num'>{display_table}</div>"
 
-            # 解析商品 JSON
+            # --- 解析商品 JSON 資料 ---
             items_html = ""
             try:
+                # 處理 content_json 可能為字串或已被解析為 dict/list 的情況
                 if isinstance(c_json, str):
                     cart = json.loads(c_json)
                 elif isinstance(c_json, (list, dict)):
@@ -242,26 +262,34 @@ def check_new_orders():
                 else:
                     cart = []
 
+                # 遍歷購物車商品，組裝品項 HTML
                 for item in cart:
-                    name = item.get('name_zh', item.get('name', '商品'))
-                    qty = item.get('qty', 1)
-                    options = item.get('options_zh', item.get('options', []))
+                    name = item.get('name_zh', item.get('name', '商品')) # 優先取中文名稱
+                    qty = item.get('qty', 1) # 數量，預設 1
+                    options = item.get('options_zh', item.get('options', [])) # 客製化選項 (如：少冰、半糖)
+                    
+                    # 若有客製化選項，組合成字串
                     opts_html = f"<div class='item-opts'>└ {' / '.join(options)}</div>" if options else ""
+                    # 組合單一商品列 HTML
                     items_html += f"<div class='item-row'><div class='item-name'><span>{name}</span><span class='item-qty'>x{qty}</span></div>{opts_html}</div>"
             except Exception as e: 
+                # 若 JSON 解析失敗，顯示錯誤提示以防畫面崩潰
                 items_html = "<div class='item-row'>資料解析錯誤</div>"
 
+            # 總金額格式化
             formatted_total = f"{int(total or 0)}" 
             
-            # 運費顯示邏輯
+            # 若有運費，顯示含運費提示
             fee_html = ""
             if c_fee > 0:
                 fee_html = f"<span style='font-size:12px; color:#888; margin-right:5px;'>(含運 ${c_fee})</span>"
 
+            # --- 組裝訂單操作按鈕 (依據不同狀態給予不同操作) ---
             buttons = ""
             print_btn_html = f"<button onclick='askPrintType({oid})' class='btn btn-print' style='flex:1;'>🖨️ 列印</button>"
 
             if status == 'Pending':
+                # 待處理狀態：顯示應收總計、出餐按鈕、列印、修改與作廢按鈕
                 buttons += f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px;">
                         <span style="font-size:14px; color:#666; font-weight:bold;">應收總計:</span>
@@ -275,9 +303,11 @@ def check_new_orders():
                     <button onclick='if(confirm(\"⚠️ 確定作廢此單？\")) action(\"/kitchen/cancel/{oid}\")' class='btn btn-void' style='width:50px;'>🗑️</button>
                 </div>"""
             elif status == 'Cancelled':
+                # 作廢狀態：顯示作廢文字與補印按鈕
                 buttons += f"<div style='text-align:center; color:#d32f2f; font-weight:bold; margin-bottom:5px;'>【此單已作廢】</div>"
                 buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%; opacity:0.6;'>補印作廢單</button>"
-            else: # Completed
+            else: 
+                # 完成狀態 (Completed)：顯示實收總計與補印單據按鈕
                 buttons += f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 5px; opacity:0.7;">
                         <span style="font-size:13px; color:#666;">實收總計:</span>
@@ -286,22 +316,26 @@ def check_new_orders():
                 """
                 buttons += f"<button onclick='askPrintType({oid})' class='btn btn-print' style='width:100%;'>補印單據</button>"
 
+            # --- 組裝單張訂單卡片的完整 HTML ---
             html_content += f"""
             <div class="card {status_cls}" data-id="{oid}">
                 <div class="card-header">
                     <div><div class="seq-num">#{seq_num:03d}</div><div class="time-stamp">{tw_time.strftime('%H:%M')} ({order_lang})</div></div>
                     {table_html}
                 </div>
-                <div class="items">{items_html}</div>
+                <div class="items" style="max-height: 150px; overflow-y: auto; padding-right: 5px;">{items_html}</div>
                 <div class="actions">{buttons}</div>
             </div>"""
             
+        # 成功執行，回傳 JSON 格式結果給前端 (包含 HTML 結構、最大序號、新訂單 ID 陣列)
         return jsonify({
             'html': html_content, 
             'max_seq': max_seq_val, 
             'new_ids': pending_ids 
         })
+        
     except Exception as e:
+        # 最外層的例外處理：印出錯誤追蹤並回傳錯誤訊息給前端
         traceback.print_exc()
         return jsonify({'html': f"載入錯誤: {str(e)}", 'max_seq': 0, 'new_ids': []})
 
