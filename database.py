@@ -1,5 +1,5 @@
 import os  # 匯入作業系統模組，用於讀取環境變數
-import psycopg2  # 匯入 PostgreSQL 資料庫驅動模組
+import psycopg2  # 匯入 PostgreSQL 資料庫驅動模組 
 from urllib.parse import urlparse  # 匯入網址解析工具
 import bcrypt # 匯入 bcrypt 模組用於密碼雜湊 (需先安裝: pip install bcrypt)
 
