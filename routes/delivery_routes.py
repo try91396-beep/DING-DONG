@@ -9,14 +9,37 @@ import random
 
 delivery_bp = Blueprint('delivery', __name__)
 
-# 餐廳座標 (請確認這是正確的)
-RESTAURANT_COORDS = (25.054358, 121.543468)
+# --- 🗺️ 全域座標快取變數 (避免每次重複向地圖伺服器查詢，防止被封鎖且提升速度) ---
+_CACHED_SHOP_ADDRESS = None
+_CACHED_SHOP_COORDS = (25.054358, 121.543468)  # 初始預設座標
+
+def get_dynamic_restaurant_coords(shop_address):
+    """ 自動將資料庫的中文地址轉換為經緯度座標 """
+    global _CACHED_SHOP_ADDRESS, _CACHED_SHOP_COORDS
+    
+    if not shop_address:
+        return _CACHED_SHOP_COORDS
+        
+    # 如果地址跟上次查詢的一模一樣，直接回傳快取，一毫秒都不浪費
+    if shop_address == _CACHED_SHOP_ADDRESS:
+        return _CACHED_SHOP_COORDS
+        
+    try:
+        # 建立地圖定位器
+        geolocator = Nominatim(user_agent="my_food_delivery_system_v1")
+        location = geolocator.geocode(shop_address, timeout=5)
+        if location:
+            _CACHED_SHOP_ADDRESS = shop_address
+            _CACHED_SHOP_COORDS = (location.latitude, location.longitude)
+            print(f"🗺️ 餐廳地址已成功重新定位中心點: {_CACHED_SHOP_COORDS}")
+            return _CACHED_SHOP_COORDS
+    except Exception as e:
+        print(f"⚠️ 餐廳地址解析失敗 ({e})，暫時沿用歷史座標")
+        
+    return _CACHED_SHOP_COORDS
 
 def get_delivery_settings():
-    """
-    從資料庫讀取外送與店家設定
-    整合了動態地址解析
-    """
+    """ 從資料庫讀取外送與店家設定，並整合動態地址解析 """
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT key, value FROM settings")
@@ -41,18 +64,15 @@ def get_delivery_settings():
         'shop_address': shop_address,
         'restaurant_coords': restaurant_coords                    # 動態產出的經緯度元組 (lat, lng)
     }
+
 def normalize_address(addr):
-    """基本清洗：移除郵遞區號與樓層"""
+    """ 基本清洗：移除郵遞區號與樓層 """
     addr = re.sub(r'^\d{3,5}\s?', '', addr) # 移除開頭郵遞區號
     addr = re.sub(r'(\d+[Ff樓].*)|(B\d+.*)|(地下.*)|(室.*)', '', addr) # 移除樓層
     return addr.strip()
 
 def extract_road_only(addr):
-    """
-    終極手段：只抓取路名
-    輸入: '臺北市中山區長春路348-4號'
-    輸出: '臺北市中山區長春路'
-    """
+    """ 終極手段：只抓取路名 """
     match = re.search(r'.+?[縣市].+?[區鄉鎮市].+?[路街大道巷]', addr)
     if match:
         return match.group(0)
@@ -62,7 +82,7 @@ def extract_road_only(addr):
     return addr 
 
 def generate_time_slots(base_date):
-    """產生單日可外送時段"""
+    """ 產生單日可外送時段 """
     slots = []
     start_time = time(10, 30)
     end_time = time(20, 30)
@@ -90,6 +110,9 @@ def generate_time_slots(base_date):
         
     return slots
 
+# ==========================================
+# ⚙️ 1. 初始化/設定外送時間頁面
+# ==========================================
 @delivery_bp.route('/setup')
 def setup():
     settings = get_delivery_settings()
@@ -114,18 +137,21 @@ def setup():
                 'slots': slots
             })
 
-    return render_template('delivery_setup.html', dates=date_options)
+    return render_template('delivery_setup.html', dates=date_options, settings=settings)
 
+# ==========================================
+# 📍 2. 地址校驗與運費計算核心 API
+# ==========================================
 @delivery_bp.route('/check', methods=['POST'])
 def check_address():
-    data = request.json
+    data = request.json or {}
     raw_address = data.get('address', '').strip()
     name = data.get('name')
     phone = data.get('phone')
     delivery_date = data.get('date')
     delivery_time = data.get('time')
     
-    if not raw_address or not name or not phone or not delivery_date or not delivery_time:
+    if not all([raw_address, name, phone, delivery_date, delivery_time]):
         return jsonify({'success': False, 'msg': '請填寫完整資訊 (含日期與時間)'})
     
     # 隨機 User-Agent 避免封鎖
@@ -134,7 +160,7 @@ def check_address():
     
     location = None
     fallback_level = 0
-    settings = get_delivery_settings() # 這裡會取得正確的 DB 設定
+    settings = get_delivery_settings()  # 這裡會取得正確的 DB 設定與最新餐廳座標
 
     scheduled_for = f"{delivery_date} {delivery_time}"
 
@@ -164,13 +190,15 @@ def check_address():
         # --- 判斷結果 ---
         if location:
             user_coords = (location.latitude, location.longitude)
-            dist = haversine(RESTAURANT_COORDS, user_coords, unit=Unit.KILOMETERS)
             
-            # 使用從 DB 讀取的 max_km
+            # 💡 修正處：將原本寫死的 RESTAURANT_COORDS 替換為資料庫最新動態座標 settings['restaurant_coords']
+            dist = haversine(settings['restaurant_coords'], user_coords, unit=Unit.KILOMETERS)
+            
+            # 使用從 DB 讀取的 max_km 進行安全範圍校驗
             if dist > settings['max_km']:
                 return jsonify({
                     'success': False, 
-                    'msg': f'超出外送範圍 (距離 {dist:.1f}km, 目前限制 {settings["max_km"]}km)'
+                    'msg': f'超出外送範圍 (距離 {dist:.1f}km, 本店目前限制 {settings["max_km"]}km)'
                 })
 
             # 計算運費：基本費 (從 DB delivery_fee_base 讀來) + (距離 * 每公里費率)
@@ -207,7 +235,7 @@ def check_address():
     except Exception as e:
         print(f"Geo Error (切換至人工模式): {e}")
         
-        # 發生錯誤時，運費暫時設為基本費
+        # 發生錯誤時的容錯（故障轉移）機制，運費暫時設為基本費
         session['delivery_data'] = {
             'name': name,
             'phone': phone,
@@ -218,7 +246,7 @@ def check_address():
         session['delivery_info'] = {
             'is_delivery': True,
             'distance_km': 0,
-            'shipping_fee': settings['base_fee'], # 使用 DB 設定的基礎運費
+            'shipping_fee': settings['base_fee'],  # 使用 DB 設定的基礎運費
             'min_price': settings['min_price'],
             'note': "⚠️ 地圖連線忙碌，運費僅為預估，將由專人電話確認"
         }
