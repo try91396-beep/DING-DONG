@@ -302,10 +302,10 @@ def process_order_submission(request, order_type_override=None):
 def index():
     table_num = request.args.get('table', '')
     
-    # 讀取設定：判斷是否營業、是否開啟外送
+    # 🟢 關鍵修正 1：直接讀取全部的 settings，不再限縮 key 的範圍
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT key, value FROM settings WHERE key IN ('shop_open', 'delivery_enabled')")
+    cur.execute("SELECT key, value FROM settings") # 👈 撈出資料表所有的設定值
     settings = dict(cur.fetchall())
     conn.close()
     
@@ -316,10 +316,12 @@ def index():
     # 【更新】強制清除所有 Session，徹底避免舊資料與狀態混亂
     session.clear()
     
+    # 🟢 關鍵修正 2：在 return 時把完整的 settings 字典打包傳送過去！
     return render_template('index.html', 
                            table_num=table_num, 
                            shop_open=shop_open, 
-                           delivery_enabled=delivery_enabled)
+                           delivery_enabled=delivery_enabled,
+                           settings=settings) # 👈 補上這行
 
 
 # --- 內用/外帶 路由 ---
