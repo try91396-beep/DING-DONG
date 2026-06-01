@@ -14,8 +14,8 @@ RESTAURANT_COORDS = (25.054358, 121.543468)
 
 def get_delivery_settings():
     """
-    從資料庫讀取外送設定
-    確保欄位名稱與 database.py 的設定 (settings 表) 完全一致
+    從資料庫讀取外送與店家設定
+    整合了動態地址解析
     """
     conn = get_db_connection()
     cur = conn.cursor()
@@ -23,19 +23,24 @@ def get_delivery_settings():
     rows = cur.fetchall()
     conn.close()
     
-    # 將資料轉為字典，例如: {'delivery_fee_base': '0', 'delivery_max_km': '5', ...}
+    # 轉成字典，如 {'shop_address': '台北市...', 'delivery_fee_base': '50'}
     s = {row[0]: row[1] for row in rows}
+    
+    # 獲取中文地址並動態計算最新經緯度
+    shop_address = s.get('shop_address', '')
+    restaurant_coords = get_dynamic_restaurant_coords(shop_address)
     
     return {
         'enabled': s.get('delivery_enabled', '1') == '1',
         'min_price': int(s.get('delivery_min_price', 500)),
-        
-        # --- 修正處：確保這裡讀取的是 database.py 定義的鍵名 ---
-        'max_km': float(s.get('delivery_max_km', 5.0)),          # 最大距離
-        'base_fee': int(s.get('delivery_fee_base', 0)),          # 基礎運費 (對應 DB 的 delivery_fee_base)
-        'fee_per_km': int(s.get('delivery_fee_per_km', 10))      # 每公里加價
+        'max_km': float(s.get('delivery_max_km', 5.0)),          # 最大外送公里
+        'base_fee': int(s.get('delivery_fee_base', 0)),          # 基礎運費
+        'fee_per_km': int(s.get('delivery_fee_per_km', 10)),      # 每公里加價
+        'shop_name': s.get('shop_name', '我的美味餐廳'),
+        'shop_logo_url': s.get('shop_logo_url', ''),
+        'shop_address': shop_address,
+        'restaurant_coords': restaurant_coords                    # 動態產出的經緯度元組 (lat, lng)
     }
-
 def normalize_address(addr):
     """基本清洗：移除郵遞區號與樓層"""
     addr = re.sub(r'^\d{3,5}\s?', '', addr) # 移除開頭郵遞區號
