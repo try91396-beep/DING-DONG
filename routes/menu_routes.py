@@ -591,7 +591,10 @@ def order_success():
     # 6. 回傳最終組合的 HTML (使用 CSS 變數與乾淨的類別命名)
     # ==========================================
     # 注意：f-string 內的 CSS 若用到大括號，需寫成雙大括號 {{ }}
-    return f"""
+    # 🟢 確保你在這個路由函式裡有先拿到 settings 字典
+# settings = get_delivery_settings() 
+
+return f"""
     <!DOCTYPE html>
     <html lang="{lang}">
     <head>
@@ -623,22 +626,20 @@ def order_success():
                 -webkit-font-smoothing: antialiased;
             }}
 
-            /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
-            body::before {
+            /* 🟢 修正處：CSS 大括號雙寫，並直接用 Python f-string 帶入圖片網址 */
+            body::before {{
                 content: "";
                 position: fixed;
                 top: 0; left: 0; right: 0; bottom: 0;
                 
-                /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
-                background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
+                background: url('{settings.get("shop_logo_url", "")}') no-repeat center center;
                 
-                /*background-size: cover;  滿版並裁切*/ 
-                background-size: contain; /*縮放至完整*/ 
+                background-size: contain; 
                 opacity: 0.6; 
                 z-index: -1; 
             }}
 
-            /* 銳利邊框文字效果 (將 transparent 改回 #FFF 恢復白邊) */
+            /* 銳利邊框文字效果 */
             .text-outline {{
                 text-shadow: 
                     -1px -1px 0 #FFF,
@@ -651,7 +652,7 @@ def order_success():
                     -1px  0   0 #FFF;
             }}
             
-            /* 佈局容器：限制電腦版寬度，手機版保留邊距 */
+            /* 佈局容器 */
             .container {{ 
                 min-height: 100vh; 
                 display: flex; flex-direction: column; 
@@ -745,7 +746,7 @@ def order_success():
                 color: white; text-decoration: none; border-radius: 12px; 
                 font-weight: bold; font-size: 1.1em; margin-top: auto; 
                 transition: transform 0.1s;
-                text-shadow: none; /* 按鈕內的白字不需要白邊，保持 none */
+                text-shadow: none; 
             }}
             .home-btn:active {{ transform: scale(0.98); }}
         </style>
