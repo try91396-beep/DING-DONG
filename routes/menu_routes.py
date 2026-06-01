@@ -625,18 +625,18 @@ def order_success():
 
             /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
             body::before {
-            content: "";
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            
-            /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
-            background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
-            
-            /*background-size: cover;  滿版並裁切*/ 
-            background-size: contain; /*縮放至完整*/ 
-            opacity: 0.6; 
-            z-index: -1; 
-        }}
+                content: "";
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                
+                /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
+                background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
+                
+                /*background-size: cover;  滿版並裁切*/ 
+                background-size: contain; /*縮放至完整*/ 
+                opacity: 0.6; 
+                z-index: -1; 
+            }}
 
             /* 銳利邊框文字效果 (將 transparent 改回 #FFF 恢復白邊) */
             .text-outline {{
