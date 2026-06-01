@@ -624,17 +624,19 @@ def order_success():
             }}
 
             /* 背景圖片設定 (使用偽元素避免 opacity 影響到文字與卡片) */
-            body::before {{
-                content: "";
-                position: fixed;
-                top: 0; left: 0; right: 0; bottom: 0;
-                background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
-                /*background-size: cover;  滿版並裁切*/ 
-                background-size: contain; /*縮放至完整*/ 
-                /* 【核心】設定背景圖片透明度 (0.8 表示 80% 可見，即 20% 透明) */
-                opacity: 0.6; 
-                z-index: -1; /* 放在所有內容的最下方 */
-            }}
+            body::before {
+            content: "";
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            
+            /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
+            background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
+            
+            /*background-size: cover;  滿版並裁切*/ 
+            background-size: contain; /*縮放至完整*/ 
+            opacity: 0.6; 
+            z-index: -1; 
+        }}
 
             /* 銳利邊框文字效果 (將 transparent 改回 #FFF 恢復白邊) */
             .text-outline {{
