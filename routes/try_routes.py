@@ -213,7 +213,7 @@ def update_db_data():
     new_value = data.get('value')
 
     if not all([table, pk_col, pk_val, column]):
-        return jsonify({'success': False, 'error': '參數缺失'})
+        return jsonify({'success': False, 'error': '參數缺失'}) 
 
     # 🛡️ 安全檢查：限制只能操作我們宣告過的資料表，防止惡意破壞
     if table not in COLUMN_MAP:
