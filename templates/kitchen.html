@@ -20,7 +20,10 @@
             content: "";
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
+            
+            /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
+            background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
+            
             /*background-size: cover;  滿版並裁切*/ 
             background-size: contain; /*縮放至完整*/ 
             opacity: 0.6; 
