@@ -594,7 +594,7 @@ def order_success():
     # 🟢 確保你在這個路由函式裡有先拿到 settings 字典
 # settings = get_delivery_settings() 
 
-return f"""
+    return f"""
     <!DOCTYPE html>
     <html lang="{lang}">
     <head>
