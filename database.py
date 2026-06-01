@@ -8,7 +8,7 @@ def get_db_connection():
     """建立並回傳資料庫連線物件"""
     # 從作業系統環境變數中取得 DATABASE_URL（包含資料庫主機、帳密等資訊）
     db_uri = os.environ.get("DATABASE_URL")
-    if not db_uri:
+    if not db_uri: 
         # 如果找不到連線資訊，拋出錯誤訊息
         raise ValueError("錯誤：找不到環境變數 DATABASE_URL")
     # 使用 psycopg2 套件建立與 PostgreSQL 的連線
