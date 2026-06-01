@@ -31,7 +31,9 @@
     td.editable:focus { background-color: #fff; outline: 2px solid #3498db; z-index: 5; position: relative; }
     
     /* 主鍵不可編輯 */
-    td.pk-cell { background-color: #f1f3f5; color: #95a5a6; font-weight: bold; cursor: not-allowed; }
+    td.pk-cell { background-color: #f1f3f5; color: #2c3e50; font-weight: bold; cursor: not-allowed; }
+    /* 🆕 專屬 settings key 的解釋字體樣式 */
+    .key-hint { display: block; font-size: 11px; color: #6f42c1; font-weight: normal; margin-top: 4px; background: #f3f0fa; padding: 2px 6px; border-radius: 4px; width: fit-content; }
 
     /* 欄位說明小字 */
     th small { display: block; color: #6f42c1; font-weight: normal; margin-top: 3px; font-size: 0.8em; opacity: 0.8; }
@@ -131,7 +133,16 @@
                             {% set current_col = info.column_names[loop.index0] %}
                             
                             {% if current_col == info.pk_col %}
-                                <td class="pk-cell" data-col-name="{{ current_col }}">{{ cell }}</td>
+                                <td class="pk-cell" data-col-name="{{ current_col }}">
+                                    <span>{{ cell }}</span>
+                                    {# 💡 🆕 核心改動：如果是 settings 資料表，動態去對照表撈出這一列 Key 的中文含意 #}
+                                    {% if table_name == 'settings' and settings_key_map %}
+                                        {% set key_desc = settings_key_map.get(cell) %}
+                                        {% if key_desc %}
+                                            <span class="key-hint">{{ key_desc }}</span>
+                                        {% endif %}
+                                    {% endif %}
+                                </td>
                             {% else %}
                                 <td class="editable" 
                                     contenteditable="true" 
@@ -182,10 +193,10 @@
         const pkName = tableEl.dataset.pkName;
         const colName = cell.dataset.colName;
         
-        // 抓取同列的 PK 值
+        // 抓取同列的 PK 值 (修正：只抓取真正的 text 內容，避開我們新加的中文小標籤)
         const row = cell.parentElement;
         const pkCell = row.querySelector(`td[data-col-name="${pkName}"]`);
-        const pkVal = pkCell.innerText.trim();
+        const pkVal = pkCell.querySelector('span').innerText.trim();
 
         showToast('🔄 正在同步至雲端...', 'toast-loading');
 
