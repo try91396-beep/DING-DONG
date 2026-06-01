@@ -36,20 +36,18 @@
         }
 
         /* 【新增重點】背景圖片獨立區塊 (不影響其他內容的透明度) */
-        body::after {
+        body::before {
             content: "";
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            /* 背景圖片設定 */
-            background: url('https://i.ibb.co/20MXKCFk/1622093786-81a879fc1f1b41afed71696a0e45d95f.png') no-repeat center center;
+            top: 0; left: 0; right: 0; bottom: 0;
+            
+            /* 💡 關鍵：將原本的靜態網址，替換成 Jinja2 語法 */
+            background: url('{{ settings.get("shop_logo_url", "") }}') no-repeat center center;
+            
             /*background-size: cover;  滿版並裁切*/ 
             background-size: contain; /*縮放至完整*/ 
-            /* 【核心】設定背景圖片透明度 (0.2 表示 80% 可見，即 20% 透明) */
             opacity: 0.6; 
-            z-index: -1; /* 放在所有內容的最下方 */
+            z-index: -1; 
         }
 
         /* =========================================
