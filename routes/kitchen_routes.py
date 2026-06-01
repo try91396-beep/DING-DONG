@@ -103,11 +103,26 @@ def logout():
     return redirect(url_for('kitchen.login'))
 
 
-# --- 1. 廚房看板主頁 ---
+# --- 1. 廚房看板主頁 (💡已整合 Settings 傳遞邏輯) ---
 @kitchen_bp.route('/')
 @login_required          # 🛡️ 防護 1：必須登入
 def kitchen_panel():
-    return render_template('kitchen.html')
+    # 🌟 核心升級：連線資料庫撈取全站設定
+    conn = get_db_connection()
+    cur = conn.cursor()
+    settings = {}
+    try:
+        cur.execute("SELECT key, value FROM settings")
+        # 將資料庫撈出來的二維陣列直接轉換成 Python 字典字典 {'shop_name': 'xxx', 'shop_logo_url': 'xxx'}
+        settings = dict(cur.fetchall())
+    except Exception as e:
+        print(f"Kitchen fetch settings error: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+    # 將 settings 打包傳給廚房前端網頁（kitchen.html）
+    return render_template('kitchen.html', settings=settings)
 
 
 # --- 2. 檢查新訂單 API ---
