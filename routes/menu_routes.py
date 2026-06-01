@@ -395,6 +395,10 @@ def delivery_menu():
 # --- 下單成功頁面 ---
 @menu_bp.route('/success')
 def order_success():
+    # 🟢 關鍵修正 1：在函式一開頭，呼叫你寫好的共用函式取得全店 settings 設定字典
+    # 使用 _ 代表我們在這裡不需要產品清單，只需要 settings
+    settings, _ = get_menu_data()  
+
     # 取得 URL 參數
     oid = request.args.get('order_id')
     lang = request.args.get('lang', 'zh')
