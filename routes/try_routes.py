@@ -172,13 +172,34 @@ def show_db_structure():
         
         pk_col = 'key' if table == 'settings' else 'id'
 
-        # 抓取該表最新 50 筆所有資料行
-        try:
-            cur.execute(f"SELECT * FROM {table} ORDER BY {pk_col} DESC LIMIT 50")
-            sample_rows = cur.fetchall()
-        except:
-            cur.execute(f"SELECT * FROM {table} LIMIT 50")
-            sample_rows = cur.fetchall()
+        # --- 💡 關鍵修改區塊：處理設定表的預設顯示 ---
+        if table == 'settings':
+            try:
+                cur.execute(f"SELECT * FROM {table} ORDER BY {pk_col} ASC")
+                db_rows = cur.fetchall()
+                # 轉成字典方便比對
+                db_dict = {row[0]: row[1] for row in db_rows}
+                
+                sample_rows = []
+                # 1. 優先確保字典檔 SETTINGS_KEY_MAP 裡的所有 key 都會出現在畫面上
+                for k in SETTINGS_KEY_MAP.keys():
+                    sample_rows.append((k, db_dict.get(k, '')))  # 找不到就給空字串
+                    db_dict.pop(k, None)
+                
+                # 2. 補上資料庫有，但字典檔沒寫到的其他設定
+                for k, v in db_dict.items():
+                    sample_rows.append((k, v))
+            except:
+                sample_rows = []
+        else:
+            # 其他資料表維持原樣 (最新 50 筆)
+            try:
+                cur.execute(f"SELECT * FROM {table} ORDER BY {pk_col} DESC LIMIT 50")
+                sample_rows = cur.fetchall()
+            except:
+                cur.execute(f"SELECT * FROM {table} LIMIT 50")
+                sample_rows = cur.fetchall()
+        # ---------------------------------------------
         
         db_info[table] = {
             'column_names': col_names, # 供前端渲染標題
@@ -189,7 +210,6 @@ def show_db_structure():
 
     cur.close()
     conn.close()
-    # 💡 這裡將 settings_key_map 一併帶入前端
     return render_template(
         'try.html', 
         db_info=db_info, 
@@ -222,9 +242,23 @@ def update_db_data():
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # 欄位與資料表名稱無法使用 %s 參數化，但我們上面已經透過白名單(COLUMN_MAP)過濾，因此安全
-        query = f'UPDATE "{table}" SET "{column}" = %s WHERE "{pk_col}" = %s'
-        cur.execute(query, (new_value, pk_val))
+        # --- 💡 關鍵修改區塊：UPSERT 邏輯 ---
+        if table == 'settings':
+            # 設定表使用 UPSERT (ON CONFLICT DO UPDATE)
+            # 這樣就算資料庫原本沒有這個 Key，也可以直接從網頁新增進去
+            query = f'''
+                INSERT INTO "{table}" ("{pk_col}", "{column}") 
+                VALUES (%s, %s) 
+                ON CONFLICT ("{pk_col}") 
+                DO UPDATE SET "{column}" = EXCLUDED."{column}"
+            '''
+            cur.execute(query, (pk_val, new_value))
+        else:
+            # 其他表維持一般的 UPDATE
+            query = f'UPDATE "{table}" SET "{column}" = %s WHERE "{pk_col}" = %s'
+            cur.execute(query, (new_value, pk_val))
+        # ---------------------------------------------
+
         conn.commit()
         return jsonify({'success': True})
     except Exception as e:
