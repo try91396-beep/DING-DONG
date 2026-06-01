@@ -67,6 +67,26 @@ COLUMN_MAP = {
     }
 }
 
+# --- 🆕 專門給 settings 資料表每一列用的中文對照表 ---
+SETTINGS_KEY_MAP = {
+    'sender_email': '預設發信人郵件 (Resend)',
+    'shop_open': '店面營業狀態 (1:營業中, 0:休息中)',
+    'delivery_enabled': '啟用外送功能 (後端邏輯開關)',
+    'enable_delivery': '顯示外送按鈕 (前端介面開關)',
+    'delivery_min_price': '外送起送價 (元)',
+    'delivery_fee_base': '外送基礎運費 (元)',
+    'delivery_max_km': '最大外送距離 (公里)',
+    'delivery_fee_per_km': '超出基礎距離後每公里加價 (元)',
+    
+    # 這裡對應你新建立的店家資訊
+    'shop_name': '🏪 店家名稱',
+    'shop_address': '📍 店家地址',
+    'shop_phone': '📞 店家電話',
+    'shop_open_time': '⏰ 自動開店時間 (HH:MM)',
+    'shop_close_time': '⏳ 自動 營業結束時間 (HH:MM)',
+    'shop_logo_url': '🖼️ 店家商標網址 (Logo URL)'
+}
+
 # ==========================================
 # 🛡️ 認證系統 (登入/登出)
 # ==========================================
@@ -169,7 +189,13 @@ def show_db_structure():
 
     cur.close()
     conn.close()
-    return render_template('try.html', db_info=db_info, current_user=session.get('username'))
+    # 💡 這裡將 settings_key_map 一併帶入前端
+    return render_template(
+        'try.html', 
+        db_info=db_info, 
+        current_user=session.get('username'),
+        settings_key_map=SETTINGS_KEY_MAP
+    )
 
 # ==========================================
 # ✍️ 直接修改資料 (API)
@@ -189,10 +215,14 @@ def update_db_data():
     if not all([table, pk_col, pk_val, column]):
         return jsonify({'success': False, 'error': '參數缺失'})
 
+    # 🛡️ 安全檢查：限制只能操作我們宣告過的資料表，防止惡意破壞
+    if table not in COLUMN_MAP:
+        return jsonify({'success': False, 'error': '拒絕存取：未授權的資料表'})
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # 這裡使用參數化查詢防止 SQL Injection
+        # 欄位與資料表名稱無法使用 %s 參數化，但我們上面已經透過白名單(COLUMN_MAP)過濾，因此安全
         query = f'UPDATE "{table}" SET "{column}" = %s WHERE "{pk_col}" = %s'
         cur.execute(query, (new_value, pk_val))
         conn.commit()
@@ -240,7 +270,6 @@ def add_user():
             cur.close()
             conn.close()
 
-    # 內嵌 HTML 表單 (前端直接顯示)
     return """
     <!DOCTYPE html>
     <html>
