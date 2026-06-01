@@ -88,7 +88,7 @@ def init_db():
             ('delivery_min_price', '500'),             # 外送起送價
             ('delivery_fee_base', '0'),                # 基礎外送費
             ('delivery_max_km', '5'),                  # 最大外送距離 (公里)
-            ('delivery_fee_per_km', '10')              # 超過基礎距離後的每公里加價
+            ('delivery_fee_per_km', '10'),              # 超過基礎距離後的每公里加價
 
             # --- 🆕 這裡是你新要求新增的店家相關資訊欄位 ---
             ('shop_name', '我的美味餐廳'),               # 店家名稱
