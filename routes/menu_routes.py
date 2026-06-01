@@ -15,16 +15,29 @@ def get_menu_data():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # 讀取所有設定 (包含 shop_open, delivery_enabled, delivery_min_price 等)
+    # 1. 讀取所有設定 (包含外送設定與你新增的店家基本資訊)
     cur.execute("SELECT key, value FROM settings")
     settings_rows = cur.fetchall()
     settings = {row[0]: row[1] for row in settings_rows}
     
-    # 【關鍵修改】確保 delivery_min_price 存在於設定中
-    if 'delivery_min_price' not in settings:
-        settings['delivery_min_price'] = '0'  # 若資料庫未設定，預設為 0
+    # 【核心升級】確保所有外送與店家基本設定都有安全預設值，避免 KeyDriven 錯誤或崩潰
+    default_settings = {
+        'delivery_min_price': '0',
+        'shop_name': '我的美味餐廳',
+        'shop_address': '台北市信義區OO路XX號',
+        'shop_phone': '02-12345678',
+        'shop_open_time': '10:30',
+        'shop_close_time': '20:30',
+        'shop_logo_url': 'https://example.com/logo.png',
+        'shop_open': '1'  # 補上全店營業開關預設
+    }
     
-    # 讀取產品 (包含多語系欄位)
+    # 如果資料庫裡缺少某個 key，就自動補上預設值
+    for key, fallback_value in default_settings.items():
+        if key not in settings or not settings[key]:
+            settings[key] = fallback_value
+    
+    # 2. 讀取產品 (包含多語系欄位)
     cur.execute("""
         SELECT id, name, price, category, image_url, is_available, custom_options, sort_order,
                name_en, name_jp, name_kr, 
