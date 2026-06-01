@@ -357,7 +357,7 @@ def menu():
     return render_template('menu.html', 
                            products=products, texts=t, table_num=url_table, 
                            display_lang=display_lang, order_lang=order_lang, 
-                           preload_cart=preload_cart, edit_oid=edit_oid, config=settings,
+                           preload_cart=preload_cart, edit_oid=edit_oid, settings=settings,
                            current_mode='dine_in',
                            is_delivery_mode=False)
 
