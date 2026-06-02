@@ -321,68 +321,69 @@
 
     <div class="row">
         <div class="column column-50">
-            <div class="card" style="height: 100%;">
-                <h4 class="section-title">📧 郵件與系統設定</h4>
-                <form method="POST" action="{{ url_for('admin.admin_panel') }}">
-                    <label>收件 Email (接收日結單)</label>
-                    <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
-                    
-                    <!-- <label>發件人 Email (需與 Resend 一致)</label>
-                    <input type="email" name="sender_email" value="{{ config.get('sender_email','') }}" placeholder="onboarding@resend.dev">
-                    
-                    <label>Resend API Key</label>
-                    <input type="password" name="resend_api_key" value="{{ config.get('resend_api_key','') }}"> -->
+    <details class="card" style="padding: 0; border: none; box-shadow: none; height: 100%;">
+        <summary class="section-title" style="cursor: pointer; padding: 15px; background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); list-style: none; display: flex; align-items: center; gap: 6px;">
+            📧 郵件與系統設定 (點擊展開/收合)
+        </summary>
 
-                    <div style="margin-top: 25px;">
-                        <button type="submit" name="action" value="save_settings">💾 儲存設定</button>
-                        <button type="submit" name="action" value="test_email" class="button button-outline">🧪 測試連線</button>
-                        <hr style="margin: 20px 0; border-color: #eee;">
-                        <button type="submit" name="action" value="send_report_now" class="button button-clear" style="width:100%; color: var(--primary);">📊 立即補發今日報表</button>
-                    </div>
-                </form>
-            </div>
+        <div class="card" style="margin-top: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); height: auto;">
+            <form method="POST" action="{{ url_for('admin.admin_panel') }}">
+                <label>收件 Email (接收日結單)</label>
+                <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
+                
+                <div style="margin-top: 25px;">
+                    <button type="submit" name="action" value="save_settings">💾 儲存設定</button>
+                    <button type="submit" name="action" value="test_email" class="button button-outline">🧪 測試連線</button>
+                    <hr style="margin: 20px 0; border-color: #eee;">
+                    <button type="submit" name="action" value="send_report_now" class="button button-clear" style="width:100%; color: var(--primary);">📊 立即補發今日報表</button>
+                </div>
+            </form>
         </div>
+    </details>
+</div>
 
         <div class="column column-50">
-            <div class="card" style="height: 100%;">
-                <h4 class="section-title">🛵 外送費率規則</h4>
-                <form method="POST" action="{{ url_for('admin.update_delivery_settings') }}">
-                    <div style="margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee;">
-                        <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
-                            <input type="checkbox" name="delivery_enabled" style="margin: 0 10px 0 0;" 
-                                   {{ 'checked' if config.get('enable_delivery') else '' }}> 
-                            <!-- <span style="font-weight: 600;">啟用外送規則 (同步控制總開關)</span> -->
+    <details class="card" style="padding: 0; border: none; box-shadow: none; height: 100%;">
+        <summary class="section-title" style="cursor: pointer; padding: 15px; background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); list-style: none; display: flex; align-items: center; gap: 6px;">
+            🛵 外送費率規則 (點擊展開/收合)
+        </summary>
+
+        <div class="card" style="margin-top: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); height: auto;">
+            <form method="POST" action="{{ url_for('admin.update_delivery_settings') }}">
+                <div style="margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee;">
+                    <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
+                        <input type="checkbox" name="delivery_enabled" style="margin: 0 10px 0 0;" 
+                               {{ 'checked' if config.get('enable_delivery') else '' }}> 
                         </label>
-                    </div>
+                </div>
 
-                    <div class="row">
-                        <div class="column">
-                            <label>最低消費金額 ($)</label>
-                            <input type="number" name="delivery_min_price" value="{{ config.get('delivery_min_price', 0) }}" min="0">
-                        </div>
-                        <div class="column">
-                            <label>基礎運費 (Base)</label>
-                            <input type="number" name="delivery_fee_base" value="{{ config.get('delivery_fee_base', 0) }}" min="0">
-                        </div>
+                <div class="row">
+                    <div class="column">
+                        <label>最低消費金額 ($)</label>
+                        <input type="number" name="delivery_min_price" value="{{ config.get('delivery_min_price', 0) }}" min="0">
                     </div>
-
-                    <div class="row">
-                        <div class="column">
-                            <label>最大外送距離 (KM)</label>
-                            <input type="number" name="delivery_max_km" value="{{ config.get('delivery_max_km', 5) }}" step="0.1" min="0">
-                        </div>
-                        <div class="column">
-                            <label>每公里加價 ($)</label>
-                            <input type="number" name="delivery_fee_per_km" value="{{ config.get('delivery_fee_per_km', 10) }}" min="0">
-                        </div>
+                    <div class="column">
+                        <label>基礎運費 (Base)</label>
+                        <input type="number" name="delivery_fee_base" value="{{ config.get('delivery_fee_base', 0) }}" min="0">
                     </div>
+                </div>
 
-                    <button type="submit" class="button button-outline" style="width: 100%; margin-top: 10px; border-color: var(--primary); color: var(--primary);">💾 更新外送規則</button>
-                </form>
-            </div>
+                <div class="row">
+                    <div class="column">
+                        <label>最大外送距離 (KM)</label>
+                        <input type="number" name="delivery_max_km" value="{{ config.get('delivery_max_km', 5) }}" step="0.1" min="0">
+                    </div>
+                    <div class="column">
+                        <label>每公里加價 ($)</label>
+                        <input type="number" name="delivery_fee_per_km" value="{{ config.get('delivery_fee_per_km', 10) }}" min="0">
+                    </div>
+                </div>
+
+                <button type="submit" class="button button-outline" style="width: 100%; margin-top: 10px; border-color: var(--primary); color: var(--primary);">💾 更新外送規則</button>
+            </form>
         </div>
-    </div>
-
+    </details>
+</div>
     <details class="card" style="padding: 0; border: none; box-shadow: none;">
     <summary class="section-title" style="cursor: pointer; padding: 15px; background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); list-style: none; display: flex; align-items: center; gap: 6px;">
         ➕ 新增單一品項 (點擊展開/收合)
