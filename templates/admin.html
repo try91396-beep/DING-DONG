@@ -332,6 +332,16 @@
                 <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
                 <label>商標圖片連結</label>
                 <input type="text" name="shop_logo_url" value="{{ config.get('shop_logo_url','') }}">
+                 <label>店家名稱</label>
+                <input type="text" name="shop_name" value="{{ config.get('shop_name','') }}">
+                 <label>店家地址</label>
+                <input type="text" name="shop_address" value="{{ config.get('shop_address','') }}">
+                <label>店家電話</label>
+                <input type="number" name="shop_phone" value="{{ config.get('shop_phone','') }}">
+                 <label>開店時間</label>
+                <input type="text" name="shop_open_time" value="{{ config.get('shop_open_time','') }}" placeholder=使用24點制，例如：09:00>
+                 <label>閉店時間</label>
+                <input type="text" name="shop_close_time" value="{{ config.get('shop_close_time','') }}" placeholder=使用24點制，例如：09:00>
                 
                 <div style="margin-top: 25px;">
                     <button type="submit" name="action" value="save_settings">💾 儲存設定</button>
@@ -352,12 +362,12 @@
 
         <div class="card" style="margin-top: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); height: auto;">
             <form method="POST" action="{{ url_for('admin.update_delivery_settings') }}">
-                <div style="margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee;">
+                <!-- <div style="margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee;">
                     <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
                         <input type="checkbox" name="delivery_enabled" style="margin: 0 10px 0 0;" 
                                {{ 'checked' if config.get('enable_delivery') else '' }}> 
                         </label>
-                </div>
+                </div> -->
 
                 <div class="row">
                     <div class="column">
