@@ -242,12 +242,12 @@ def update_delivery_settings():
             'delivery_max_km': request.form.get('delivery_max_km') or '5',
             'delivery_fee_per_km': request.form.get('delivery_fee_per_km') or '10',
             'shop_logo_url': request.form.get('shop_logo_url') or '10',
-            'shop_panda_url': request.form.get('shop_panda_url') or '10'
+            'shop_panda_url': request.form.get('shop_panda_url') or '10',
             'shop_name': request.form.get('shop_name') or '10',
-            'shop_address': request.form.get('shop_address') or '10'
+            'shop_address': request.form.get('shop_address') or '10',
             'shop_phone': request.form.get('shop_phone') or '10',
-            'shop_open_time': request.form.get('shop_open_time') or '10'
-            'shop_close_time': request.form.get('shop_close_time') or '10',
+            'shop_open_time': request.form.get('shop_open_time') or '10',
+            'shop_close_time': request.form.get('shop_close_time') or '10'
         }
 
         for key, val in settings_to_update.items():
