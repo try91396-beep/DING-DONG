@@ -330,6 +330,8 @@
             <form method="POST" action="{{ url_for('admin.admin_panel') }}">
                 <label>收件 Email (接收日結單)</label>
                 <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
+                <label>商標圖片連結</label>
+                <input type="text" name="shop_logo_url" value="{{ config.get('shop_logo_url','') }}">
                 
                 <div style="margin-top: 25px;">
                     <button type="submit" name="action" value="save_settings">💾 儲存設定</button>
@@ -345,7 +347,7 @@
         <div class="column column-50">
     <details class="card" style="padding: 0; border: none; box-shadow: none; height: 100%;">
         <summary class="section-title" style="cursor: pointer; padding: 15px; background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); list-style: none; display: flex; align-items: center; gap: 6px;">
-            🛵 外送費率規則 (點擊展開/收合)
+            🛵 外送規則 (點擊展開/收合)
         </summary>
 
         <div class="card" style="margin-top: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); height: auto;">
@@ -376,6 +378,10 @@
                     <div class="column">
                         <label>每公里加價 ($)</label>
                         <input type="number" name="delivery_fee_per_km" value="{{ config.get('delivery_fee_per_km', 10) }}" min="0">
+                    </div>
+                    <div class="column">
+                        <label>外送平台商店連結</label>
+                        <input type="text" name="shop_panda_url" value="{{ config.get('shop_panda_url', 0) }}" min="0">
                     </div>
                 </div>
 
