@@ -201,6 +201,8 @@ def admin_panel():
         config.setdefault('delivery_fee_base', '0')
         config.setdefault('delivery_max_km', '5')
         config.setdefault('delivery_fee_per_km', '10')
+        config.setdefault('shop_logo_url', '')
+        config.setdefault('shop_panda_url', '')
 
         cur.execute("""
             SELECT id, name, price, category, is_available, print_category, sort_order, image_url, 
@@ -233,7 +235,9 @@ def update_delivery_settings():
             'delivery_min_price': request.form.get('delivery_min_price') or '0',
             'delivery_fee_base': request.form.get('delivery_fee_base') or '0',
             'delivery_max_km': request.form.get('delivery_max_km') or '5',
-            'delivery_fee_per_km': request.form.get('delivery_fee_per_km') or '10'
+            'delivery_fee_per_km': request.form.get('delivery_fee_per_km') or '10',
+            'shop_logo_url': request.form.get('shop_logo_url') or '10',
+            'shop_panda_url': request.form.get('shop_panda_url') or '10'
         }
 
         for key, val in settings_to_update.items():
