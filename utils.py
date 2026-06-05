@@ -201,70 +201,121 @@ def run_maintenance_tasks(app):
                 print(f"[{current_hm}] ⏰ 執行自動發信...")
                 send_daily_report(app)
                 last_sent_time = current_hm
-
+                
             # --- 🏪 B. 每日定時強寫 shop_open 狀態 ---
             # =====================================================================
-            # 1. 動態從資料庫讀取設定的營業時間（加上預設值防呆，萬一資料庫讀取失敗時使用）
+            # 1. 動態從資料庫讀取營業時間 與 執行紀錄印章
             # =====================================================================
             shop_open_time = "09:00"
             shop_close_time = "21:00"
+            last_auto_open_date = ""
+            last_auto_close_date = ""
+
             
+            
+            # 取得當前時間與日期
+            now = datetime.utcnow() + timedelta(hours=8)
+            current_hm = now.strftime("%H:%M")          # "09:01"
+            current_date = now.strftime("%Y-%m-%d")      # "2026-06-05"
+            current_weekday = now.weekday()             # 0=週一, ..., 5=週六
+            now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+            
+            conn = None
             try:
                 conn = get_db_connection()
                 with conn.cursor() as cur:
-                    cur.execute("SELECT key, value FROM settings WHERE key IN ('shop_open_time', 'shop_close_time');")
+                    # 一口氣把營業時間和執行紀錄撈出來
+                    cur.execute("""
+                        SELECT key, value FROM settings 
+                        WHERE key IN ('shop_open_time', 'shop_close_time', 'last_auto_open_date', 'last_auto_close_date');
+                    """)
                     rows = cur.fetchall()
                     for key, val in rows:
-                        if key == 'shop_open_time' and val:
-                            shop_open_time = val.strip()
-                        elif key == 'shop_close_time' and val:
-                            shop_close_time = val.strip()
-                conn.close()
+                        if val:
+                            val = val.strip()
+                            if key == 'shop_open_time':
+                                shop_open_time = val
+                            elif key == 'shop_close_time':
+                                shop_close_time = val
+                            elif key == 'last_auto_open_date':
+                                last_auto_open_date = val
+                            elif key == 'last_auto_close_date':
+                                last_auto_close_date = val
             except Exception as db_err:
-                print(f"[{now_str}] ⚠️ 讀取動態營業時間失敗，使用備用預設值 ({shop_open_time}/{shop_close_time}): {db_err}")
-            
+                print(f"[{now_str}] ⚠️ 讀取設定失敗，使用預設值: {db_err}")
+            finally:
+                if conn:
+                    conn.close()
             
             # =====================================================================
-            # 2. 使用動態時間變數進行 current_hm 判斷
+            # 2. 核心折衷邏輯：區間確保觸發 + 日期印章防止重複覆蓋
             # =====================================================================
-            if current_hm == shop_open_time and current_hm != last_shop_toggle_time:
-                # 💡 判斷：如果是週六(5)，強制寫入 '0'；其他日子強制寫入 '1'
-                target_val = '0' if current_weekday == 5 else '1'
-                log_text = "台灣時間週六，強制設定 shop_open = 0 (不開門)" if current_weekday == 5 else "強制設定 shop_open = 1"
+            
+            # ----------------- 🏪 A. 自動開店邏輯 -----------------
+            # 條件：時間到了、還在營業時間內、且「今天還沒自動開店過」
+            if shop_open_time <= current_hm < shop_close_time and last_auto_open_date != current_date:
                 
-                print(f"[{current_hm}] 🏪 開店時間到！{log_text}")
+                # 判斷是否為週六
+                target_val = '0' if current_weekday == 5 else '1'
+                log_text = "週六強制不開門" if current_weekday == 5 else "正常開門"
+                
+                print(f"[{now_str}] 📢 偵測到已過開店時間，執行今日首次自動處理 ({log_text})...")
+                
+                conn = None
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
+                        # 1. 寫入門市狀態
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('shop_open', %s)
                             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                         """, (target_val,))
-                    conn.commit()
-                    conn.close()
-                    
-                    last_shop_toggle_time = current_hm  # 標記此分鐘已處理過
-                    print(f"[{now_str}] 🏪 已成功寫入 shop_open = {target_val}")
-                except Exception as db_err:
-                    print(f"[{now_str}] ❌ 更新 shop_open={target_val} 失敗: {db_err}")
+                        
+                        # 2. 蓋上今天的日期印章，防止下一分鐘重複執行
+                        cur.execute("""
+                            INSERT INTO settings (key, value) VALUES ('last_auto_open_date', %s)
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+                        """, (current_date,))
+                        
+                        conn.commit()
+                        print(f"[{now_str}] ✅ 今日自動開店處理完成，已蓋章。")
+                except Exception as err:
+                    print(f"[{now_str}] ❌ 自動開店寫入失敗: {err}")
+                finally:
+                    if conn:
+                        conn.close()
             
-            elif current_hm == shop_close_time and current_hm != last_shop_toggle_time:
-                print(f"[{current_hm}] 🏪 閉店時間到！強制設定 shop_open = 0")
+            # ----------------- 🛑 B. 自動閉店邏輯 -----------------
+            # 條件：時間到了（或過了）、且「今天還沒自動閉店過」
+            elif current_hm >= shop_close_time and last_auto_close_date != current_date:
+                
+                print(f"[{now_str}] 📢 偵測到已過閉店時間，執行今日首次自動閉店...")
+                
+                conn = None
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
+                        # 1. 寫入門市狀態為關閉
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('shop_open', '0')
                             ON CONFLICT (key) DO UPDATE SET value = '0';
                         """)
-                    conn.commit()
-                    conn.close()
-                    
-                    last_shop_toggle_time = current_hm  # 標記此分鐘已處理過
-                    print(f"[{now_str}] 🏪 已寫入 shop_open = 0")
-                except Exception as db_err:
-                    print(f"[{now_str}] ❌ 更新 shop_open=0 失敗: {db_err}")
+                        
+                        # 2. 蓋上今日關店印章
+                        cur.execute("""
+                            INSERT INTO settings (key, value) VALUES ('last_auto_close_date', %s)
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+                        """, (current_date,))
+                        
+                        conn.commit()
+                        print(f"[{now_str}] ✅ 今日自動閉店處理完成，已蓋章。")
+                except Exception as err:
+                    print(f"[{now_str}] ❌ 自動閉店寫入失敗: {err}")
+                finally:
+                    if conn:
+                        conn.close()
 
+            
             # --- C. 防休眠 Ping (Web + Aiven DB) ---
             if now_obj >= next_ping_time:
                 # 1. Ping 網站
