@@ -330,13 +330,6 @@
             <form method="POST" action="{{ url_for('admin.admin_panel') }}">
                 <label>收件 Email (接收日結單)</label>
                 <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
-                
-                <label>Resend API 金鑰 (resend_api_key)</label>
-                <input type="password" name="resend_api_key" value="{{ config.get('resend_api_key','') }}" placeholder="例如：re_123456789...">
-
-
-                <label>收件 Email (接收日結單)</label>
-                <input type="email" name="report_email" value="{{ config.get('report_email','') }}">
                 <label>商標圖片連結</label>
                 <input type="text" name="shop_logo_url" value="{{ config.get('shop_logo_url','') }}">
                  <label>店家名稱</label>
