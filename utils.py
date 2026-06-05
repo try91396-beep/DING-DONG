@@ -42,7 +42,7 @@ def role_required(*allowed_roles):
     return decorator
 
 # ==========================================
-# 1. Email 報告發送核心 (新增作廢明細版)
+# 1. Email 報告發送核心
 # ==========================================
 def send_daily_report(app, manual_config=None, is_test=False, operator_name=None, operator_role=None):
     """
@@ -52,7 +52,6 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
     
     with app.app_context():
         try:
-            # 💡 判定值班人員
             final_name = operator_name
             final_role = operator_role
 
@@ -67,14 +66,13 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
             conn = get_db_connection()
             cur = conn.cursor()
             
-            # 讀取設定
             if manual_config:
                 config = manual_config
             else:
                 cur.execute("SELECT key, value FROM settings")
                 config = dict(cur.fetchall())
 
-            # 🛡️ 安全防禦：使用 (or '') 防止資料庫傳回 None 導致 strip() 核心崩潰
+            # 🛡️ 安全防禦：防止資料庫傳回 None 導致 strip() 崩潰
             api_key = (config.get('resend_api_key') or '').strip()
             to_email = (config.get('report_email') or '').strip()
             sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
@@ -96,7 +94,6 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
                     f"收件者: {to_email}"
                 )
             else:
-                # 時間過濾器
                 tw_start = tw_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 utc_start = tw_start - timedelta(hours=8)
                 utc_end = utc_start + timedelta(hours=24)
@@ -120,7 +117,7 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
                     except: continue
                 v_text = "\n".join([f"• {k}: {v}" for k, v in sorted(v_stats.items(), key=lambda x:x[1], reverse=True)]) or "(無銷量)"
 
-                # --- 2. 作廢訂單統計 (新增明細邏輯) ---
+                # --- 2. 作廢訂單統計 ---
                 cur.execute(f"SELECT COUNT(*), SUM(total_price) FROM orders WHERE {time_filter} AND status = 'Cancelled'", params)
                 x_res = cur.fetchone()
                 x_count, x_total = (x_res[0] or 0), (float(x_res[1] or 0))
@@ -152,7 +149,6 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
                     f"💰 實收總計: ${int(v_total):,}"
                 )
 
-            # --- API 發送 ---
             payload = {"from": sender_email, "to": [to_email], "subject": subject, "text": email_content}
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
             
@@ -175,7 +171,7 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
             if conn: conn.close()
 
 # ==========================================
-# 2. 背景維護工作 (Aiven DB 連線優化版)
+# 2. 背景維護工作 (全面升級為分鐘制)
 # ==========================================
 def run_maintenance_tasks(app):
     print("⏳ 背景任務等待啟動中 (Wait 30s)...")
@@ -187,13 +183,11 @@ def run_maintenance_tasks(app):
 
     while True:
         try:
-            # =====================================================================
-            # 💡 核心修正：將所有時間基礎變數定義在迴圈最頂端，確保全域程式都能讀到
-            # =====================================================================
+            # 💡 基礎時間全域變數定義在最頂端
             tw_time = datetime.utcnow() + timedelta(hours=8)
-            current_hm = tw_time.strftime("%H:%M")          # 例如 "09:01"
-            current_date = tw_time.strftime("%Y-%m-%d")      # 例如 "2026-06-05"
-            current_weekday = tw_time.weekday()             # 0=週一, ..., 5=週六
+            current_hm = tw_time.strftime("%H:%M")          
+            current_date = tw_time.strftime("%Y-%m-%d")      
+            current_weekday = tw_time.weekday()             
             now_str = tw_time.strftime("%Y-%m-%d %H:%M:%S")
 
             # --- A. 自動發信檢查 ---
@@ -206,8 +200,8 @@ def run_maintenance_tasks(app):
             # --- 🏪 B. 每日定時強寫 shop_open 狀態 ---
             shop_open_time = "09:00"
             shop_close_time = "21:00"
-            shop_open_advance_hours = "0"   # 預設為 0
-            shop_close_delay_hours = "0"    # 預設為 0
+            shop_open_advance_minutes = "0"   # 💡 變數改為 minutes
+            shop_close_delay_minutes = "0"    # 💡 變數改為 minutes
             last_auto_open_date = ""
             last_auto_close_date = ""
             
@@ -215,11 +209,12 @@ def run_maintenance_tasks(app):
             try:
                 conn = get_db_connection()
                 with conn.cursor() as cur:
+                    # 💡 SQL 改為讀取對應的 _minutes 設定項目
                     cur.execute("""
                         SELECT key, value FROM settings 
                         WHERE key IN (
                             'shop_open_time', 'shop_close_time', 
-                            'shop_open_advance_hours', 'shop_close_delay_hours',
+                            'shop_open_advance_minutes', 'shop_close_delay_minutes',
                             'last_auto_open_date', 'last_auto_close_date'
                         );
                     """)
@@ -229,8 +224,8 @@ def run_maintenance_tasks(app):
                             val = val.strip()
                             if key == 'shop_open_time': shop_open_time = val
                             elif key == 'shop_close_time': shop_close_time = val
-                            elif key == 'shop_open_advance_hours': shop_open_advance_hours = val
-                            elif key == 'shop_close_delay_hours': shop_close_delay_hours = val
+                            elif key == 'shop_open_advance_minutes': shop_open_advance_minutes = val
+                            elif key == 'shop_close_delay_minutes': shop_close_delay_minutes = val
                             elif key == 'last_auto_open_date': last_auto_open_date = val
                             elif key == 'last_auto_close_date': last_auto_close_date = val
             except Exception as db_err:
@@ -238,16 +233,16 @@ def run_maintenance_tasks(app):
             finally:
                 if conn: conn.close()
             
-            # 核心時間數學計算：支援 0 小時 (準時)
+            # 💡 核心數學計算：改用 timedelta(minutes=...)
             try:
-                adv_h = int(shop_open_advance_hours) if shop_open_advance_hours.isdigit() else 0
-                del_h = int(shop_close_delay_hours) if shop_close_delay_hours.isdigit() else 0
+                adv_m = int(shop_open_advance_minutes) if shop_open_advance_minutes.isdigit() else 0
+                del_m = int(shop_close_delay_minutes) if shop_close_delay_minutes.isdigit() else 0
 
                 base_open_dt = datetime.strptime(f"{current_date} {shop_open_time}", "%Y-%m-%d %H:%M")
                 base_close_dt = datetime.strptime(f"{current_date} {shop_close_time}", "%Y-%m-%d %H:%M")
 
-                trigger_open_dt = base_open_dt - timedelta(hours=adv_h)
-                trigger_close_dt = base_close_dt + timedelta(hours=del_h)
+                trigger_open_dt = base_open_dt - timedelta(minutes=adv_m)   # 扣掉提早的分鐘數
+                trigger_close_dt = base_close_dt + timedelta(minutes=del_m) # 加上延後的分鐘數
 
                 trigger_open_hm = trigger_open_dt.strftime("%H:%M")
                 trigger_close_hm = trigger_close_dt.strftime("%H:%M")
@@ -260,7 +255,7 @@ def run_maintenance_tasks(app):
             if trigger_open_hm <= current_hm < trigger_close_hm and last_auto_open_date != current_date:
                 
                 target_val = '0' if current_weekday == 5 else '1'
-                log_text = "週六強制不開門" if current_weekday == 5 else f"正常開門 (預計 {shop_open_time} 營業，設定提早 {adv_h} 小時，於 {trigger_open_hm} 觸發)"
+                log_text = "週六強制不開門" if current_weekday == 5 else f"正常開門 (預計 {shop_open_time} 營業，設定提早 {adv_m} 分鐘，於 {trigger_open_hm} 觸發)"
                 
                 print(f"[{now_str}] 📢 偵測到已過開店門檻，執行今日首次自動處理 ({log_text})...")
                 
@@ -288,7 +283,7 @@ def run_maintenance_tasks(app):
             # ----------------- 🛑 自動閉店邏輯 -----------------
             elif current_hm >= trigger_close_hm and last_auto_close_date != current_date:
                 
-                print(f"[{now_str}] 📢 偵測到已過閉店門檻 (預計 {shop_close_time} 結束，設定延後 {del_h} 小時，於 {trigger_close_hm} 觸發)，執行今日自動閉店...")
+                print(f"[{now_str}] 📢 偵測到已過閉店門檻 (預計 {shop_close_time} 結束，設定延後 {del_m} 分鐘，於 {trigger_close_hm} 觸發)，執行今日自動閉店...")
                 
                 conn = None
                 try:
