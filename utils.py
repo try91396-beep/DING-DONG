@@ -74,8 +74,9 @@ def send_daily_report(app, manual_config=None, is_test=False, operator_name=None
                 cur.execute("SELECT key, value FROM settings")
                 config = dict(cur.fetchall())
 
-            api_key = config.get('resend_api_key', '').strip()
-            to_email = config.get('report_email', '').strip()
+            # 🛡️ 安全防禦：使用 (or '') 防止資料庫傳回 None 導致 strip() 核心崩潰
+            api_key = (config.get('resend_api_key') or '').strip()
+            to_email = (config.get('report_email') or '').strip()
             sender_email = (config.get('sender_email') or 'onboarding@resend.dev').strip()
 
             if not api_key or not to_email:
@@ -182,96 +183,96 @@ def run_maintenance_tasks(app):
     print("🚀 背景維護執行緒已正式啟動")
     
     last_sent_time = ""
-    last_shop_toggle_time = ""  # 紀錄上一次更新狀態的時間，防止在同一個分鐘內重複塞入 SQL
     next_ping_time = datetime.now()
 
     while True:
         try:
-            now_obj = datetime.now()
-            now_str = now_obj.strftime("%H:%M:%S")
-
-            # 取得台灣時間 (UTC+8)
+            # =====================================================================
+            # 💡 核心修正：將所有時間基礎變數定義在迴圈最頂端，確保全域程式都能讀到
+            # =====================================================================
             tw_time = datetime.utcnow() + timedelta(hours=8)
-            current_hm = tw_time.strftime("%H:%M")
-            current_weekday = tw_time.weekday()  # 💡 0=週一, 1=週二, ..., 5=週六, 6=週日
+            current_hm = tw_time.strftime("%H:%M")          # 例如 "09:01"
+            current_date = tw_time.strftime("%Y-%m-%d")      # 例如 "2026-06-05"
+            current_weekday = tw_time.weekday()             # 0=週一, ..., 5=週六
+            now_str = tw_time.strftime("%Y-%m-%d %H:%M:%S")
 
             # --- A. 自動發信檢查 ---
             target_times = ["13:00", "18:00", "20:30"]
             if current_hm in target_times and current_hm != last_sent_time:
-                print(f"[{current_hm}] ⏰ 執行自動發信...")
+                print(f"[{now_str}] ⏰ 執行自動發信...")
                 send_daily_report(app)
                 last_sent_time = current_hm
                 
             # --- 🏪 B. 每日定時強寫 shop_open 狀態 ---
-            # =====================================================================
-            # 1. 動態從資料庫讀取營業時間 與 執行紀錄印章
-            # =====================================================================
             shop_open_time = "09:00"
             shop_close_time = "21:00"
+            shop_open_advance_hours = "0"   # 預設為 0
+            shop_close_delay_hours = "0"    # 預設為 0
             last_auto_open_date = ""
             last_auto_close_date = ""
-
-            
-            
-            # 取得當前時間與日期
-            now = datetime.utcnow() + timedelta(hours=8)
-            current_hm = now.strftime("%H:%M")          # "09:01"
-            current_date = now.strftime("%Y-%m-%d")      # "2026-06-05"
-            current_weekday = now.weekday()             # 0=週一, ..., 5=週六
-            now_str = now.strftime("%Y-%m-%d %H:%M:%S")
             
             conn = None
             try:
                 conn = get_db_connection()
                 with conn.cursor() as cur:
-                    # 一口氣把營業時間和執行紀錄撈出來
                     cur.execute("""
                         SELECT key, value FROM settings 
-                        WHERE key IN ('shop_open_time', 'shop_close_time', 'last_auto_open_date', 'last_auto_close_date');
+                        WHERE key IN (
+                            'shop_open_time', 'shop_close_time', 
+                            'shop_open_advance_hours', 'shop_close_delay_hours',
+                            'last_auto_open_date', 'last_auto_close_date'
+                        );
                     """)
                     rows = cur.fetchall()
                     for key, val in rows:
-                        if val:
+                        if val is not None:
                             val = val.strip()
-                            if key == 'shop_open_time':
-                                shop_open_time = val
-                            elif key == 'shop_close_time':
-                                shop_close_time = val
-                            elif key == 'last_auto_open_date':
-                                last_auto_open_date = val
-                            elif key == 'last_auto_close_date':
-                                last_auto_close_date = val
+                            if key == 'shop_open_time': shop_open_time = val
+                            elif key == 'shop_close_time': shop_close_time = val
+                            elif key == 'shop_open_advance_hours': shop_open_advance_hours = val
+                            elif key == 'shop_close_delay_hours': shop_close_delay_hours = val
+                            elif key == 'last_auto_open_date': last_auto_open_date = val
+                            elif key == 'last_auto_close_date': last_auto_close_date = val
             except Exception as db_err:
                 print(f"[{now_str}] ⚠️ 讀取設定失敗，使用預設值: {db_err}")
             finally:
-                if conn:
-                    conn.close()
+                if conn: conn.close()
             
-            # =====================================================================
-            # 2. 核心折衷邏輯：區間確保觸發 + 日期印章防止重複覆蓋
-            # =====================================================================
-            
-            # ----------------- 🏪 A. 自動開店邏輯 -----------------
-            # 條件：時間到了、還在營業時間內、且「今天還沒自動開店過」
-            if shop_open_time <= current_hm < shop_close_time and last_auto_open_date != current_date:
+            # 核心時間數學計算：支援 0 小時 (準時)
+            try:
+                adv_h = int(shop_open_advance_hours) if shop_open_advance_hours.isdigit() else 0
+                del_h = int(shop_close_delay_hours) if shop_close_delay_hours.isdigit() else 0
+
+                base_open_dt = datetime.strptime(f"{current_date} {shop_open_time}", "%Y-%m-%d %H:%M")
+                base_close_dt = datetime.strptime(f"{current_date} {shop_close_time}", "%Y-%m-%d %H:%M")
+
+                trigger_open_dt = base_open_dt - timedelta(hours=adv_h)
+                trigger_close_dt = base_close_dt + timedelta(hours=del_h)
+
+                trigger_open_hm = trigger_open_dt.strftime("%H:%M")
+                trigger_close_hm = trigger_close_dt.strftime("%H:%M")
+            except Exception as time_err:
+                print(f"[{now_str}] ⚠️ 時間轉換發生錯誤: {time_err}，改用標準時間。")
+                trigger_open_hm = shop_open_time
+                trigger_close_hm = shop_close_time
+
+            # ----------------- 🏪 自動開店邏輯 -----------------
+            if trigger_open_hm <= current_hm < trigger_close_hm and last_auto_open_date != current_date:
                 
-                # 判斷是否為週六
                 target_val = '0' if current_weekday == 5 else '1'
-                log_text = "週六強制不開門" if current_weekday == 5 else "正常開門"
+                log_text = "週六強制不開門" if current_weekday == 5 else f"正常開門 (預計 {shop_open_time} 營業，設定提早 {adv_h} 小時，於 {trigger_open_hm} 觸發)"
                 
-                print(f"[{now_str}] 📢 偵測到已過開店時間，執行今日首次自動處理 ({log_text})...")
+                print(f"[{now_str}] 📢 偵測到已過開店門檻，執行今日首次自動處理 ({log_text})...")
                 
                 conn = None
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
-                        # 1. 寫入門市狀態
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('shop_open', %s)
                             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                         """, (target_val,))
                         
-                        # 2. 蓋上今天的日期印章，防止下一分鐘重複執行
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('last_auto_open_date', %s)
                             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
@@ -282,26 +283,22 @@ def run_maintenance_tasks(app):
                 except Exception as err:
                     print(f"[{now_str}] ❌ 自動開店寫入失敗: {err}")
                 finally:
-                    if conn:
-                        conn.close()
+                    if conn: conn.close()
             
-            # ----------------- 🛑 B. 自動閉店邏輯 -----------------
-            # 條件：時間到了（或過了）、且「今天還沒自動閉店過」
-            elif current_hm >= shop_close_time and last_auto_close_date != current_date:
+            # ----------------- 🛑 自動閉店邏輯 -----------------
+            elif current_hm >= trigger_close_hm and last_auto_close_date != current_date:
                 
-                print(f"[{now_str}] 📢 偵測到已過閉店時間，執行今日首次自動閉店...")
+                print(f"[{now_str}] 📢 偵測到已過閉店門檻 (預計 {shop_close_time} 結束，設定延後 {del_h} 小時，於 {trigger_close_hm} 觸發)，執行今日自動閉店...")
                 
                 conn = None
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
-                        # 1. 寫入門市狀態為關閉
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('shop_open', '0')
                             ON CONFLICT (key) DO UPDATE SET value = '0';
                         """)
                         
-                        # 2. 蓋上今日關店印章
                         cur.execute("""
                             INSERT INTO settings (key, value) VALUES ('last_auto_close_date', %s)
                             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
@@ -312,20 +309,16 @@ def run_maintenance_tasks(app):
                 except Exception as err:
                     print(f"[{now_str}] ❌ 自動閉店寫入失敗: {err}")
                 finally:
-                    if conn:
-                        conn.close()
+                    if conn: conn.close()
 
-            
             # --- C. 防休眠 Ping (Web + Aiven DB) ---
-            if now_obj >= next_ping_time:
-                # 1. Ping 網站
+            if datetime.now() >= next_ping_time:
                 try:
                     urllib.request.urlopen("https://ding-dong-tipi.onrender.com", timeout=5)
                     print(f"[{now_str}] ✅ Web Ping 成功")
                 except Exception as web_err: 
                     print(f"[{now_str}] ⚠️ Web Ping 失敗: {web_err}")
                 
-                # 2. Ping Aiven 資料庫 (發送真實指令維持連線)
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
@@ -336,7 +329,7 @@ def run_maintenance_tasks(app):
                 except Exception as db_ping_err: 
                     print(f"[{now_str}] ⚠️ DB Heartbeat 失敗: {db_ping_err}")
                 
-                next_ping_time = now_obj + timedelta(seconds=300)
+                next_ping_time = datetime.now() + timedelta(seconds=300)
 
             time.sleep(30) 
         except Exception as e:
