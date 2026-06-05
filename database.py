@@ -91,6 +91,7 @@ def init_db():
             ('delivery_fee_per_km', '10'),              # 超過基礎距離後的每公里加價
 
             # --- 🆕 這裡是你新要求新增的店家相關資訊欄位 ---
+            ('resend_api_key', ''),                            # resend_api_key
             ('shop_name', '我的美味餐廳'),                       # 店家名稱
             ('shop_address', '台北市信義區OO路XX號'),            # 店家地址
             ('shop_phone', '02-12345678'),                      # 店家電話
